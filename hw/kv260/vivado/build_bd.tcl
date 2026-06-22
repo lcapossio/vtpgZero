@@ -85,10 +85,10 @@ set_property -dict [list \
 connect_bd_net [get_bd_pins zynq_ps/pl_clk0] [get_bd_pins u_tpg/aclk]
 connect_bd_net [get_bd_pins zynq_ps/pl_clk0] [get_bd_pins u_writer/aclk]
 
-# HPM0_FPD (PS master) -> u_tpg/s_axil (AXI-Lite slave control path)
+# HPM0_FPD (PS master) -> u_tpg/s_axi (AXI-Lite slave control path)
 apply_bd_automation -rule xilinx.com:bd_rule:axi4 \
     -config {Master "/zynq_ps/M_AXI_HPM0_FPD" intc_ip "New AXI Interconnect" Clk_xbar "Auto" Clk_master "Auto" Clk_slave "Auto"} \
-    [get_bd_intf_pins u_tpg/s_axil]
+    [get_bd_intf_pins u_tpg/s_axi]
 
 # u_writer/m_axi (PL master) -> HPC0 (PS slave, DDR write path)
 apply_bd_automation -rule xilinx.com:bd_rule:axi4 \
@@ -108,14 +108,14 @@ connect_bd_intf_net \
 # The AXI4 automation assigns addresses, then we pin the vtpgZero AXI-Lite
 # window to the firmware's expected base address. Keep this explicit: a silent
 # address drift here turns into an A53 hang or bad CORE_ID read at boot.
-set tpg_slave_segs [get_bd_addr_segs -quiet u_tpg/s_axil/*]
+set tpg_slave_segs [get_bd_addr_segs -quiet u_tpg/s_axi/*]
 set ps_addr_space  [get_bd_addr_spaces -quiet zynq_ps/Data]
 if {([llength $tpg_slave_segs] > 0) && ([llength $ps_addr_space] > 0)} {
     assign_bd_address -offset 0xA0000000 -range 4K \
         -target_address_space [lindex $ps_addr_space 0] \
         [lindex $tpg_slave_segs 0] -force
 } else {
-    puts "WARNING: could not locate u_tpg/s_axil address segment or PS address space to pin at 0xA0000000"
+    puts "WARNING: could not locate u_tpg/s_axi address segment or PS address space to pin at 0xA0000000"
 }
 
 # Dump the address map for the log.

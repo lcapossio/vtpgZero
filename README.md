@@ -522,16 +522,16 @@ vtpgz_axilite_top #(
     .aclk          (aclk),
     .aresetn       (aresetn),
     // AXI4-Lite slave (control)
-    .s_axil_awaddr (axil_awaddr), .s_axil_awprot (axil_awprot),
-    .s_axil_awvalid(axil_awvalid),.s_axil_awready(axil_awready),
-    .s_axil_wdata  (axil_wdata),  .s_axil_wstrb (axil_wstrb),
-    .s_axil_wvalid (axil_wvalid), .s_axil_wready(axil_wready),
-    .s_axil_bresp  (axil_bresp),  .s_axil_bvalid(axil_bvalid),
-    .s_axil_bready (axil_bready),
-    .s_axil_araddr (axil_araddr), .s_axil_arprot(axil_arprot),
-    .s_axil_arvalid(axil_arvalid),.s_axil_arready(axil_arready),
-    .s_axil_rdata  (axil_rdata),  .s_axil_rresp (axil_rresp),
-    .s_axil_rvalid (axil_rvalid), .s_axil_rready(axil_rready),
+    .s_axi_awaddr (axi_awaddr), .s_axi_awprot (axi_awprot),
+    .s_axi_awvalid(axi_awvalid),.s_axi_awready(axi_awready),
+    .s_axi_wdata  (axi_wdata),  .s_axi_wstrb (axi_wstrb),
+    .s_axi_wvalid (axi_wvalid), .s_axi_wready(axi_wready),
+    .s_axi_bresp  (axi_bresp),  .s_axi_bvalid(axi_bvalid),
+    .s_axi_bready (axi_bready),
+    .s_axi_araddr (axi_araddr), .s_axi_arprot(axi_arprot),
+    .s_axi_arvalid(axi_arvalid),.s_axi_arready(axi_arready),
+    .s_axi_rdata  (axi_rdata),  .s_axi_rresp (axi_rresp),
+    .s_axi_rvalid (axi_rvalid), .s_axi_rready(axi_rready),
     // AXI4-Stream master (video). The width is auto-derived from
     // OUTPUT_MODE/BPC. Use vtpgz_axilite_top's C_AXIS_TDATA_WIDTH parameter to
     // size the connecting net (or read VTPGZ_REG_COLOR_FORMAT[31:16]

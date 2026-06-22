@@ -52,24 +52,24 @@ static void tick() {
     dut->aclk = 1; dut->eval(); ++main_time;
 }
 
-static void axil_write(uint32_t addr, uint32_t data) {
-    dut->s_axil_awaddr  = addr;
-    dut->s_axil_awvalid = 1;
-    dut->s_axil_wdata   = data;
-    dut->s_axil_wstrb   = 0xF;
-    dut->s_axil_wvalid  = 1;
-    dut->s_axil_bready  = 1;
+static void axi_write(uint32_t addr, uint32_t data) {
+    dut->s_axi_awaddr  = addr;
+    dut->s_axi_awvalid = 1;
+    dut->s_axi_wdata   = data;
+    dut->s_axi_wstrb   = 0xF;
+    dut->s_axi_wvalid  = 1;
+    dut->s_axi_bready  = 1;
     for (int i = 0; i < 50; ++i) {
         tick();
-        if (dut->s_axil_awready && dut->s_axil_wready) break;
+        if (dut->s_axi_awready && dut->s_axi_wready) break;
     }
-    dut->s_axil_awvalid = 0;
-    dut->s_axil_wvalid  = 0;
+    dut->s_axi_awvalid = 0;
+    dut->s_axi_wvalid  = 0;
     for (int i = 0; i < 50; ++i) {
         tick();
-        if (dut->s_axil_bvalid) break;
+        if (dut->s_axi_bvalid) break;
     }
-    dut->s_axil_bready = 0;
+    dut->s_axi_bready = 0;
 }
 
 static int parse_plusarg_int(const char* name, int def) {
@@ -98,10 +98,10 @@ int main(int argc, char** argv) {
     dut = new Vvtpgz_axilite_top;
 
     dut->aresetn       = 0;
-    dut->s_axil_awaddr = 0; dut->s_axil_awvalid = 0;
-    dut->s_axil_wdata  = 0; dut->s_axil_wstrb   = 0; dut->s_axil_wvalid = 0;
-    dut->s_axil_bready = 0;
-    dut->s_axil_araddr = 0; dut->s_axil_arvalid = 0; dut->s_axil_rready = 0;
+    dut->s_axi_awaddr = 0; dut->s_axi_awvalid = 0;
+    dut->s_axi_wdata  = 0; dut->s_axi_wstrb   = 0; dut->s_axi_wvalid = 0;
+    dut->s_axi_bready = 0;
+    dut->s_axi_araddr = 0; dut->s_axi_arvalid = 0; dut->s_axi_rready = 0;
     dut->m_axis_tready = 1;
     dut->frame_sync_in = 0;
 
@@ -113,41 +113,41 @@ int main(int argc, char** argv) {
     int bar_width = (width / 8) > 0 ? (width / 8) : 1;
     int hg_step   = 0xFFF / ((width  > 1) ? (width  - 1) : 1);
     int vg_step   = 0xFFF / ((height > 1) ? (height - 1) : 1);
-    axil_write(VTPGZ_REG_CONTROL,      0);
-    axil_write(VTPGZ_REG_IMG_WIDTH,    width);
-    axil_write(VTPGZ_REG_IMG_HEIGHT,   height);
-    axil_write(VTPGZ_REG_BAR_WIDTH,    bar_width);
-    axil_write(VTPGZ_REG_HG_STEP,      hg_step);
-    axil_write(VTPGZ_REG_VG_STEP,      vg_step);
-    axil_write(VTPGZ_REG_CHECKER_SIZE, 16);
-    axil_write(VTPGZ_REG_GRID_SPACING, 16);
-    axil_write(VTPGZ_REG_BOX_SIZE,     (16u << 16) | 16u);
-    axil_write(VTPGZ_REG_BOX_SPEED,    (1u  << 16) | 1u);
-    axil_write(VTPGZ_REG_BOX_BORDER,   (1u << 24) | 0x00FFFFFF); // 1px white border
-    axil_write(VTPGZ_REG_PATTERN_SEL,  pat);
-    axil_write(VTPGZ_REG_FRAME_RATE,   100);
-    axil_write(VTPGZ_REG_CONTROL,      1);  // enable, internal sync
+    axi_write(VTPGZ_REG_CONTROL,      0);
+    axi_write(VTPGZ_REG_IMG_WIDTH,    width);
+    axi_write(VTPGZ_REG_IMG_HEIGHT,   height);
+    axi_write(VTPGZ_REG_BAR_WIDTH,    bar_width);
+    axi_write(VTPGZ_REG_HG_STEP,      hg_step);
+    axi_write(VTPGZ_REG_VG_STEP,      vg_step);
+    axi_write(VTPGZ_REG_CHECKER_SIZE, 16);
+    axi_write(VTPGZ_REG_GRID_SPACING, 16);
+    axi_write(VTPGZ_REG_BOX_SIZE,     (16u << 16) | 16u);
+    axi_write(VTPGZ_REG_BOX_SPEED,    (1u  << 16) | 1u);
+    axi_write(VTPGZ_REG_BOX_BORDER,   (1u << 24) | 0x00FFFFFF); // 1px white border
+    axi_write(VTPGZ_REG_PATTERN_SEL,  pat);
+    axi_write(VTPGZ_REG_FRAME_RATE,   100);
+    axi_write(VTPGZ_REG_CONTROL,      1);  // enable, internal sync
 
     // Number of 32-bit words per beat = ceil(tdata_width / 32). Read it
     // from the COLOR_FORMAT register read-back so this stays in sync with
     // the build-time TDATA_WIDTH.
     int tdata_width = 32;
     {
-        // axil_read inline (small)
-        dut->s_axil_araddr  = 0x1C; // VTPGZ_REG_COLOR_FORMAT
-        dut->s_axil_arvalid = 1;
-        dut->s_axil_rready  = 1;
+        // axi_read inline (small)
+        dut->s_axi_araddr  = 0x1C; // VTPGZ_REG_COLOR_FORMAT
+        dut->s_axi_arvalid = 1;
+        dut->s_axi_rready  = 1;
         for (int i = 0; i < 50; ++i) {
             tick();
-            if (dut->s_axil_arready) break;
+            if (dut->s_axi_arready) break;
         }
-        dut->s_axil_arvalid = 0;
+        dut->s_axi_arvalid = 0;
         for (int i = 0; i < 50; ++i) {
             tick();
-            if (dut->s_axil_rvalid) break;
+            if (dut->s_axi_rvalid) break;
         }
-        tdata_width = (int)((dut->s_axil_rdata >> 16) & 0xFFFF);
-        dut->s_axil_rready = 0;
+        tdata_width = (int)((dut->s_axi_rdata >> 16) & 0xFFFF);
+        dut->s_axi_rready = 0;
     }
     int words_per_beat = (tdata_width + 31) / 32;
 

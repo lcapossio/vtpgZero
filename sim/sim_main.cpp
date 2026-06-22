@@ -112,28 +112,28 @@ static void tick() {
 }
 
 static uint8_t prot_walk = 0;
-static void axil_write(uint8_t addr, uint32_t data, uint8_t strb = 0xF) {
-    dut->s_axil_awaddr  = addr;
-    dut->s_axil_awprot  = (prot_walk++ & 0x7);
-    dut->s_axil_awvalid = 1;
-    dut->s_axil_wdata   = data;
-    dut->s_axil_wstrb   = strb;
-    dut->s_axil_wvalid  = 1;
-    dut->s_axil_bready  = 1;
+static void axi_write(uint8_t addr, uint32_t data, uint8_t strb = 0xF) {
+    dut->s_axi_awaddr  = addr;
+    dut->s_axi_awprot  = (prot_walk++ & 0x7);
+    dut->s_axi_awvalid = 1;
+    dut->s_axi_wdata   = data;
+    dut->s_axi_wstrb   = strb;
+    dut->s_axi_wvalid  = 1;
+    dut->s_axi_bready  = 1;
     for (int i = 0; i < 100; ++i) {
         tick();
-        if (dut->s_axil_awready && dut->s_axil_wready) break;
+        if (dut->s_axi_awready && dut->s_axi_wready) break;
     }
-    dut->s_axil_awvalid = 0;
-    dut->s_axil_wvalid  = 0;
+    dut->s_axi_awvalid = 0;
+    dut->s_axi_wvalid  = 0;
     for (int i = 0; i < 100; ++i) {
         tick();
-        if (dut->s_axil_bvalid) break;
+        if (dut->s_axi_bvalid) break;
     }
-    dut->s_axil_bready = 0;
+    dut->s_axi_bready = 0;
 }
 
-static uint32_t axil_read(uint8_t addr) {
+static uint32_t axi_read(uint8_t addr) {
     // BUG-09: the axil_regs slave asserts arready and rvalid on the same
     // cycle (single-cycle response, rready held high through the address
     // phase). The original two-loop polling waited an extra tick after
@@ -142,28 +142,28 @@ static uint32_t axil_read(uint8_t addr) {
     // Fix: sample rdata on the same cycle the address handshake completes.
     uint32_t out = 0;
     bool got = false;
-    dut->s_axil_araddr  = addr;
-    dut->s_axil_arprot  = (prot_walk++ & 0x7);
-    dut->s_axil_arvalid = 1;
-    dut->s_axil_rready  = 1;
+    dut->s_axi_araddr  = addr;
+    dut->s_axi_arprot  = (prot_walk++ & 0x7);
+    dut->s_axi_arvalid = 1;
+    dut->s_axi_rready  = 1;
     for (int i = 0; i < 100; ++i) {
         tick();
-        if (dut->s_axil_arready && dut->s_axil_rvalid) {
-            out = dut->s_axil_rdata;
+        if (dut->s_axi_arready && dut->s_axi_rvalid) {
+            out = dut->s_axi_rdata;
             got = true;
             break;
         }
     }
-    dut->s_axil_arvalid = 0;
+    dut->s_axi_arvalid = 0;
     if (!got) {
         // Decoupled-response slave: address handshake done, data still
         // pending. Poll for rvalid separately.
         for (int i = 0; i < 100; ++i) {
             tick();
-            if (dut->s_axil_rvalid) { out = dut->s_axil_rdata; break; }
+            if (dut->s_axi_rvalid) { out = dut->s_axi_rdata; break; }
         }
     }
-    dut->s_axil_rready = 0;
+    dut->s_axi_rready = 0;
     return out;
 }
 
@@ -177,10 +177,10 @@ int main(int argc, char** argv) {
     tfp->open("logs/vtpgz_axilite_top.vcd");
 
     dut->aresetn       = 0;
-    dut->s_axil_awaddr = 0; dut->s_axil_awvalid = 0;
-    dut->s_axil_wdata  = 0; dut->s_axil_wstrb   = 0; dut->s_axil_wvalid = 0;
-    dut->s_axil_bready = 0;
-    dut->s_axil_araddr = 0; dut->s_axil_arvalid = 0; dut->s_axil_rready = 0;
+    dut->s_axi_awaddr = 0; dut->s_axi_awvalid = 0;
+    dut->s_axi_wdata  = 0; dut->s_axi_wstrb   = 0; dut->s_axi_wvalid = 0;
+    dut->s_axi_bready = 0;
+    dut->s_axi_araddr = 0; dut->s_axi_arvalid = 0; dut->s_axi_rready = 0;
     dut->m_axis_tready = 1;
     dut->frame_sync_in = 0;
 
@@ -190,23 +190,23 @@ int main(int argc, char** argv) {
 
     // Malformed-but-accepted configuration should clamp internally instead
     // of underflowing counters or box arithmetic.
-    axil_write(VTPGZ_REG_CONTROL,      0);
-    axil_write(VTPGZ_REG_IMG_WIDTH,    0);
-    axil_write(VTPGZ_REG_IMG_HEIGHT,   0);
-    axil_write(VTPGZ_REG_FRAME_RATE,   0);
-    axil_write(VTPGZ_REG_BAR_WIDTH,    0);
-    axil_write(VTPGZ_REG_BOX_SIZE,     (512u << 16) | 512u);
-    axil_write(VTPGZ_REG_BOX_SPEED,    (512u << 16) | 512u);
-    axil_write(VTPGZ_REG_BOX_BORDER,   (255u << 24) | 0x0000FF00);
+    axi_write(VTPGZ_REG_CONTROL,      0);
+    axi_write(VTPGZ_REG_IMG_WIDTH,    0);
+    axi_write(VTPGZ_REG_IMG_HEIGHT,   0);
+    axi_write(VTPGZ_REG_FRAME_RATE,   0);
+    axi_write(VTPGZ_REG_BAR_WIDTH,    0);
+    axi_write(VTPGZ_REG_BOX_SIZE,     (512u << 16) | 512u);
+    axi_write(VTPGZ_REG_BOX_SPEED,    (512u << 16) | 512u);
+    axi_write(VTPGZ_REG_BOX_BORDER,   (255u << 24) | 0x0000FF00);
     set_axis_check(1, 1);
     long clamp_frames = frames;
-    axil_write(VTPGZ_REG_CONTROL,      1);
+    axi_write(VTPGZ_REG_CONTROL,      1);
     for (int i = 0; i < 1000 && frames < clamp_frames + 2; ++i) tick();
     if (frames < clamp_frames + 1) {
         fprintf(stderr, "FAIL: clamped zero-size config produced no frame\n");
         ++failures;
     }
-    axil_write(VTPGZ_REG_CONTROL,      0);
+    axi_write(VTPGZ_REG_CONTROL,      0);
     axis_check_en = false;
 
     // ============================================================
@@ -218,39 +218,39 @@ int main(int argc, char** argv) {
     const uint32_t patterns_w[] = {0xFFFFFFFFu, 0x00000000u, 0xAAAAAAAAu, 0x55555555u};
     for (int p = 0; p < 4; ++p) {
         for (size_t i = 0; i < sizeof(kAllRegs); ++i) {
-            axil_write(kAllRegs[i], patterns_w[p]);
-            (void)axil_read(kAllRegs[i]);
+            axi_write(kAllRegs[i], patterns_w[p]);
+            (void)axi_read(kAllRegs[i]);
         }
     }
     // Read RO regs (CORE_ID + VERSION + STATUS). The CORE_ID check is
     // load-bearing: it's the only place in the regression that asserts
-    // an axil_read return value. See no_commit/BUGS.md BUG-09.
+    // an axi_read return value. See no_commit/BUGS.md BUG-09.
     {
-        uint32_t core_id = axil_read(VTPGZ_REG_CORE_ID);
+        uint32_t core_id = axi_read(VTPGZ_REG_CORE_ID);
         if (core_id != 0x47505456u) {
             fprintf(stderr, "FAIL: CORE_ID = 0x%08X (expected 0x47505456 'VTPG')\n",
                     core_id);
             return 1;
         }
     }
-    (void)axil_read(VTPGZ_REG_VERSION);
-    (void)axil_read(VTPGZ_REG_STATUS);
+    (void)axi_read(VTPGZ_REG_VERSION);
+    (void)axi_read(VTPGZ_REG_STATUS);
     // Partial-strobe writes (toggle wstrb bits)
-    axil_write(VTPGZ_REG_SOLID_COLOR, 0x11223344);
-    axil_write(VTPGZ_REG_SOLID_COLOR, 0xDEADBEEF, 0x0);
-    expect_eq("WSTRB none", axil_read(VTPGZ_REG_SOLID_COLOR), 0x11223344u);
-    axil_write(VTPGZ_REG_SOLID_COLOR, 0xAAAABEEF, 0x1);
-    expect_eq("WSTRB byte0", axil_read(VTPGZ_REG_SOLID_COLOR), 0x112233EFu);
-    axil_write(VTPGZ_REG_SOLID_COLOR, 0xAAAA77AA, 0x2);
-    expect_eq("WSTRB byte1", axil_read(VTPGZ_REG_SOLID_COLOR), 0x112277EFu);
-    axil_write(VTPGZ_REG_SOLID_COLOR, 0xAA66AAAA, 0x4);
-    expect_eq("WSTRB byte2", axil_read(VTPGZ_REG_SOLID_COLOR), 0x116677EFu);
-    axil_write(VTPGZ_REG_SOLID_COLOR, 0x55AAAAAA, 0x8);
-    expect_eq("WSTRB byte3", axil_read(VTPGZ_REG_SOLID_COLOR), 0x556677EFu);
+    axi_write(VTPGZ_REG_SOLID_COLOR, 0x11223344);
+    axi_write(VTPGZ_REG_SOLID_COLOR, 0xDEADBEEF, 0x0);
+    expect_eq("WSTRB none", axi_read(VTPGZ_REG_SOLID_COLOR), 0x11223344u);
+    axi_write(VTPGZ_REG_SOLID_COLOR, 0xAAAABEEF, 0x1);
+    expect_eq("WSTRB byte0", axi_read(VTPGZ_REG_SOLID_COLOR), 0x112233EFu);
+    axi_write(VTPGZ_REG_SOLID_COLOR, 0xAAAA77AA, 0x2);
+    expect_eq("WSTRB byte1", axi_read(VTPGZ_REG_SOLID_COLOR), 0x112277EFu);
+    axi_write(VTPGZ_REG_SOLID_COLOR, 0xAA66AAAA, 0x4);
+    expect_eq("WSTRB byte2", axi_read(VTPGZ_REG_SOLID_COLOR), 0x116677EFu);
+    axi_write(VTPGZ_REG_SOLID_COLOR, 0x55AAAAAA, 0x8);
+    expect_eq("WSTRB byte3", axi_read(VTPGZ_REG_SOLID_COLOR), 0x556677EFu);
 
     // Read an unmapped address (default branch)
-    (void)axil_read(0xFC);
-    axil_write(0xFC, 0xDEADBEEF);
+    (void)axi_read(0xFC);
+    axi_write(0xFC, 0xDEADBEEF);
 
     // ============================================================
     // Phase 2: pattern x format x bpp sweep on a moderately large frame
@@ -258,29 +258,29 @@ int main(int argc, char** argv) {
     //   gives moving box room to bounce.
     // ============================================================
     printf("== Phase 2: pattern sweep ==\n");
-    axil_write(VTPGZ_REG_CONTROL,      0);
-    axil_write(VTPGZ_REG_IMG_WIDTH,    256);
-    axil_write(VTPGZ_REG_IMG_HEIGHT,   128);
-    axil_write(VTPGZ_REG_BAR_WIDTH,    32);    // 256/8
-    axil_write(VTPGZ_REG_HG_STEP,      16);    // ~0xFFF/255
-    axil_write(VTPGZ_REG_VG_STEP,      32);    // ~0xFFF/127
-    axil_write(VTPGZ_REG_CHECKER_SIZE, 16);
-    axil_write(VTPGZ_REG_GRID_SPACING, 24);
-    axil_write(VTPGZ_REG_GRID_COLOR,   0x00FFFF00);
-    axil_write(VTPGZ_REG_SOLID_COLOR,  0x00FF8040);
-    axil_write(VTPGZ_REG_BOX_COLOR,    0x00FF0000);
-    axil_write(VTPGZ_REG_BOX_SIZE,     (16u << 16) | 16u);
-    axil_write(VTPGZ_REG_BOX_SPEED,    (1u << 16)  | 1u);
-    axil_write(VTPGZ_REG_FRAME_RATE,   100);
+    axi_write(VTPGZ_REG_CONTROL,      0);
+    axi_write(VTPGZ_REG_IMG_WIDTH,    256);
+    axi_write(VTPGZ_REG_IMG_HEIGHT,   128);
+    axi_write(VTPGZ_REG_BAR_WIDTH,    32);    // 256/8
+    axi_write(VTPGZ_REG_HG_STEP,      16);    // ~0xFFF/255
+    axi_write(VTPGZ_REG_VG_STEP,      32);    // ~0xFFF/127
+    axi_write(VTPGZ_REG_CHECKER_SIZE, 16);
+    axi_write(VTPGZ_REG_GRID_SPACING, 24);
+    axi_write(VTPGZ_REG_GRID_COLOR,   0x00FFFF00);
+    axi_write(VTPGZ_REG_SOLID_COLOR,  0x00FF8040);
+    axi_write(VTPGZ_REG_BOX_COLOR,    0x00FF0000);
+    axi_write(VTPGZ_REG_BOX_SIZE,     (16u << 16) | 16u);
+    axi_write(VTPGZ_REG_BOX_SPEED,    (1u << 16)  | 1u);
+    axi_write(VTPGZ_REG_FRAME_RATE,   100);
     set_axis_check(256, 128);
 
     // OUTPUT_MODE / BPC are now build-time. We sweep just the patterns at
     // runtime; the regression Makefile builds the binary multiple times
     // for the (mode, bpc) coverage.
     for (int pat = 0; pat <= 8; ++pat) {
-        axil_write(VTPGZ_REG_CONTROL,      0);
-        axil_write(VTPGZ_REG_PATTERN_SEL,  pat);
-        axil_write(VTPGZ_REG_CONTROL,      1);
+        axi_write(VTPGZ_REG_CONTROL,      0);
+        axi_write(VTPGZ_REG_PATTERN_SEL,  pat);
+        axi_write(VTPGZ_REG_CONTROL,      1);
         long fstart = frames;
         for (int i = 0; i < 60000 && frames < fstart + 1; ++i) tick();
     }
@@ -290,12 +290,12 @@ int main(int argc, char** argv) {
     // Phase 3: long moving-box run to hit bounce branches in BOTH directions
     // ============================================================
     printf("== Phase 3: moving box bounce ==\n");
-    axil_write(VTPGZ_REG_CONTROL,      0);
-    axil_write(VTPGZ_REG_PATTERN_SEL,  0);   // colorbar (box overlays on top)
-    axil_write(VTPGZ_REG_BOX_SIZE,     (32u << 16) | 32u);
-    axil_write(VTPGZ_REG_BOX_SPEED,    (8u << 16)  | 8u);
-    axil_write(VTPGZ_REG_BOX_BORDER,   (2u << 24) | 0x00FFFFFF); // 2px white border
-    axil_write(VTPGZ_REG_CONTROL,      1);
+    axi_write(VTPGZ_REG_CONTROL,      0);
+    axi_write(VTPGZ_REG_PATTERN_SEL,  0);   // colorbar (box overlays on top)
+    axi_write(VTPGZ_REG_BOX_SIZE,     (32u << 16) | 32u);
+    axi_write(VTPGZ_REG_BOX_SPEED,    (8u << 16)  | 8u);
+    axi_write(VTPGZ_REG_BOX_BORDER,   (2u << 24) | 0x00FFFFFF); // 2px white border
+    axi_write(VTPGZ_REG_CONTROL,      1);
     long bf = frames;
     for (int i = 0; i < 4000000 && frames < bf + 200; ++i) tick();
     printf("box frames=%ld\n", frames - bf);
@@ -322,12 +322,12 @@ int main(int argc, char** argv) {
     //   (d) a normal periodic vsync at ~the same rate as the internal divider
     // ============================================================
     printf("== Phase 5: external sync ==\n");
-    axil_write(VTPGZ_REG_CONTROL, 0);
+    axi_write(VTPGZ_REG_CONTROL, 0);
     // Wait for any leftover frame from Phase 4 to finish (the FSM only
     // returns to idle on end_of_frame; clearing cfg_enable mid-frame
     // doesn't interrupt the frame in flight).
     for (int i = 0; i < 50000; ++i) tick();
-    axil_write(VTPGZ_REG_CONTROL, 0x5);  // enable + ext_sync
+    axi_write(VTPGZ_REG_CONTROL, 0x5);  // enable + ext_sync
 
     long fc_before;
 
@@ -368,17 +368,17 @@ int main(int argc, char** argv) {
     // Phase 6: software frame sync (CONTROL[1])
     // ============================================================
     printf("== Phase 6: sw fsync ==\n");
-    axil_write(VTPGZ_REG_CONTROL, 0x3);  // enable + sw_fsync (held)
+    axi_write(VTPGZ_REG_CONTROL, 0x3);  // enable + sw_fsync (held)
     for (int i = 0; i < 50000; ++i) tick();
-    axil_write(VTPGZ_REG_CONTROL, 0x1);  // back to internal sync
+    axi_write(VTPGZ_REG_CONTROL, 0x1);  // back to internal sync
     for (int i = 0; i < 5000; ++i) tick();
 
     // ============================================================
     // Phase 7: read-back STATUS while busy, full register read sweep
     // ============================================================
     printf("== Phase 7: status read ==\n");
-    for (int i = 0; i < 20; ++i) (void)axil_read(VTPGZ_REG_STATUS);
-    for (size_t i = 0; i < sizeof(kAllRegs); ++i) (void)axil_read(kAllRegs[i]);
+    for (int i = 0; i < 20; ++i) (void)axi_read(VTPGZ_REG_STATUS);
+    for (size_t i = 0; i < sizeof(kAllRegs); ++i) (void)axi_read(kAllRegs[i]);
 
     printf("RESULT: pixels=%ld lines=%ld frames=%ld\n", pixels, lines, frames);
     if (frames >= 100 && lines >= 1000 && pixels >= 100000 && failures == 0)

@@ -22,29 +22,29 @@ module vtpgz_axil_regs #(
     input  wire        aresetn,
 
     // AXI4-Lite slave
-    input  wire [7:0]  s_axil_awaddr,
-    input  wire [2:0]  s_axil_awprot,
-    input  wire        s_axil_awvalid,
-    output reg         s_axil_awready,
+    input  wire [7:0]  s_axi_awaddr,
+    input  wire [2:0]  s_axi_awprot,
+    input  wire        s_axi_awvalid,
+    output reg         s_axi_awready,
 
-    input  wire [31:0] s_axil_wdata,
-    input  wire [3:0]  s_axil_wstrb,
-    input  wire        s_axil_wvalid,
-    output reg         s_axil_wready,
+    input  wire [31:0] s_axi_wdata,
+    input  wire [3:0]  s_axi_wstrb,
+    input  wire        s_axi_wvalid,
+    output reg         s_axi_wready,
 
-    /*verilator coverage_off*/ output reg  [1:0]  s_axil_bresp, /*verilator coverage_on*/
-    output reg         s_axil_bvalid,
-    input  wire        s_axil_bready,
+    /*verilator coverage_off*/ output reg  [1:0]  s_axi_bresp, /*verilator coverage_on*/
+    output reg         s_axi_bvalid,
+    input  wire        s_axi_bready,
 
-    input  wire [7:0]  s_axil_araddr,
-    input  wire [2:0]  s_axil_arprot,
-    input  wire        s_axil_arvalid,
-    output reg         s_axil_arready,
+    input  wire [7:0]  s_axi_araddr,
+    input  wire [2:0]  s_axi_arprot,
+    input  wire        s_axi_arvalid,
+    output reg         s_axi_arready,
 
-    output reg  [31:0] s_axil_rdata,
-    /*verilator coverage_off*/ output reg  [1:0]  s_axil_rresp, /*verilator coverage_on*/
-    output reg         s_axil_rvalid,
-    input  wire        s_axil_rready,
+    output reg  [31:0] s_axi_rdata,
+    /*verilator coverage_off*/ output reg  [1:0]  s_axi_rresp, /*verilator coverage_on*/
+    output reg         s_axi_rvalid,
+    input  wire        s_axi_rready,
 
     // Status inputs from datapath
     input  wire        sts_busy,
@@ -99,7 +99,7 @@ module vtpgz_axil_regs #(
     reg [31:0] wdata_q;
     reg [3:0]  wstrb_q;
 
-    wire do_write = aw_captured && w_captured && !s_axil_bvalid;
+    wire do_write = aw_captured && w_captured && !s_axi_bvalid;
 
     function [31:0] apply_wstrb;
         input [31:0] old_value;
@@ -115,10 +115,10 @@ module vtpgz_axil_regs #(
 
     always @(posedge aclk) begin
         if (!aresetn) begin
-            s_axil_awready <= 1'b0;
-            s_axil_wready  <= 1'b0;
-            s_axil_bvalid  <= 1'b0;
-            s_axil_bresp   <= 2'b00;
+            s_axi_awready <= 1'b0;
+            s_axi_wready  <= 1'b0;
+            s_axi_bvalid  <= 1'b0;
+            s_axi_bresp   <= 2'b00;
             aw_captured    <= 1'b0;
             w_captured     <= 1'b0;
             awaddr_q       <= 8'h00;
@@ -146,22 +146,22 @@ module vtpgz_axil_regs #(
             reg_box_border   <= 32'h0;  // border_width=0, no border
         end else begin
             // address handshake
-            if (!aw_captured && s_axil_awvalid) begin
+            if (!aw_captured && s_axi_awvalid) begin
                 aw_captured    <= 1'b1;
-                awaddr_q       <= s_axil_awaddr;
-                s_axil_awready <= 1'b1;
+                awaddr_q       <= s_axi_awaddr;
+                s_axi_awready <= 1'b1;
             end else begin
-                s_axil_awready <= 1'b0;
+                s_axi_awready <= 1'b0;
             end
 
             // data handshake
-            if (!w_captured && s_axil_wvalid) begin
+            if (!w_captured && s_axi_wvalid) begin
                 w_captured    <= 1'b1;
-                wdata_q       <= s_axil_wdata;
-                wstrb_q       <= s_axil_wstrb;
-                s_axil_wready <= 1'b1;
+                wdata_q       <= s_axi_wdata;
+                wstrb_q       <= s_axi_wstrb;
+                s_axi_wready <= 1'b1;
             end else begin
-                s_axil_wready <= 1'b0;
+                s_axi_wready <= 1'b0;
             end
 
             // commit
@@ -186,12 +186,12 @@ module vtpgz_axil_regs #(
                     `VTPGZ_REG_BOX_BORDER   : reg_box_border   <= apply_wstrb(reg_box_border,   wdata_q, wstrb_q);
                     default               : ;
                 endcase
-                s_axil_bvalid <= 1'b1;
-                s_axil_bresp  <= 2'b00;
+                s_axi_bvalid <= 1'b1;
+                s_axi_bresp  <= 2'b00;
                 aw_captured   <= 1'b0;
                 w_captured    <= 1'b0;
-            end else if (s_axil_bvalid && s_axil_bready) begin
-                s_axil_bvalid <= 1'b0;
+            end else if (s_axi_bvalid && s_axi_bready) begin
+                s_axi_bvalid <= 1'b0;
             end
         end
     end
@@ -199,24 +199,24 @@ module vtpgz_axil_regs #(
     // ---------------- read FSM ----------------
     always @(posedge aclk) begin
         if (!aresetn) begin
-            s_axil_arready <= 1'b0;
-            s_axil_rvalid  <= 1'b0;
-            s_axil_rresp   <= 2'b00;
-            s_axil_rdata   <= 32'h0;
+            s_axi_arready <= 1'b0;
+            s_axi_rvalid  <= 1'b0;
+            s_axi_rresp   <= 2'b00;
+            s_axi_rdata   <= 32'h0;
         end else begin
-            if (!s_axil_arready && s_axil_arvalid && !s_axil_rvalid) begin
-                s_axil_arready <= 1'b1;
-                s_axil_rvalid  <= 1'b1;
-                s_axil_rresp   <= 2'b00;
-                case (s_axil_araddr)
-                    `VTPGZ_REG_CORE_ID      : s_axil_rdata <= `VTPGZ_CORE_ID_MAGIC;
-                    `VTPGZ_REG_VERSION      : s_axil_rdata <= {`VTPGZ_VERSION_MAJOR, `VTPGZ_VERSION_MINOR, `VTPGZ_VERSION_PATCH};
-                    `VTPGZ_REG_CONTROL      : s_axil_rdata <= reg_control;
-                    `VTPGZ_REG_STATUS       : s_axil_rdata <= {16'h0, sts_frame_count, 7'h0, sts_busy};
-                    `VTPGZ_REG_IMG_WIDTH    : s_axil_rdata <= reg_img_width;
-                    `VTPGZ_REG_IMG_HEIGHT   : s_axil_rdata <= reg_img_height;
-                    `VTPGZ_REG_PATTERN_SEL  : s_axil_rdata <= reg_pattern_sel;
-                    `VTPGZ_REG_COLOR_FORMAT : s_axil_rdata <= {
+            if (!s_axi_arready && s_axi_arvalid && !s_axi_rvalid) begin
+                s_axi_arready <= 1'b1;
+                s_axi_rvalid  <= 1'b1;
+                s_axi_rresp   <= 2'b00;
+                case (s_axi_araddr)
+                    `VTPGZ_REG_CORE_ID      : s_axi_rdata <= `VTPGZ_CORE_ID_MAGIC;
+                    `VTPGZ_REG_VERSION      : s_axi_rdata <= {`VTPGZ_VERSION_MAJOR, `VTPGZ_VERSION_MINOR, `VTPGZ_VERSION_PATCH};
+                    `VTPGZ_REG_CONTROL      : s_axi_rdata <= reg_control;
+                    `VTPGZ_REG_STATUS       : s_axi_rdata <= {16'h0, sts_frame_count, 7'h0, sts_busy};
+                    `VTPGZ_REG_IMG_WIDTH    : s_axi_rdata <= reg_img_width;
+                    `VTPGZ_REG_IMG_HEIGHT   : s_axi_rdata <= reg_img_height;
+                    `VTPGZ_REG_PATTERN_SEL  : s_axi_rdata <= reg_pattern_sel;
+                    `VTPGZ_REG_COLOR_FORMAT : s_axi_rdata <= {
                         TDATA_WIDTH[15:0],
                         BPC[7:0],
                         1'b0,           // [7]    reserved
@@ -225,24 +225,24 @@ module vtpgz_axil_regs #(
                         YUV_SUBSAMPLE[0], // [2]
                         OUTPUT_MODE[1:0]  // [1:0]
                     };
-                    `VTPGZ_REG_SOLID_COLOR  : s_axil_rdata <= reg_solid_color;
-                    `VTPGZ_REG_BOX_COLOR    : s_axil_rdata <= reg_box_color;
-                    `VTPGZ_REG_BOX_SIZE     : s_axil_rdata <= reg_box_size;
-                    `VTPGZ_REG_BOX_SPEED    : s_axil_rdata <= reg_box_speed;
-                    `VTPGZ_REG_GRID_SPACING : s_axil_rdata <= reg_grid_spacing;
-                    `VTPGZ_REG_GRID_COLOR   : s_axil_rdata <= reg_grid_color;
-                    `VTPGZ_REG_CHECKER_SIZE : s_axil_rdata <= reg_checker_size;
-                    `VTPGZ_REG_FRAME_RATE   : s_axil_rdata <= reg_frame_rate;
-                    `VTPGZ_REG_BAR_WIDTH    : s_axil_rdata <= reg_bar_width;
-                    `VTPGZ_REG_HG_STEP      : s_axil_rdata <= reg_hg_step;
-                    `VTPGZ_REG_VG_STEP      : s_axil_rdata <= reg_vg_step;
-                    `VTPGZ_REG_BOX_BORDER   : s_axil_rdata <= reg_box_border;
-                    default               : s_axil_rdata <= 32'h0;
+                    `VTPGZ_REG_SOLID_COLOR  : s_axi_rdata <= reg_solid_color;
+                    `VTPGZ_REG_BOX_COLOR    : s_axi_rdata <= reg_box_color;
+                    `VTPGZ_REG_BOX_SIZE     : s_axi_rdata <= reg_box_size;
+                    `VTPGZ_REG_BOX_SPEED    : s_axi_rdata <= reg_box_speed;
+                    `VTPGZ_REG_GRID_SPACING : s_axi_rdata <= reg_grid_spacing;
+                    `VTPGZ_REG_GRID_COLOR   : s_axi_rdata <= reg_grid_color;
+                    `VTPGZ_REG_CHECKER_SIZE : s_axi_rdata <= reg_checker_size;
+                    `VTPGZ_REG_FRAME_RATE   : s_axi_rdata <= reg_frame_rate;
+                    `VTPGZ_REG_BAR_WIDTH    : s_axi_rdata <= reg_bar_width;
+                    `VTPGZ_REG_HG_STEP      : s_axi_rdata <= reg_hg_step;
+                    `VTPGZ_REG_VG_STEP      : s_axi_rdata <= reg_vg_step;
+                    `VTPGZ_REG_BOX_BORDER   : s_axi_rdata <= reg_box_border;
+                    default               : s_axi_rdata <= 32'h0;
                 endcase
             end else begin
-                s_axil_arready <= 1'b0;
-                if (s_axil_rvalid && s_axil_rready)
-                    s_axil_rvalid <= 1'b0;
+                s_axi_arready <= 1'b0;
+                if (s_axi_rvalid && s_axi_rready)
+                    s_axi_rvalid <= 1'b0;
             end
         end
     end

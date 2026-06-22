@@ -145,20 +145,20 @@ module demo_top (
     wire aw_target_known = aw_active || aw_accept;
 
     // ---------------- VTPGZ region (axi4 -> axil shim -> vtpgz) ----------------
-    wire [7:0]  vtpgz_axil_awaddr;
-    wire        vtpgz_axil_awvalid, vtpgz_axil_awready;
-    wire [2:0]  vtpgz_axil_awprot;
-    wire [31:0] vtpgz_axil_wdata;
-    wire [3:0]  vtpgz_axil_wstrb;
-    wire        vtpgz_axil_wvalid, vtpgz_axil_wready;
-    wire [1:0]  vtpgz_axil_bresp;
-    wire        vtpgz_axil_bvalid, vtpgz_axil_bready;
-    wire [7:0]  vtpgz_axil_araddr;
-    wire        vtpgz_axil_arvalid, vtpgz_axil_arready;
-    wire [2:0]  vtpgz_axil_arprot;
-    wire [31:0] vtpgz_axil_rdata;
-    wire [1:0]  vtpgz_axil_rresp;
-    wire        vtpgz_axil_rvalid, vtpgz_axil_rready;
+    wire [7:0]  vtpgz_axi_awaddr;
+    wire        vtpgz_axi_awvalid, vtpgz_axi_awready;
+    wire [2:0]  vtpgz_axi_awprot;
+    wire [31:0] vtpgz_axi_wdata;
+    wire [3:0]  vtpgz_axi_wstrb;
+    wire        vtpgz_axi_wvalid, vtpgz_axi_wready;
+    wire [1:0]  vtpgz_axi_bresp;
+    wire        vtpgz_axi_bvalid, vtpgz_axi_bready;
+    wire [7:0]  vtpgz_axi_araddr;
+    wire        vtpgz_axi_arvalid, vtpgz_axi_arready;
+    wire [2:0]  vtpgz_axi_arprot;
+    wire [31:0] vtpgz_axi_rdata;
+    wire [1:0]  vtpgz_axi_rresp;
+    wire        vtpgz_axi_rvalid, vtpgz_axi_rready;
 
     // Shim AXI4 outputs (from VTPGZ side)
     wire        shim_awready, shim_wready;
@@ -200,25 +200,25 @@ module demo_top (
         .s_rlast   (shim_rlast),
         .s_rready  (br_rready && (ar_target == 1'b0)),
 
-        .m_awaddr  (vtpgz_axil_awaddr),
-        .m_awprot  (vtpgz_axil_awprot),
-        .m_awvalid (vtpgz_axil_awvalid),
-        .m_awready (vtpgz_axil_awready),
-        .m_wdata   (vtpgz_axil_wdata),
-        .m_wstrb   (vtpgz_axil_wstrb),
-        .m_wvalid  (vtpgz_axil_wvalid),
-        .m_wready  (vtpgz_axil_wready),
-        .m_bresp   (vtpgz_axil_bresp),
-        .m_bvalid  (vtpgz_axil_bvalid),
-        .m_bready  (vtpgz_axil_bready),
-        .m_araddr  (vtpgz_axil_araddr),
-        .m_arprot  (vtpgz_axil_arprot),
-        .m_arvalid (vtpgz_axil_arvalid),
-        .m_arready (vtpgz_axil_arready),
-        .m_rdata   (vtpgz_axil_rdata),
-        .m_rresp   (vtpgz_axil_rresp),
-        .m_rvalid  (vtpgz_axil_rvalid),
-        .m_rready  (vtpgz_axil_rready)
+        .m_awaddr  (vtpgz_axi_awaddr),
+        .m_awprot  (vtpgz_axi_awprot),
+        .m_awvalid (vtpgz_axi_awvalid),
+        .m_awready (vtpgz_axi_awready),
+        .m_wdata   (vtpgz_axi_wdata),
+        .m_wstrb   (vtpgz_axi_wstrb),
+        .m_wvalid  (vtpgz_axi_wvalid),
+        .m_wready  (vtpgz_axi_wready),
+        .m_bresp   (vtpgz_axi_bresp),
+        .m_bvalid  (vtpgz_axi_bvalid),
+        .m_bready  (vtpgz_axi_bready),
+        .m_araddr  (vtpgz_axi_araddr),
+        .m_arprot  (vtpgz_axi_arprot),
+        .m_arvalid (vtpgz_axi_arvalid),
+        .m_arready (vtpgz_axi_arready),
+        .m_rdata   (vtpgz_axi_rdata),
+        .m_rresp   (vtpgz_axi_rresp),
+        .m_rvalid  (vtpgz_axi_rvalid),
+        .m_rready  (vtpgz_axi_rready)
     );
 
     // ---------------- VTPGZ core ----------------
@@ -254,25 +254,25 @@ module demo_top (
     ) u_vtpgz (
         .aclk          (clk),
         .aresetn       (rst_n),
-        .s_axil_awaddr (vtpgz_axil_awaddr),
-        .s_axil_awprot (vtpgz_axil_awprot),
-        .s_axil_awvalid(vtpgz_axil_awvalid),
-        .s_axil_awready(vtpgz_axil_awready),
-        .s_axil_wdata  (vtpgz_axil_wdata),
-        .s_axil_wstrb  (vtpgz_axil_wstrb),
-        .s_axil_wvalid (vtpgz_axil_wvalid),
-        .s_axil_wready (vtpgz_axil_wready),
-        .s_axil_bresp  (vtpgz_axil_bresp),
-        .s_axil_bvalid (vtpgz_axil_bvalid),
-        .s_axil_bready (vtpgz_axil_bready),
-        .s_axil_araddr (vtpgz_axil_araddr),
-        .s_axil_arprot (vtpgz_axil_arprot),
-        .s_axil_arvalid(vtpgz_axil_arvalid),
-        .s_axil_arready(vtpgz_axil_arready),
-        .s_axil_rdata  (vtpgz_axil_rdata),
-        .s_axil_rresp  (vtpgz_axil_rresp),
-        .s_axil_rvalid (vtpgz_axil_rvalid),
-        .s_axil_rready (vtpgz_axil_rready),
+        .s_axi_awaddr (vtpgz_axi_awaddr),
+        .s_axi_awprot (vtpgz_axi_awprot),
+        .s_axi_awvalid(vtpgz_axi_awvalid),
+        .s_axi_awready(vtpgz_axi_awready),
+        .s_axi_wdata  (vtpgz_axi_wdata),
+        .s_axi_wstrb  (vtpgz_axi_wstrb),
+        .s_axi_wvalid (vtpgz_axi_wvalid),
+        .s_axi_wready (vtpgz_axi_wready),
+        .s_axi_bresp  (vtpgz_axi_bresp),
+        .s_axi_bvalid (vtpgz_axi_bvalid),
+        .s_axi_bready (vtpgz_axi_bready),
+        .s_axi_araddr (vtpgz_axi_araddr),
+        .s_axi_arprot (vtpgz_axi_arprot),
+        .s_axi_arvalid(vtpgz_axi_arvalid),
+        .s_axi_arready(vtpgz_axi_arready),
+        .s_axi_rdata  (vtpgz_axi_rdata),
+        .s_axi_rresp  (vtpgz_axi_rresp),
+        .s_axi_rvalid (vtpgz_axi_rvalid),
+        .s_axi_rready (vtpgz_axi_rready),
         .m_axis_tdata  (vtpgz_axis_tdata),
         .m_axis_tvalid (vtpgz_axis_tvalid),
         .m_axis_tready (vtpgz_axis_tready),

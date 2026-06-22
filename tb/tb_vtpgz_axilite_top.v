@@ -56,25 +56,25 @@ module tb_vtpgz_axilite_top;
     ) dut (
         .aclk          (aclk),
         .aresetn       (aresetn),
-        .s_axil_awaddr (awaddr),
-        .s_axil_awprot (3'b000),
-        .s_axil_awvalid(awvalid),
-        .s_axil_awready(awready),
-        .s_axil_wdata  (wdata),
-        .s_axil_wstrb  (wstrb),
-        .s_axil_wvalid (wvalid),
-        .s_axil_wready (wready),
-        .s_axil_bresp  (bresp),
-        .s_axil_bvalid (bvalid),
-        .s_axil_bready (bready),
-        .s_axil_araddr (araddr),
-        .s_axil_arprot (3'b000),
-        .s_axil_arvalid(arvalid),
-        .s_axil_arready(arready),
-        .s_axil_rdata  (rdata),
-        .s_axil_rresp  (rresp),
-        .s_axil_rvalid (rvalid),
-        .s_axil_rready (rready),
+        .s_axi_awaddr (awaddr),
+        .s_axi_awprot (3'b000),
+        .s_axi_awvalid(awvalid),
+        .s_axi_awready(awready),
+        .s_axi_wdata  (wdata),
+        .s_axi_wstrb  (wstrb),
+        .s_axi_wvalid (wvalid),
+        .s_axi_wready (wready),
+        .s_axi_bresp  (bresp),
+        .s_axi_bvalid (bvalid),
+        .s_axi_bready (bready),
+        .s_axi_araddr (araddr),
+        .s_axi_arprot (3'b000),
+        .s_axi_arvalid(arvalid),
+        .s_axi_arready(arready),
+        .s_axi_rdata  (rdata),
+        .s_axi_rresp  (rresp),
+        .s_axi_rvalid (rvalid),
+        .s_axi_rready (rready),
         .m_axis_tdata  (m_tdata),
         .m_axis_tvalid (m_tvalid),
         .m_axis_tready (m_tready),
@@ -88,7 +88,7 @@ module tb_vtpgz_axilite_top;
     always #5 aclk = ~aclk;
 
     // ---------------- AXI-Lite write task ----------------
-    task axil_write;
+    task axi_write;
         input [7:0]  addr;
         input [31:0] data;
         begin
@@ -207,13 +207,13 @@ module tb_vtpgz_axilite_top;
         repeat (5) @(posedge aclk);
 
         // Configure: 32x16 frame, color bars, RGB 8bpp, internal sync fast
-        axil_write(`VTPGZ_REG_IMG_WIDTH,    TB_IMG_W);
-        axil_write(`VTPGZ_REG_IMG_HEIGHT,   TB_IMG_H);
-        axil_write(`VTPGZ_REG_PATTERN_SEL,  {28'h0, `VTPGZ_PAT_COLORBAR});
+        axi_write(`VTPGZ_REG_IMG_WIDTH,    TB_IMG_W);
+        axi_write(`VTPGZ_REG_IMG_HEIGHT,   TB_IMG_H);
+        axi_write(`VTPGZ_REG_PATTERN_SEL,  {28'h0, `VTPGZ_PAT_COLORBAR});
         // OUTPUT_MODE / BPC are build-time params now (default RGB 8bpc).
-        axil_write(`VTPGZ_REG_FRAME_RATE,   32'd200);  // ~200 cycles/frame
+        axi_write(`VTPGZ_REG_FRAME_RATE,   32'd200);  // ~200 cycles/frame
         // Enable, internal sync
-        axil_write(`VTPGZ_REG_CONTROL,      32'h0000_0001);
+        axi_write(`VTPGZ_REG_CONTROL,      32'h0000_0001);
 
         // Run until two exact frames have completed.
         wait (completed_frames >= 2);
