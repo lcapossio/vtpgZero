@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  sim:
+    name: Verilator simulation
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Verilator
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends verilator g++ python3
+
+      - name: Lint
+        run: python sim/run_sim.py lint
+
+      - name: Regression (coverage + model gate, RGB 8bpc)
+        run: python sim/run_sim.py regression
+
+      - name: All modes (model ↔ sim byte-exact, 20 configs)
+        run: python sim/run_sim.py all_modes

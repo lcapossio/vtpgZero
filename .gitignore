@@ -1,0 +1,29 @@
+sim/obj_dir/
+sim/obj_capture/
+sim/obj_capture_*/
+sim/obj_seq/
+sim/logs/
+*.vcd
+*.vvp
+synth/results/
+synth/run_matrix.log
+hw/arty_a7_100t/build/
+hw/arty_a7_100t/build.log
+hw/kv260/build/
+.Xil/
+vivado*.jou
+vivado*.log
+no_commit/
+__pycache__/
+*.pyc
+dfx_runtime.txt
+
+# Claude Code session metadata
+.claude/
+
+# Vivado scratch artifacts that land at the repo root
+retry_open_*.log
+
+# Ad-hoc JTAG diagnostic helpers (not part of the documented flow)
+hw/kv260/scripts/dump_*.tcl
+hw/kv260/scripts/check_patterns.tcl
