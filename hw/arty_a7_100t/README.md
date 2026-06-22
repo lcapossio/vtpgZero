@@ -25,7 +25,7 @@ test pattern generator on the Digilent Arty A7-100T.
                        |
                   AXI4 master  (32-bit)
                        |
-                  axil_xbar  (addr[16] decode)
+                  inline addr[16] decode
                   /            \
               addr[16]=0    addr[16]=1
                   |            |
