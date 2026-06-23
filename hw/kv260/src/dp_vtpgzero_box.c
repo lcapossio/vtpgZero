@@ -404,8 +404,8 @@ void dp_run(void) {
     unsigned vsync_lock = 1;  /* sw_fsync pulse on every DP vsync = no tear */
 
     u1s("=== Running. UART commands (115200 8N1):\n");
-    u1s("  0..8  pattern (0=bars 1=hgrad 2=vgrad 3=checker 4=solid\n");
-    u1s("        6=grid 7=ramp 8=noise; 5 reserved)\n");
+    u1s("  0..9  pattern (0=bars 1=hgrad 2=vgrad 3=checker 4=solid\n");
+    u1s("        6=grid 7=ramp 8=noise 9=image; 5 reserved)\n");
     u1s("  +/-   box bigger/smaller     f/s  box faster/slower\n");
     u1s("  b     cycle box color        c    solid color (PATTERN=4)\n");
     u1s("  g/G   grid spacing -/+       k/K  checker size -/+\n");
@@ -442,7 +442,7 @@ void dp_run(void) {
 
         int ch = u1_rx();
         if (ch >= 0) {
-            if (ch >= '0' && ch <= '8' && ch != '5') {
+            if (ch >= '0' && ch <= '9' && ch != '5') {
                 WR(VTPG_BASE + VTPG_REG_PATTERN_SEL, (unsigned)(ch - '0'));
                 u1s("pattern="); u1((char)ch); u1s("\n");
             } else if (ch == '+') {
@@ -504,7 +504,7 @@ void dp_run(void) {
                    vsync_lock ? 100000000u : 1666666u);
                 u1s(vsync_lock ? "vsync_lock=on\n" : "vsync_lock=off\n");
             } else if (ch == '?' || ch == 'h') {
-                u1s("keys: 0..8 pattern | +/- size | f/s speed | b box color |\n"
+                u1s("keys: 0..9 pattern | +/- size | f/s speed | b box color |\n"
                     "      c solid color | g/G grid | k/K checker | e/d enable\n");
             }
         }
