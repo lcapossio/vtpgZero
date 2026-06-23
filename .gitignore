@@ -26,4 +26,4 @@ retry_open_*.log
 
 # Ad-hoc JTAG diagnostic helpers (not part of the documented flow)
 hw/kv260/scripts/dump_*.tcl
-hw/kv260/scripts/check_patterns.tcl
+hw/kv260/scripts/check_*.tcl

@@ -81,7 +81,7 @@ standard AXI4-Stream with backpressure (`tready`), `tlast` = end of line, and
 | 0x0C   | STATUS         | **RO** `[0]` busy, `[15:8]` frame_count              |
 | 0x10   | IMG_WIDTH      | active pixels per line                                |
 | 0x14   | IMG_HEIGHT     | active lines per frame                                |
-| 0x18   | PATTERN_SEL    | 0=colorbar 1=hgrad 2=vgrad 3=checker 4=solid 5=(reserved) 6=grid 7=ramp 8=noise |
+| 0x18   | PATTERN_SEL    | 0=colorbar 1=hgrad 2=vgrad 3=checker 4=solid 5=(reserved) 6=grid 7=ramp 8=noise 9=image |
 | 0x1C   | COLOR_FORMAT   | **RO** build-time configuration mirror: `[1:0]`=output_mode (0=RGB 1=RAW 2=YUV), `[2]`=yuv_subsample (0=444 1=422), `[5:3]`=raw_bayer (0=PLAIN 1=RGGB 2=BGGR 3=GRBG 4=GBRG), `[6]`=rgb_order (0=Xilinx 1=legacy), `[15:8]`=BPC (8/10/12/14/16), `[31:16]`=TDATA_WIDTH |
 | 0x20   | SOLID_COLOR    | `{8'h0, R[8], G[8], B[8]}`                           |
 | 0x24   | BOX_COLOR      | moving box color                                     |
@@ -266,6 +266,10 @@ rtl/vtpgz_axilite_top.v  — thin wrapper that adds an AXI4-Lite slave on
 | `EN_GRID`       | 1 | Strip grid/crosshatch generator if 0 |
 | `EN_RAMP`       | 1 | Strip color-ramp generator if 0 |
 | `EN_NOISE`      | 1 | Strip LFSR noise generator if 0 |
+| `EN_IMAGE`      | 0 | Embed a synth-time image as `PATTERN_SEL=9`. Storage is inferred BRAM initialized via `$readmemh`. Stripped at elaboration when 0 — no BRAM cost. |
+| `IMAGE_W`       | 128 | Embedded image width (power of two; tile-repeats across the frame). |
+| `IMAGE_H`       | 128 | Embedded image height (power of two). |
+| `IMAGE_HEX_FILE`| `tests/images/mandrill_128x128.mem` | Path to a 24-bit RGB888 hex file, one pixel per line. Generate with `python scripts/image_to_hex.py <png> --width W --height H --out path.mem`. |
 | `OUTPUT_MODE`   | 0 (RGB) | **0** = RGB; **1** = RAW; **2** = YUV. Patterns produce native components in the chosen color space; the output stage just bit-shrinks/zero-extends and reorders. |
 | `YUV_SUBSAMPLE` | 0 (444) | Only meaningful when `OUTPUT_MODE=2`. **0** = 4:4:4; **1** = 4:2:2 |
 | `RAW_BAYER`     | 1 (RGGB)| Only meaningful when `OUTPUT_MODE=1`. **0** = plain monochrome (G channel); **1** = RGGB; **2** = BGGR; **3** = GRBG; **4** = GBRG. The four Bayer tiles follow standard naming (row-by-row, left to right, top to bottom) |
@@ -303,6 +307,49 @@ black frame. **At least one pattern** must remain enabled or the design
 has no valid pattern source. The `COLOR_FORMAT` register at offset 0x18
 is **read-only** and reflects the build-time configuration so software
 can probe it.
+
+### Embedded image (`EN_IMAGE`, `PATTERN_SEL=9`)
+
+Bakes a 24-bit RGB888 image into inferred block RAM at synthesis time
+and emits it as a tile-repeating pattern across the active region.
+`IMAGE_W` and `IMAGE_H` must be powers of two so the per-pixel wrap is
+a bit mask (no divider). Storage size scales as `IMAGE_W × IMAGE_H × 24
+bits`: 128×128 ≈ 393 kbit ≈ a dozen BRAM36 tiles (post-pack); 64×64
+fits comfortably in 3–4 tiles. The 8-bit-per-component source is
+upsampled to the 12-bit internal pipeline by MSB replication
+(`0xFF → 0xFFF`, `0x00 → 0x000`).
+
+Convert any PNG / JPG into a `$readmemh`-compatible hex file with the
+bundled script:
+
+```sh
+# Bring in the canonical 512×512 mandrill ("baboon.png"), downscale to
+# 128×128, and write the .mem the RTL expects by default.
+python scripts/image_to_hex.py --fetch-mandrill --width 128 --height 128 \
+    --out tests/images/mandrill_128x128.mem
+
+# Or convert a local image
+python scripts/image_to_hex.py myphoto.png --width 64 --height 64 \
+    --out tests/images/myphoto_64x64.mem
+```
+
+To enable in a build, pass `EN_IMAGE=1` (and override
+`IMAGE_W`/`IMAGE_H`/`IMAGE_HEX_FILE` if not using the defaults):
+
+```verilog
+vtpgz_axilite_top #(
+    .EN_IMAGE      (1),
+    .IMAGE_W       (128),
+    .IMAGE_H       (128),
+    .IMAGE_HEX_FILE("tests/images/mandrill_128x128.mem"),
+    /* … other params … */
+) u_vtpgz ( /* … */ );
+```
+
+At runtime, write `PATTERN_SEL = 9` to display it. If `EN_IMAGE=0` the
+generator is stripped at elaboration; selecting pattern 9 at runtime
+then produces a black frame (same convention as every other stripped
+pattern).
 
 ### Using `vtpgz_core` (port-driven, no AXI slave)
 

@@ -30,6 +30,15 @@ module vtpgz_core #(
     parameter EN_GRID       = 1,
     parameter EN_RAMP       = 1,
     parameter EN_NOISE      = 1,
+    parameter EN_IMAGE      = 0,
+    // ---- IMAGE pattern (only used when EN_IMAGE=1) ----
+    // Both dimensions MUST be powers of two -- the tile/repeat wraparound
+    // uses a bit mask. The image is stored as 24-bit packed RGB888 (R in
+    // the upper byte) and 8->12 bit upsampled at read time by MSB
+    // replication.
+    parameter IMAGE_W       = 128,
+    parameter IMAGE_H       = 128,
+    parameter IMAGE_HEX_FILE = "tests/images/mandrill_128x128.mem",
     // ----- output mode -----
     // OUTPUT_MODE = 0  RGB only, no DSPs
     //               1  RAW (single-component, see RAW_BAYER), no DSPs
@@ -289,6 +298,7 @@ module vtpgz_core #(
     wire [11:0] grid_r,  grid_g,  grid_b;
     wire [11:0] ramp_v;
     wire [11:0] noise_v;
+    wire [11:0] image_r, image_g, image_b;
 
     // ---- Color bars (8 SMPTE bars) ----
     // Counter-based: increment bar index every cfg_bar_width pixels.
@@ -605,6 +615,44 @@ module vtpgz_core #(
         assign noise_v = 12'h000;
     end endgenerate
 
+    // ---- IMAGE (BRAM-baked synth-time image) ----
+    // 24-bit packed RGB888 stored in inferred block RAM, initialized at
+    // elaboration via $readmemh from IMAGE_HEX_FILE. The image tiles across
+    // the active region using bit-mask wraparound -- IMAGE_W and IMAGE_H
+    // must therefore be powers of two. 8 bpc source is upsampled to the
+    // 12-bit internal pipeline by MSB replication (preserves 0xFF -> 0xFFF).
+    generate if (EN_IMAGE) begin : g_image
+        // verilator coverage_off
+        localparam IMG_LOG2W   = $clog2(IMAGE_W);
+        localparam IMG_LOG2H   = $clog2(IMAGE_H);
+        localparam IMG_DEPTH   = IMAGE_W * IMAGE_H;
+        localparam IMG_ADDR_W  = IMG_LOG2W + IMG_LOG2H;
+
+        (* ram_style = "block" *)
+        reg [23:0] image_mem [0:IMG_DEPTH-1];
+        initial begin
+            $readmemh(IMAGE_HEX_FILE, image_mem);
+        end
+
+        wire [IMG_ADDR_W-1:0] image_addr =
+            {y[IMG_LOG2H-1:0], x[IMG_LOG2W-1:0]};
+        wire [23:0] image_word = image_mem[image_addr];
+
+        wire [7:0] img_r8 = image_word[23:16];
+        wire [7:0] img_g8 = image_word[15:8];
+        wire [7:0] img_b8 = image_word[7:0];
+        // 8 -> 12 via MSB replication so {0xFF -> 0xFFF, 0x00 -> 0x000}
+        // and the linear midpoint is preserved.
+        assign image_r = {img_r8, img_r8[7:4]};
+        assign image_g = {img_g8, img_g8[7:4]};
+        assign image_b = {img_b8, img_b8[7:4]};
+        // verilator coverage_on
+    end else begin : g_image_off
+        assign image_r = 12'h000;
+        assign image_g = 12'h000;
+        assign image_b = 12'h000;
+    end endgenerate
+
     // ---------------- pattern mux ----------------
     // Output triple {pix_c0, pix_c1, pix_c2} is in the build-time color
     // space: RGB/RAW modes -> {R,G,B}, YUV mode -> {Y,Cb,Cr}.
@@ -639,6 +687,7 @@ module vtpgz_core #(
             `VTPGZ_PAT_GRID      : begin pat_c0 = grid_r;  pat_c1 = grid_g;  pat_c2 = grid_b;  end
             `VTPGZ_PAT_RAMP      : begin pat_c0 = ramp_v;  pat_c1 = ramp_c1; pat_c2 = ramp_c2; end
             `VTPGZ_PAT_NOISE     : begin pat_c0 = noise_v; pat_c1 = nz_c1;   pat_c2 = nz_c2;   end
+            `VTPGZ_PAT_IMAGE     : begin pat_c0 = image_r; pat_c1 = image_g; pat_c2 = image_b; end
             // verilator coverage_off
             default              : begin pat_c0 = 12'h0;   pat_c1 = 12'h0;   pat_c2 = 12'h0;   end
             // verilator coverage_on

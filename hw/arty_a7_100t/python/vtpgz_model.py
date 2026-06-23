@@ -32,6 +32,7 @@ PAT_MOVING_BOX = 5
 PAT_GRID       = 6
 PAT_RAMP       = 7
 PAT_NOISE      = 8
+PAT_IMAGE      = 9
 
 # Build-time output modes (must match vtpgz_defs.vh)
 MODE_RGB = 0
@@ -92,6 +93,11 @@ class VtpgzConfig:
     grid_spacing: int = 16
     grid_color: int = 0x00FFFFFF
     checker_size: int = 16
+    # IMAGE pattern: 24-bit packed RGB888 from $readmemh, dimensions and
+    # the raw 8-bit-per-component buffer are baked in at synth time.
+    image_w: int = 0
+    image_h: int = 0
+    image_rgb888: list = field(default_factory=list)  # length = image_w * image_h
 
     @property
     def tdata_width(self) -> int:
@@ -217,6 +223,24 @@ def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int,
     if pat == PAT_NOISE:
         v = regs.lfsr & 0xFFF
         return gray(v)
+
+    if pat == PAT_IMAGE:
+        # Tile / repeat with power-of-two mask -- mirrors the RTL
+        # bit-mask wraparound. If no image is loaded (image_w == 0)
+        # this falls through to black, matching the RTL g_image_off
+        # default.
+        if cfg.image_w == 0 or cfg.image_h == 0 or not cfg.image_rgb888:
+            return (0, 0, 0)
+        ix = x & (cfg.image_w - 1)
+        iy = y & (cfg.image_h - 1)
+        word = cfg.image_rgb888[iy * cfg.image_w + ix]
+        r8 = (word >> 16) & 0xFF
+        g8 = (word >> 8)  & 0xFF
+        b8 =  word        & 0xFF
+        # 8 -> 12 by MSB replication, matching the RTL
+        return ((r8 << 4) | (r8 >> 4),
+                (g8 << 4) | (g8 >> 4),
+                (b8 << 4) | (b8 >> 4))
 
     return (0, 0, 0)
 

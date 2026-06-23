@@ -57,6 +57,7 @@
 `define VTPGZ_PAT_GRID        4'd6
 `define VTPGZ_PAT_RAMP        4'd7
 `define VTPGZ_PAT_NOISE       4'd8
+`define VTPGZ_PAT_IMAGE       4'd9  // BRAM-baked image, baked at synth time
 
 // ----- Build-time output-mode parameter values (OUTPUT_MODE) -----
 `define VTPGZ_MODE_RGB    0
