@@ -30,6 +30,8 @@ module vtpgz_axilite_top #(
     parameter EN_IMAGE      = 0,
     parameter IMAGE_W       = 128,
     parameter IMAGE_H       = 128,
+    parameter IMAGE_OUT_W   = IMAGE_W,
+    parameter IMAGE_OUT_H   = IMAGE_H,
     parameter IMAGE_HEX_FILE = "tests/images/mandrill_128x128.mem",
     // ----- output mode (forwarded) -----
     parameter OUTPUT_MODE   = `VTPGZ_MODE_RGB,
@@ -175,6 +177,8 @@ module vtpgz_axilite_top #(
         .EN_IMAGE     (EN_IMAGE),
         .IMAGE_W      (IMAGE_W),
         .IMAGE_H      (IMAGE_H),
+        .IMAGE_OUT_W  (IMAGE_OUT_W),
+        .IMAGE_OUT_H  (IMAGE_OUT_H),
         .IMAGE_HEX_FILE(IMAGE_HEX_FILE),
         .OUTPUT_MODE  (OUTPUT_MODE),
         .YUV_SUBSAMPLE(YUV_SUBSAMPLE),

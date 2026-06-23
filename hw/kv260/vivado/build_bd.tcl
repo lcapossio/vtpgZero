@@ -72,6 +72,8 @@ set_property -dict [list \
     CONFIG.EN_IMAGE                1 \
     CONFIG.IMAGE_W               128 \
     CONFIG.IMAGE_H               128 \
+    CONFIG.IMAGE_OUT_W          1280 \
+    CONFIG.IMAGE_OUT_H           720 \
     CONFIG.IMAGE_HEX_FILE     $IMG_HEX \
 ] [get_bd_cells u_tpg]
 

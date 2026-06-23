@@ -95,8 +95,13 @@ class VtpgzConfig:
     checker_size: int = 16
     # IMAGE pattern: 24-bit packed RGB888 from $readmemh, dimensions and
     # the raw 8-bit-per-component buffer are baked in at synth time.
+    # image_out_w / image_out_h define the on-screen window size; when they
+    # differ from image_w / image_h, a Q16 nearest-neighbour scaler maps
+    # the source to the output window. 0 here means "no IMAGE pattern".
     image_w: int = 0
     image_h: int = 0
+    image_out_w: int = 0
+    image_out_h: int = 0
     image_rgb888: list = field(default_factory=list)  # length = image_w * image_h
 
     @property
@@ -225,19 +230,26 @@ def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int,
         return gray(v)
 
     if pat == PAT_IMAGE:
-        # Tile / repeat with power-of-two mask -- mirrors the RTL
-        # bit-mask wraparound. If no image is loaded (image_w == 0)
-        # this falls through to black, matching the RTL g_image_off
-        # default.
+        # Centred, scaled with Q16 nearest-neighbour. Source pixel index
+        # for output pixel k (0..image_out_w - 1) is (k * step) >> 16,
+        # where step = (image_w << 16) // image_out_w, mirroring the RTL.
         if cfg.image_w == 0 or cfg.image_h == 0 or not cfg.image_rgb888:
             return (0, 0, 0)
-        ix = x & (cfg.image_w - 1)
-        iy = y & (cfg.image_h - 1)
+        out_w = cfg.image_out_w or cfg.image_w
+        out_h = cfg.image_out_h or cfg.image_h
+        x_off = (cfg.width  - out_w) // 2 if cfg.width  > out_w else 0
+        y_off = (cfg.height - out_h) // 2 if cfg.height > out_h else 0
+        if not (x_off <= x < x_off + out_w and
+                y_off <= y < y_off + out_h):
+            return (0, 0, 0)
+        step_x = (cfg.image_w << 16) // out_w
+        step_y = (cfg.image_h << 16) // out_h
+        ix = (((x - x_off) * step_x) >> 16) & (cfg.image_w - 1)
+        iy = (((y - y_off) * step_y) >> 16) & (cfg.image_h - 1)
         word = cfg.image_rgb888[iy * cfg.image_w + ix]
         r8 = (word >> 16) & 0xFF
         g8 = (word >> 8)  & 0xFF
         b8 =  word        & 0xFF
-        # 8 -> 12 by MSB replication, matching the RTL
         return ((r8 << 4) | (r8 >> 4),
                 (g8 << 4) | (g8 >> 4),
                 (b8 << 4) | (b8 >> 4))

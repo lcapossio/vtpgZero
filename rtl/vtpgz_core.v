@@ -32,12 +32,23 @@ module vtpgz_core #(
     parameter EN_NOISE      = 1,
     parameter EN_IMAGE      = 0,
     // ---- IMAGE pattern (only used when EN_IMAGE=1) ----
-    // Both dimensions MUST be powers of two -- the tile/repeat wraparound
-    // uses a bit mask. The image is stored as 24-bit packed RGB888 (R in
-    // the upper byte) and 8->12 bit upsampled at read time by MSB
-    // replication.
+    // IMAGE_W / IMAGE_H: source image dimensions in the BRAM. Both MUST be
+    //                   powers of two so the BRAM index is a bit slice.
+    //                   Stored as 24-bit packed RGB888 and 8->12 upsampled
+    //                   at read time by MSB replication.
+    // IMAGE_OUT_W / IMAGE_OUT_H: rendered window dimensions in the active
+    //                   region. Any integer >= 1. When equal to IMAGE_W /
+    //                   IMAGE_H the image is drawn 1:1 (no scaling);
+    //                   otherwise a Bresenham fixed-point accumulator
+    //                   nearest-neighbour-scales between source and output
+    //                   per axis. Aspect is NOT preserved unless the
+    //                   user-chosen ratio matches IMAGE_W:IMAGE_H. The
+    //                   window is centred in the active region with black
+    //                   padding outside.
     parameter IMAGE_W       = 128,
     parameter IMAGE_H       = 128,
+    parameter IMAGE_OUT_W   = IMAGE_W,
+    parameter IMAGE_OUT_H   = IMAGE_H,
     parameter IMAGE_HEX_FILE = "tests/images/mandrill_128x128.mem",
     // ----- output mode -----
     // OUTPUT_MODE = 0  RGB only, no DSPs
@@ -615,18 +626,28 @@ module vtpgz_core #(
         assign noise_v = 12'h000;
     end endgenerate
 
-    // ---- IMAGE (BRAM-baked synth-time image) ----
-    // 24-bit packed RGB888 stored in inferred block RAM, initialized at
-    // elaboration via $readmemh from IMAGE_HEX_FILE. The image tiles across
-    // the active region using bit-mask wraparound -- IMAGE_W and IMAGE_H
-    // must therefore be powers of two. 8 bpc source is upsampled to the
-    // 12-bit internal pipeline by MSB replication (preserves 0xFF -> 0xFFF).
+    // ---- IMAGE (BRAM-baked synth-time image, with optional nearest-
+    //      neighbour scaling) ----
+    // 24-bit packed RGB888 in inferred block RAM, init via $readmemh.
+    // The image is drawn ONCE per frame, centred in the active region,
+    // with black padding around it. When IMAGE_OUT_W != IMAGE_W (or
+    // IMAGE_OUT_H != IMAGE_H), a per-axis Q16 accumulator nearest-
+    // neighbour-scales the source to the output window. Step values are
+    // computed at elaboration so the run-time cost is just two adders
+    // and two registers.
     generate if (EN_IMAGE) begin : g_image
         // verilator coverage_off
         localparam IMG_LOG2W   = $clog2(IMAGE_W);
         localparam IMG_LOG2H   = $clog2(IMAGE_H);
         localparam IMG_DEPTH   = IMAGE_W * IMAGE_H;
         localparam IMG_ADDR_W  = IMG_LOG2W + IMG_LOG2H;
+        // Q16 fractional step per output pixel. ACC_W = IMG_LOG2{W,H} + 16
+        // so the integer part is exactly the source index width.
+        localparam FRAC_BITS   = 16;
+        localparam IMG_X_STEP  = (IMAGE_W * (1 << FRAC_BITS)) / IMAGE_OUT_W;
+        localparam IMG_Y_STEP  = (IMAGE_H * (1 << FRAC_BITS)) / IMAGE_OUT_H;
+        localparam ACC_X_W     = IMG_LOG2W + FRAC_BITS;
+        localparam ACC_Y_W     = IMG_LOG2H + FRAC_BITS;
 
         (* ram_style = "block" *)
         reg [23:0] image_mem [0:IMG_DEPTH-1];
@@ -634,18 +655,57 @@ module vtpgz_core #(
             $readmemh(IMAGE_HEX_FILE, image_mem);
         end
 
-        wire [IMG_ADDR_W-1:0] image_addr =
-            {y[IMG_LOG2H-1:0], x[IMG_LOG2W-1:0]};
+        // Centred window offsets. Clamped to 0 if the output window is
+        // wider/taller than the active region (image truncated, no error).
+        wire [15:0] img_x_off = (img_width_eff  > IMAGE_OUT_W)
+                              ? ((img_width_eff  - IMAGE_OUT_W) >> 1) : 16'h0;
+        wire [15:0] img_y_off = (img_height_eff > IMAGE_OUT_H)
+                              ? ((img_height_eff - IMAGE_OUT_H) >> 1) : 16'h0;
+
+        wire in_image = (x >= img_x_off) && (x < img_x_off + IMAGE_OUT_W) &&
+                        (y >= img_y_off) && (y < img_y_off + IMAGE_OUT_H);
+        wire in_image_y = (y >= img_y_off) && (y < img_y_off + IMAGE_OUT_H);
+
+        // X accumulator: reset at the end of each line so the next line
+        // starts at acc_x=0; increment by IMG_X_STEP each cycle while
+        // inside the image-x window. Outside, the accumulator holds (its
+        // value is muxed to black anyway).
+        reg [ACC_X_W-1:0] acc_x;
+        always @(posedge aclk) begin
+            if (!aresetn || frame_init)        acc_x <= {ACC_X_W{1'b0}};
+            else if (source_advance) begin
+                if (last_x)                    acc_x <= {ACC_X_W{1'b0}};
+                else if (in_image)             acc_x <= acc_x + IMG_X_STEP[ACC_X_W-1:0];
+            end
+        end
+
+        // Y accumulator: step at end of each line that lies in the image-y
+        // window. Anchor the reset on end_of_frame (one cycle BEFORE the
+        // next frame's pix_sof) so cycle (x=0, y=0) reads acc_y=0
+        // combinationally -- resetting on pix_sof would land one cycle
+        // late via the NBA and leak the previous frame's last src_y into
+        // the first output pixel.
+        reg [ACC_Y_W-1:0] acc_y;
+        always @(posedge aclk) begin
+            if (!aresetn || frame_init)               acc_y <= {ACC_Y_W{1'b0}};
+            else if (source_advance) begin
+                if (end_of_frame)                     acc_y <= {ACC_Y_W{1'b0}};
+                else if (last_x && in_image_y)        acc_y <= acc_y + IMG_Y_STEP[ACC_Y_W-1:0];
+            end
+        end
+
+        wire [IMG_LOG2W-1:0] src_x = acc_x[ACC_X_W-1 -: IMG_LOG2W];
+        wire [IMG_LOG2H-1:0] src_y = acc_y[ACC_Y_W-1 -: IMG_LOG2H];
+
+        wire [IMG_ADDR_W-1:0] image_addr = {src_y, src_x};
         wire [23:0] image_word = image_mem[image_addr];
 
         wire [7:0] img_r8 = image_word[23:16];
         wire [7:0] img_g8 = image_word[15:8];
         wire [7:0] img_b8 = image_word[7:0];
-        // 8 -> 12 via MSB replication so {0xFF -> 0xFFF, 0x00 -> 0x000}
-        // and the linear midpoint is preserved.
-        assign image_r = {img_r8, img_r8[7:4]};
-        assign image_g = {img_g8, img_g8[7:4]};
-        assign image_b = {img_b8, img_b8[7:4]};
+        assign image_r = in_image ? {img_r8, img_r8[7:4]} : 12'h000;
+        assign image_g = in_image ? {img_g8, img_g8[7:4]} : 12'h000;
+        assign image_b = in_image ? {img_b8, img_b8[7:4]} : 12'h000;
         // verilator coverage_on
     end else begin : g_image_off
         assign image_r = 12'h000;

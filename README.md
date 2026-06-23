@@ -267,8 +267,10 @@ rtl/vtpgz_axilite_top.v  — thin wrapper that adds an AXI4-Lite slave on
 | `EN_RAMP`       | 1 | Strip color-ramp generator if 0 |
 | `EN_NOISE`      | 1 | Strip LFSR noise generator if 0 |
 | `EN_IMAGE`      | 0 | Embed a synth-time image as `PATTERN_SEL=9`. Storage is inferred BRAM initialized via `$readmemh`. Stripped at elaboration when 0 — no BRAM cost. |
-| `IMAGE_W`       | 128 | Embedded image width (power of two; tile-repeats across the frame). |
-| `IMAGE_H`       | 128 | Embedded image height (power of two). |
+| `IMAGE_W`       | 128 | Source image width in BRAM (power of two). |
+| `IMAGE_H`       | 128 | Source image height (power of two). |
+| `IMAGE_OUT_W`   | `IMAGE_W` | Rendered window width on screen. When `IMAGE_OUT_W != IMAGE_W`, a Q16 nearest-neighbour accumulator scales the source per output pixel. Centred with black padding. Any positive integer. |
+| `IMAGE_OUT_H`   | `IMAGE_H` | Rendered window height. Same scaling behaviour. Aspect is not preserved unless `IMAGE_OUT_W:IMAGE_OUT_H == IMAGE_W:IMAGE_H`. |
 | `IMAGE_HEX_FILE`| `tests/images/mandrill_128x128.mem` | Path to a 24-bit RGB888 hex file, one pixel per line. Generate with `python scripts/image_to_hex.py <png> --width W --height H --out path.mem`. |
 | `OUTPUT_MODE`   | 0 (RGB) | **0** = RGB; **1** = RAW; **2** = YUV. Patterns produce native components in the chosen color space; the output stage just bit-shrinks/zero-extends and reorders. |
 | `YUV_SUBSAMPLE` | 0 (444) | Only meaningful when `OUTPUT_MODE=2`. **0** = 4:4:4; **1** = 4:2:2 |
@@ -311,11 +313,17 @@ can probe it.
 ### Embedded image (`EN_IMAGE`, `PATTERN_SEL=9`)
 
 Bakes a 24-bit RGB888 image into inferred block RAM at synthesis time
-and emits it as a tile-repeating pattern across the active region.
-`IMAGE_W` and `IMAGE_H` must be powers of two so the per-pixel wrap is
-a bit mask (no divider). Storage size scales as `IMAGE_W × IMAGE_H × 24
-bits`: 128×128 ≈ 393 kbit ≈ a dozen BRAM36 tiles (post-pack); 64×64
-fits comfortably in 3–4 tiles. The 8-bit-per-component source is
+and draws it **once per frame, centred in the active region** with
+black padding around it. `IMAGE_W` / `IMAGE_H` must be powers of two so
+the BRAM index field is a low-bit slice of the source coordinates.
+`IMAGE_OUT_W` / `IMAGE_OUT_H` can be any positive integer; when they
+differ from `IMAGE_W` / `IMAGE_H`, a per-axis Q16 accumulator does
+**nearest-neighbour scaling** between source and output (no multiplier
+runtime, no divider — the step is computed at elaboration and added
+each pixel). Storage scales as `IMAGE_W × IMAGE_H × 24 bits`: 128×128
+≈ 393 kbit ≈ a dozen BRAM36 tiles (post-pack); 64×64 fits comfortably
+in 3–4 tiles. Scaling adds two ~20-bit accumulators + adders (~80 LUTs
+/ 50 FFs) and no extra BRAM. The 8-bit-per-component source is
 upsampled to the 12-bit internal pipeline by MSB replication
 (`0xFF → 0xFFF`, `0x00 → 0x000`).
 
