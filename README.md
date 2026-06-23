@@ -96,6 +96,8 @@ standard AXI4-Stream with backpressure (`tready`), `tlast` = end of line, and
 | 0x48   | HG_STEP        | horizontal-gradient step per pixel (`0xFFF/(width-1)`) |
 | 0x4C   | VG_STEP        | vertical-gradient step per line (`0xFFF/(height-1)`)   |
 | 0x50   | BOX_BORDER     | `{border_width[8], border_color[24]}`. Border is drawn inside the box; `border_width=0` means no border. |
+| 0x54   | BOX_IMG_X_STEP | Q16 nearest-neighbour step for the box-image overlay. Host writes `(BOX_IMAGE_W << 16) / BOX_SIZE.width` whenever `BOX_SIZE` changes. Only meaningful when `EN_BOX_IMAGE=1`. |
+| 0x58   | BOX_IMG_Y_STEP | Q16 step for the box-image overlay y-axis. Host writes `(BOX_IMAGE_H << 16) / BOX_SIZE.height`. |
 
 AXI4-Lite writes honor `WSTRB` byte lanes. A write with `WSTRB=0`
 acknowledges but leaves the addressed register unchanged, including
@@ -272,6 +274,10 @@ rtl/vtpgz_axilite_top.v  — thin wrapper that adds an AXI4-Lite slave on
 | `IMAGE_OUT_W`   | `IMAGE_W` | Rendered window width on screen. When `IMAGE_OUT_W != IMAGE_W`, a Q16 nearest-neighbour accumulator scales the source per output pixel. Centred with black padding. Any positive integer. |
 | `IMAGE_OUT_H`   | `IMAGE_H` | Rendered window height. Same scaling behaviour. Aspect is not preserved unless `IMAGE_OUT_W:IMAGE_OUT_H == IMAGE_W:IMAGE_H`. |
 | `IMAGE_HEX_FILE`| `tests/images/mandrill_128x128.mem` | Path to a 24-bit RGB888 hex file, one pixel per line. Generate with `python scripts/image_to_hex.py <png> --width W --height H --out path.mem`. |
+| `EN_BOX_IMAGE`  | 0 | Embed a synth-time image *inside* the moving box overlay. Source rectangle = the box. Same scaler family as `EN_IMAGE`, but the per-pixel step is a runtime register so the host can resize the box without re-synth. Requires `EN_MOVING_BOX=1`. Stripped at elaboration when 0. |
+| `BOX_IMAGE_W`   | 32 | Box-image source width in BRAM (power of two). |
+| `BOX_IMAGE_H`   | 32 | Box-image source height (power of two). |
+| `BOX_IMAGE_HEX_FILE` | `tests/images/mandrill_32x32.mem` | Same format as `IMAGE_HEX_FILE`. 32×32 at RGB888 ≈ 24 kbit → 1 BRAM36. |
 | `OUTPUT_MODE`   | 0 (RGB) | **0** = RGB; **1** = RAW; **2** = YUV. Patterns produce native components in the chosen color space; the output stage just bit-shrinks/zero-extends and reorders. |
 | `YUV_SUBSAMPLE` | 0 (444) | Only meaningful when `OUTPUT_MODE=2`. **0** = 4:4:4; **1** = 4:2:2 |
 | `RAW_BAYER`     | 1 (RGGB)| Only meaningful when `OUTPUT_MODE=1`. **0** = plain monochrome (G channel); **1** = RGGB; **2** = BGGR; **3** = GRBG; **4** = GBRG. The four Bayer tiles follow standard naming (row-by-row, left to right, top to bottom) |
@@ -340,6 +346,19 @@ python scripts/image_to_hex.py --fetch-mandrill --width 128 --height 128 \
 python scripts/image_to_hex.py myphoto.png --width 64 --height 64 \
     --out tests/images/myphoto_64x64.mem
 ```
+
+### Image-in-box overlay (`EN_BOX_IMAGE=1`)
+
+A second BRAM holds a small image that's painted inside the bouncing
+box instead of `cfg_box_color`. The scaler is the same Q16
+nearest-neighbour accumulator as the IMAGE pattern, but the source
+rectangle is the box, so the host has to update two runtime registers
+(`BOX_IMG_X_STEP`, `BOX_IMG_Y_STEP`) whenever it changes `BOX_SIZE` —
+same flow it already uses for `HG_STEP`, `VG_STEP`, `BAR_WIDTH`.
+Default `BOX_IMAGE_W` / `BOX_IMAGE_H` = 32 picks up ~1 BRAM36 with the
+24-bit-in-36-bit-tile packing; bump to 64×32 (~1 BRAM36 still) or
+64×64 (~3 BRAM36) if you want more detail. The border ring still draws
+on top, so a small `BOX_BORDER` value frames the embedded image.
 
 To enable in a build, pass `EN_IMAGE=1` (and override
 `IMAGE_W`/`IMAGE_H`/`IMAGE_HEX_FILE` if not using the defaults):

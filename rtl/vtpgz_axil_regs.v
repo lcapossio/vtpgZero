@@ -71,7 +71,9 @@ module vtpgz_axil_regs #(
     output wire [15:0] cfg_hg_step,
     output wire [15:0] cfg_vg_step,
     output wire [23:0] cfg_box_border_color,
-    output wire [7:0]  cfg_box_border_width
+    output wire [7:0]  cfg_box_border_width,
+    output wire [31:0] cfg_box_img_x_step,
+    output wire [31:0] cfg_box_img_y_step
 );
 
     // ---------------- registers ----------------
@@ -91,6 +93,8 @@ module vtpgz_axil_regs #(
     reg [31:0] reg_hg_step;
     reg [31:0] reg_vg_step;
     reg [31:0] reg_box_border;
+    reg [31:0] reg_box_img_x_step;
+    reg [31:0] reg_box_img_y_step;
 
     // ---------------- write FSM ----------------
     reg [7:0]  awaddr_q;
@@ -144,6 +148,11 @@ module vtpgz_axil_regs #(
             reg_hg_step      <= 32'd546;
             reg_vg_step      <= 32'd970;
             reg_box_border   <= 32'h0;  // border_width=0, no border
+            // Default steps assume a 64x64 box with the 32x32 box image
+            // ((32 << 16) / 64 = 32768). Host should rewrite when BOX_SIZE
+            // changes to keep the nearest-neighbour scaler accurate.
+            reg_box_img_x_step <= 32'd32768;
+            reg_box_img_y_step <= 32'd32768;
         end else begin
             // address handshake
             if (!aw_captured && s_axi_awvalid) begin
@@ -184,6 +193,8 @@ module vtpgz_axil_regs #(
                     `VTPGZ_REG_HG_STEP      : reg_hg_step      <= apply_wstrb(reg_hg_step,      wdata_q, wstrb_q);
                     `VTPGZ_REG_VG_STEP      : reg_vg_step      <= apply_wstrb(reg_vg_step,      wdata_q, wstrb_q);
                     `VTPGZ_REG_BOX_BORDER   : reg_box_border   <= apply_wstrb(reg_box_border,   wdata_q, wstrb_q);
+                    `VTPGZ_REG_BOX_IMG_X_STEP : reg_box_img_x_step <= apply_wstrb(reg_box_img_x_step, wdata_q, wstrb_q);
+                    `VTPGZ_REG_BOX_IMG_Y_STEP : reg_box_img_y_step <= apply_wstrb(reg_box_img_y_step, wdata_q, wstrb_q);
                     default               : ;
                 endcase
                 s_axi_bvalid <= 1'b1;
@@ -237,6 +248,8 @@ module vtpgz_axil_regs #(
                     `VTPGZ_REG_HG_STEP      : s_axi_rdata <= reg_hg_step;
                     `VTPGZ_REG_VG_STEP      : s_axi_rdata <= reg_vg_step;
                     `VTPGZ_REG_BOX_BORDER   : s_axi_rdata <= reg_box_border;
+                    `VTPGZ_REG_BOX_IMG_X_STEP : s_axi_rdata <= reg_box_img_x_step;
+                    `VTPGZ_REG_BOX_IMG_Y_STEP : s_axi_rdata <= reg_box_img_y_step;
                     default               : s_axi_rdata <= 32'h0;
                 endcase
             end else begin
@@ -269,5 +282,7 @@ module vtpgz_axil_regs #(
     assign cfg_vg_step       = reg_vg_step[15:0];
     assign cfg_box_border_color = reg_box_border[23:0];
     assign cfg_box_border_width = reg_box_border[31:24];
+    assign cfg_box_img_x_step   = reg_box_img_x_step;
+    assign cfg_box_img_y_step   = reg_box_img_y_step;
 
 endmodule

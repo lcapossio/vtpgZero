@@ -39,6 +39,14 @@
 `define VTPGZ_REG_HG_STEP       8'h48
 `define VTPGZ_REG_VG_STEP       8'h4C
 `define VTPGZ_REG_BOX_BORDER   8'h50  // {border_width[8], border_color[24]}
+// Host-pre-computed nearest-neighbour step values for the BOX_IMAGE
+// overlay (only meaningful with EN_BOX_IMAGE=1). Host writes
+//   BOX_IMG_X_STEP = (BOX_IMAGE_W << 16) / BOX_SIZE.width
+//   BOX_IMG_Y_STEP = (BOX_IMAGE_H << 16) / BOX_SIZE.height
+// whenever BOX_SIZE changes; mirrors the host-precompute pattern used by
+// HG_STEP / VG_STEP / BAR_WIDTH.
+`define VTPGZ_REG_BOX_IMG_X_STEP 8'h54
+`define VTPGZ_REG_BOX_IMG_Y_STEP 8'h58
 
 // Magic value returned by VTPGZ_REG_CORE_ID. Little-endian "VTPG":
 //   byte 0 = 'V' (0x56)

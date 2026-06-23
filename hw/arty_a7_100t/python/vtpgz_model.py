@@ -103,6 +103,15 @@ class VtpgzConfig:
     image_out_w: int = 0
     image_out_h: int = 0
     image_rgb888: list = field(default_factory=list)  # length = image_w * image_h
+    # Box-image overlay: same scaler family as IMAGE, source rectangle is
+    # the bouncing box. box_img_x_step / box_img_y_step are the runtime
+    # Q16 step values the host writes per BOX_SIZE change. 0 means
+    # "box-image disabled" -- box renders solid cfg_box_color.
+    box_image_w: int = 0
+    box_image_h: int = 0
+    box_img_x_step: int = 0
+    box_img_y_step: int = 0
+    box_image_rgb888: list = field(default_factory=list)
 
     @property
     def tdata_width(self) -> int:
@@ -483,8 +492,25 @@ def _box_overlay(c0: int, c1: int, c2: int, x: int, y: int,
     )
     if on_border:
         col = cfg.box_border_color
-    else:
-        col = cfg.box_color
+        r = ((col >> 16) & 0xFF) << 4
+        g = ((col >> 8)  & 0xFF) << 4
+        b = ( col        & 0xFF) << 4
+        return (r, g, b)
+    # Inside the box (not border). If a box-image is configured, the
+    # source rectangle is the box: src_x walks 0..BOX_IMAGE_W-1 with the
+    # Q16 box_img_x_step accumulator, same for y. Otherwise solid color.
+    if cfg.box_image_w and cfg.box_image_h and cfg.box_image_rgb888 \
+            and cfg.box_img_x_step and cfg.box_img_y_step:
+        ix = (((x - bx) * cfg.box_img_x_step) >> 16) & (cfg.box_image_w - 1)
+        iy = (((y - by) * cfg.box_img_y_step) >> 16) & (cfg.box_image_h - 1)
+        word = cfg.box_image_rgb888[iy * cfg.box_image_w + ix]
+        r8 = (word >> 16) & 0xFF
+        g8 = (word >> 8)  & 0xFF
+        b8 =  word        & 0xFF
+        return ((r8 << 4) | (r8 >> 4),
+                (g8 << 4) | (g8 >> 4),
+                (b8 << 4) | (b8 >> 4))
+    col = cfg.box_color
     r = ((col >> 16) & 0xFF) << 4
     g = ((col >> 8)  & 0xFF) << 4
     b = ( col        & 0xFF) << 4

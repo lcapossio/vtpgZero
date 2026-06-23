@@ -33,6 +33,10 @@ module vtpgz_axilite_top #(
     parameter IMAGE_OUT_W   = IMAGE_W,
     parameter IMAGE_OUT_H   = IMAGE_H,
     parameter IMAGE_HEX_FILE = "tests/images/mandrill_128x128.mem",
+    parameter EN_BOX_IMAGE  = 0,
+    parameter BOX_IMAGE_W   = 32,
+    parameter BOX_IMAGE_H   = 32,
+    parameter BOX_IMAGE_HEX_FILE = "tests/images/mandrill_32x32.mem",
     // ----- output mode (forwarded) -----
     parameter OUTPUT_MODE   = `VTPGZ_MODE_RGB,
     parameter YUV_SUBSAMPLE = `VTPGZ_YUV_444,
@@ -104,6 +108,8 @@ module vtpgz_axilite_top #(
     wire [15:0] cfg_vg_step;
     wire [23:0] cfg_box_border_color;
     wire [7:0]  cfg_box_border_width;
+    wire [31:0] cfg_box_img_x_step;
+    wire [31:0] cfg_box_img_y_step;
 
     wire        sts_busy;
     wire [7:0]  sts_frame_count;
@@ -160,7 +166,9 @@ module vtpgz_axilite_top #(
         .cfg_hg_step      (cfg_hg_step),
         .cfg_vg_step      (cfg_vg_step),
         .cfg_box_border_color(cfg_box_border_color),
-        .cfg_box_border_width(cfg_box_border_width)
+        .cfg_box_border_width(cfg_box_border_width),
+        .cfg_box_img_x_step  (cfg_box_img_x_step),
+        .cfg_box_img_y_step  (cfg_box_img_y_step)
     );
 
     // ---------------- pattern generator core ----------------
@@ -180,6 +188,10 @@ module vtpgz_axilite_top #(
         .IMAGE_OUT_W  (IMAGE_OUT_W),
         .IMAGE_OUT_H  (IMAGE_OUT_H),
         .IMAGE_HEX_FILE(IMAGE_HEX_FILE),
+        .EN_BOX_IMAGE (EN_BOX_IMAGE),
+        .BOX_IMAGE_W  (BOX_IMAGE_W),
+        .BOX_IMAGE_H  (BOX_IMAGE_H),
+        .BOX_IMAGE_HEX_FILE(BOX_IMAGE_HEX_FILE),
         .OUTPUT_MODE  (OUTPUT_MODE),
         .YUV_SUBSAMPLE(YUV_SUBSAMPLE),
         .RAW_BAYER    (RAW_BAYER),
@@ -210,6 +222,8 @@ module vtpgz_axilite_top #(
         .cfg_vg_step      (cfg_vg_step),
         .cfg_box_border_color(cfg_box_border_color),
         .cfg_box_border_width(cfg_box_border_width),
+        .cfg_box_img_x_step  (cfg_box_img_x_step),
+        .cfg_box_img_y_step  (cfg_box_img_y_step),
         .sts_busy         (sts_busy),
         .sts_frame_count  (sts_frame_count),
         .m_axis_tdata     (m_axis_tdata),

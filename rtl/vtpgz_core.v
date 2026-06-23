@@ -50,6 +50,16 @@ module vtpgz_core #(
     parameter IMAGE_OUT_W   = IMAGE_W,
     parameter IMAGE_OUT_H   = IMAGE_H,
     parameter IMAGE_HEX_FILE = "tests/images/mandrill_128x128.mem",
+    // ---- BOX-image overlay (only used when EN_BOX_IMAGE=1 and
+    // ----   EN_MOVING_BOX=1). Same Q16 nearest-neighbour scaler as the
+    // ----   IMAGE pattern, but the source rectangle is the bouncing box
+    // ----   instead of the whole active region. Step values come from
+    // ----   cfg_box_img_{x,y}_step which the host computes whenever
+    // ----   cfg_box_{width,height} changes.
+    parameter EN_BOX_IMAGE     = 0,
+    parameter BOX_IMAGE_W      = 32,
+    parameter BOX_IMAGE_H      = 32,
+    parameter BOX_IMAGE_HEX_FILE = "tests/images/mandrill_32x32.mem",
     // ----- output mode -----
     // OUTPUT_MODE = 0  RGB only, no DSPs
     //               1  RAW (single-component, see RAW_BAYER), no DSPs
@@ -109,6 +119,8 @@ module vtpgz_core #(
     input  wire [15:0] cfg_vg_step,
     input  wire [23:0] cfg_box_border_color,
     input  wire [7:0]  cfg_box_border_width,
+    input  wire [31:0] cfg_box_img_x_step,
+    input  wire [31:0] cfg_box_img_y_step,
 
     // ----- status outputs -----
     output reg         sts_busy,
@@ -310,6 +322,7 @@ module vtpgz_core #(
     wire [11:0] ramp_v;
     wire [11:0] noise_v;
     wire [11:0] image_r, image_g, image_b;
+    wire [11:0] box_img_r, box_img_g, box_img_b;
 
     // ---- Color bars (8 SMPTE bars) ----
     // Counter-based: increment bar index every cfg_bar_width pixels.
@@ -713,6 +726,84 @@ module vtpgz_core #(
         assign image_b = 12'h000;
     end endgenerate
 
+    // ---- BOX-image overlay ----
+    // Same Q16 scaler as the IMAGE pattern, but the source rectangle is
+    // the bouncing box. Source-pixel index runs from 0..BOX_IMAGE_{W,H}-1
+    // across the box's current width/height (which are runtime cfg_*
+    // values, so the per-pixel step is a runtime register -- host computes
+    // cfg_box_img_x_step = (BOX_IMAGE_W << 16) / cfg_box_width whenever
+    // the box geometry changes, mirroring how HG_STEP / VG_STEP work).
+    // Output is muxed into the pixel mux below at the same point as
+    // cfg_box_color; the border (when border_width > 0) still draws on top
+    // and remains the solid cfg_box_border_color.
+    generate if (EN_BOX_IMAGE && EN_MOVING_BOX) begin : g_box_image
+        // verilator coverage_off
+        localparam BIMG_LOG2W  = $clog2(BOX_IMAGE_W);
+        localparam BIMG_LOG2H  = $clog2(BOX_IMAGE_H);
+        localparam BIMG_DEPTH  = BOX_IMAGE_W * BOX_IMAGE_H;
+        localparam BIMG_ADDR_W = BIMG_LOG2W + BIMG_LOG2H;
+        localparam BIMG_FRAC   = 16;
+        localparam BIMG_ACC_X_W = BIMG_LOG2W + BIMG_FRAC;
+        localparam BIMG_ACC_Y_W = BIMG_LOG2H + BIMG_FRAC;
+
+        (* ram_style = "block" *)
+        reg [23:0] box_image_mem [0:BIMG_DEPTH-1];
+        initial begin
+            $readmemh(BOX_IMAGE_HEX_FILE, box_image_mem);
+        end
+
+        // Per-axis "inside box's x/y range" derived from x, y and the
+        // box position registers in g_box. Need both for proper acc gating.
+        wire bimg_in_x = (x >= g_box.box_x) &&
+                         (x <  g_box.box_x + box_width_eff);
+        wire bimg_in_y = (y >= g_box.box_y) &&
+                         (y <  g_box.box_y + box_height_eff);
+
+        // X accumulator: zero on last_x (so x=0 of next line starts at
+        // 0), increment while inside box-x. First in-box cycle reads
+        // acc_x=0 -> src_x=0. Last in-box reads near BOX_IMAGE_W-1.
+        reg [BIMG_ACC_X_W-1:0] bimg_acc_x;
+        always @(posedge aclk) begin
+            if (!aresetn || frame_init) bimg_acc_x <= {BIMG_ACC_X_W{1'b0}};
+            else if (source_advance) begin
+                if (last_x)                bimg_acc_x <= {BIMG_ACC_X_W{1'b0}};
+                else if (bimg_in_x)        bimg_acc_x <= bimg_acc_x +
+                                                          cfg_box_img_x_step[BIMG_ACC_X_W-1:0];
+            end
+        end
+
+        // Y accumulator: zero on end_of_frame (avoiding the pix_sof NBA
+        // leak that bit the IMAGE pattern), step at last_x of each line
+        // that's inside box-y.
+        reg [BIMG_ACC_Y_W-1:0] bimg_acc_y;
+        always @(posedge aclk) begin
+            if (!aresetn || frame_init) bimg_acc_y <= {BIMG_ACC_Y_W{1'b0}};
+            else if (source_advance) begin
+                if (end_of_frame)                 bimg_acc_y <= {BIMG_ACC_Y_W{1'b0}};
+                else if (last_x && bimg_in_y)     bimg_acc_y <= bimg_acc_y +
+                                                                cfg_box_img_y_step[BIMG_ACC_Y_W-1:0];
+            end
+        end
+
+        wire [BIMG_LOG2W-1:0] bimg_src_x = bimg_acc_x[BIMG_ACC_X_W-1 -: BIMG_LOG2W];
+        wire [BIMG_LOG2H-1:0] bimg_src_y = bimg_acc_y[BIMG_ACC_Y_W-1 -: BIMG_LOG2H];
+
+        wire [BIMG_ADDR_W-1:0] bimg_addr = {bimg_src_y, bimg_src_x};
+        wire [23:0] bimg_word = box_image_mem[bimg_addr];
+
+        wire [7:0] bimg_r8 = bimg_word[23:16];
+        wire [7:0] bimg_g8 = bimg_word[15:8];
+        wire [7:0] bimg_b8 = bimg_word[7:0];
+        assign box_img_r = {bimg_r8, bimg_r8[7:4]};
+        assign box_img_g = {bimg_g8, bimg_g8[7:4]};
+        assign box_img_b = {bimg_b8, bimg_b8[7:4]};
+        // verilator coverage_on
+    end else begin : g_box_image_off
+        assign box_img_r = 12'h000;
+        assign box_img_g = 12'h000;
+        assign box_img_b = 12'h000;
+    end endgenerate
+
     // ---------------- pattern mux ----------------
     // Output triple {pix_c0, pix_c1, pix_c2} is in the build-time color
     // space: RGB/RAW modes -> {R,G,B}, YUV mode -> {Y,Cb,Cr}.
@@ -804,6 +895,10 @@ module vtpgz_core #(
     // feeding pix_cN_q in stage 2.
     reg        box_in_s1, box_on_border_s1;
     reg [11:0] pat_c0_s1, pat_c1_s1, pat_c2_s1;
+    // Box-image colours land in their own s1 registers so the mux at this
+    // stage gets a value computed from the SAME cycle's x,y as box_in_s1
+    // (the combinational box_img_* would otherwise be one cycle ahead).
+    reg [11:0] box_img_r_s1, box_img_g_s1, box_img_b_s1;
     reg        pix_valid_s1, pix_sof_s1, pix_eol_s1;
     reg        pix_x_lsb_s1, pix_y_lsb_s1;
     wire       pipe_advance;
@@ -814,6 +909,9 @@ module vtpgz_core #(
             pat_c0_s1        <= 12'h0;
             pat_c1_s1        <= 12'h0;
             pat_c2_s1        <= 12'h0;
+            box_img_r_s1     <= 12'h0;
+            box_img_g_s1     <= 12'h0;
+            box_img_b_s1     <= 12'h0;
             pix_valid_s1     <= 1'b0;
             pix_sof_s1       <= 1'b0;
             pix_eol_s1       <= 1'b0;
@@ -825,6 +923,9 @@ module vtpgz_core #(
             pat_c0_s1        <= pat_c0;
             pat_c1_s1        <= pat_c1;
             pat_c2_s1        <= pat_c2;
+            box_img_r_s1     <= box_img_r;
+            box_img_g_s1     <= box_img_g;
+            box_img_b_s1     <= box_img_b;
             pix_valid_s1     <= pix_valid;
             pix_sof_s1       <= pix_sof;
             pix_eol_s1       <= pix_eol;
@@ -833,12 +934,19 @@ module vtpgz_core #(
         end
     end
 
+    // When EN_BOX_IMAGE=1 the box interior shows the scaled image instead
+    // of cfg_box_color. Border (when border_width > 0) still wins because
+    // box_on_border_s1 is checked first.
+    wire [11:0] box_inside_c0 = (EN_BOX_IMAGE != 0) ? box_img_r_s1 : box_fill_c0;
+    wire [11:0] box_inside_c1 = (EN_BOX_IMAGE != 0) ? box_img_g_s1 : box_fill_c1;
+    wire [11:0] box_inside_c2 = (EN_BOX_IMAGE != 0) ? box_img_b_s1 : box_fill_c2;
+
     wire [11:0] pix_c0 = box_on_border_s1 ? box_bdr_c0 :
-                          box_in_s1        ? box_fill_c0 : pat_c0_s1;
+                          box_in_s1        ? box_inside_c0 : pat_c0_s1;
     wire [11:0] pix_c1 = box_on_border_s1 ? box_bdr_c1 :
-                          box_in_s1        ? box_fill_c1 : pat_c1_s1;
+                          box_in_s1        ? box_inside_c1 : pat_c1_s1;
     wire [11:0] pix_c2 = box_on_border_s1 ? box_bdr_c2 :
-                          box_in_s1        ? box_fill_c2 : pat_c2_s1;
+                          box_in_s1        ? box_inside_c2 : pat_c2_s1;
 
     // ---------------- pipeline stage 2 (post-mux register) ---------------
     // Two pipeline stages total between pattern/box state and the AXI
