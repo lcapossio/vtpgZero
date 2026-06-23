@@ -1,0 +1,29 @@
+// AXI-Stream output waveform for vtpgz_core: reset -> idle -> first frame
+// with one backpressure stall, terminating at end-of-line (tlast).
+//
+// frame_start is the internal OR of cfg_sw_fsync, the internal-sync pulse,
+// and the rising edge of frame_sync_in (gated by cfg_ext_sync). Drawn here
+// so the SOF -> first-beat latency is visible; you don't drive it directly.
+//
+// Pxy = pixel at column x, row y. PNL = last beat of the line (tlast=1).
+{
+  signal: [
+    { name: 'aclk',          wave: 'P.............................' },
+    { name: 'aresetn',       wave: '0..1..........................' },
+    { name: 'cfg_enable',    wave: '0....1........................' },
+    { name: 'frame_start*',  wave: '0...........10................', node: '............a.' },
+    { name: 'm_axis_tready', wave: '0..............1....01........' },
+    { name: 'm_axis_tvalid', wave: '0...............1.............', node: '................b' },
+    { name: 'm_axis_tuser',  wave: '0...............10............' },
+    { name: 'm_axis_tlast',  wave: '0...........................10', node: '............................c' },
+    { name: 'm_axis_tdata',
+      wave: 'x...............====..=======X',
+      data: ['P00','P10','P20','P30','P40','P50','P60','P70','P80','P90','PNL'] }
+  ],
+  edge: [
+    'a~>b SOF -> first beat (2 cycles)',
+    'b->c frame N streams out'
+  ],
+  head: { text: 'vtpgz_core AXI-Stream output: reset -> first frame, with backpressure stall' },
+  config: { hscale: 1 }
+}

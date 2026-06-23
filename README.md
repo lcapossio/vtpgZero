@@ -423,32 +423,14 @@ The handshake is plain AXI-Stream: a beat completes only when
 (SOF) is asserted only on the first beat of each frame; `tlast`
 (EOL) is asserted on the last beat of every line.
 
-```text
-phase      |reset|---- idle, wait for frame_start ----|---------- frame N, beats stream out ------------|
-cycle       0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30
-aclk       _╱‾╲_╱‾╲_╱‾╲_╱‾╲_╱‾╲_╱‾╲_╱‾╲_╱‾╲_╱‾╲_╱‾╲_╱‾╲_╱‾╲_╱‾╲_╱‾╲_╱‾╲_╱‾╲_╱‾╲_╱‾╲_╱‾╲_╱‾╲_╱‾╲_╱‾╲_╱‾╲_
-aresetn    ____╱‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
-cfg_enable __________╱‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
-frame_start* _________________________╱‾╲_____________________________________________________________
-m_axis_tready ___________________╱‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾╲_____╱‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
-m_axis_tvalid ____________________________________╱‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
-m_axis_tuser  ____________________________________╱‾‾‾╲___________________________________________________________
-m_axis_tlast  __________________________________________________________________________________╱‾‾‾╲_
-m_axis_tdata  -------------------------------|P00|P10|P20|P30|P30|P30|P40|P50|P60|P70|P80|...|PNL|---
-                                               ▲          ▲       ▲                          ▲
-                                               │          │       │                          │
-                                            first beat    │     tready=1 again,           last beat
-                                            tuser=1       │     P40 advances                of line
-                                            (SOF)         │                                tlast=1 (EOL)
-                                                          │
-                                                       backpressure window:
-                                                       tready=0 for 2 cycles,
-                                                       P30 held on the bus,
-                                                       no pixel lost
-```
+![vtpgz_core AXI-Stream output: reset -> first frame, with backpressure stall](docs/img/tdata_stream.svg)
+
+Source: [docs/wavedrom/tdata_stream.json5](docs/wavedrom/tdata_stream.json5).
+Regenerate after editing with `python scripts/regen_wavedrom.py`
+(requires `wavedrom-cli` on PATH: `npm i -g wavedrom-cli`).
 
 Legend: `Pxy` = pixel at column x, row y. `PNL` = last beat of the
-line (`tlast=1`). `*frame_start` is an internal node, shown for
+line (`tlast=1`). `frame_start*` is an internal node, shown for
 illustration only — it's the OR of `cfg_sw_fsync`, the internal-sync
 pulse, and the rising-edge of `frame_sync_in` (gated by
 `cfg_ext_sync`). You don't need to drive or observe it.
