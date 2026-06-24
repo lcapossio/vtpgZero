@@ -51,15 +51,16 @@ help banner. Available keys:
 
 | Key | Effect |
 |-----|--------|
-| `0`..`8` (skip `5`) | switch `PATTERN_SEL` (0=bars, 1=hgrad, 2=vgrad, 3=checker, 4=solid, 6=grid, 7=ramp, 8=noise) |
-| `+` / `-` | grow / shrink the box in 16-px steps |
+| `0`..`9` (skip `5`) | switch `PATTERN_SEL` (0=bars, 1=hgrad, 2=vgrad, 3=checker, 4=solid, 6=grid, 7=ramp, 8=noise, 9=image) |
+| `+` / `-` | grow / shrink the box in 16-px steps (image-in-box auto-rescales) |
 | `f` / `s` | faster / slower box motion |
-| `b` | cycle box color through an 8-entry palette |
+| `b` | cycle box color through an 8-entry palette (visible only when image-in-box is off) |
 | `c` | cycle solid color (visible when `PATTERN_SEL = 4`) |
 | `g` / `G` | shrink / grow grid spacing (pattern 6) |
 | `k` / `K` | shrink / grow checker size (pattern 3) |
-| `e` / `d` | enable / disable the core |
+| `e` / `d` | enable / disable the core (`d` truly stops motion; the vsync handler only pulses `sw_fsync` while enabled) |
 | `v` | toggle vsync lock (see below) |
+| `i` | toggle image-in-box (writes `BOX_IMG_*_STEP = 0` as the runtime sentinel that falls back to solid `cfg_box_color`) |
 
 Each keystroke is a single AXI-Lite write to vtpgZero at `0xA0000000`;
 the change takes effect on the next emitted frame, no reconfig needed.
@@ -100,3 +101,10 @@ free-run behavior, tearing reappears).
 - Keep the DP property ordering in `vivado/build_bd.tcl`: the PS DisplayPort
   gate properties and DPAUX MIO mapping must be set before relying on the
   lower-level `PSU__DP__*` protocol properties.
+- The KV260 BD ships with both `EN_IMAGE=1` (128×128 mandrill scaled to
+  fill the 1280×720 active region as `PATTERN_SEL=9`) and `EN_BOX_IMAGE=1`
+  (32×32 mandrill scaled to whatever the box is currently sized to). The
+  app pre-computes `BOX_IMG_X/Y_STEP` at init and on every UART `+/-`
+  size change. To disable image-in-box at runtime, write `0` to either
+  step register (the `i` UART key does this); the box reverts to solid
+  `cfg_box_color`.

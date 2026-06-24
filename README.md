@@ -360,6 +360,12 @@ Default `BOX_IMAGE_W` / `BOX_IMAGE_H` = 32 picks up ~1 BRAM36 with the
 64×64 (~3 BRAM36) if you want more detail. The border ring still draws
 on top, so a small `BOX_BORDER` value frames the embedded image.
 
+**Runtime toggle.** Writing `BOX_IMG_X_STEP = 0` is the sentinel that
+falls back to solid `cfg_box_color` — no other valid step is zero, so
+the RTL keys off this to mux between the BRAM read and the solid fill.
+This lets the host flip image-in-box on/off without re-synth (the
+KV260 demo's `i` UART command uses exactly this).
+
 To enable in a build, pass `EN_IMAGE=1` (and override
 `IMAGE_W`/`IMAGE_H`/`IMAGE_HEX_FILE` if not using the defaults):
 
