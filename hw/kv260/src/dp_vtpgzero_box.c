@@ -419,6 +419,8 @@ void dp_run(void) {
     unsigned grid_spacing = 32;
     unsigned checker_size = 32;
     unsigned vsync_lock = 1;  /* sw_fsync pulse on every DP vsync = no tear */
+    unsigned vtpg_enabled = 1;  /* mirror of CONTROL[0]; gates the vsync pulse */
+    unsigned box_img_on  = 1;   /* mirror of "step != 0" sentinel */
 
     u1s("=== Running. UART commands (115200 8N1):\n");
     u1s("  0..9  pattern (0=bars 1=hgrad 2=vgrad 3=checker 4=solid\n");
@@ -427,6 +429,7 @@ void dp_run(void) {
     u1s("  b     cycle box color        c    solid color (PATTERN=4)\n");
     u1s("  g/G   grid spacing -/+       k/K  checker size -/+\n");
     u1s("  e/d   enable / disable core  v    toggle vsync lock\n");
+    u1s("  i     toggle image-in-box (BOX_IMG_*_STEP sentinel)\n");
     u1s("  ?     help\n===\n");
     u1s("vsync_lock=on\n");
 
@@ -446,7 +449,10 @@ void dp_run(void) {
              * before active scanout of row 0 begins. Anything we do here
              * (BSP handler, prints) eats into that budget and reintroduces
              * tear at the top rows. */
-            if (vsync_lock) {
+            if (vsync_lock && vtpg_enabled) {
+                /* Only pulse sw_fsync while the user has the core enabled;
+                 * otherwise this loop would re-arm CONTROL[0]=1 on every
+                 * DP vsync and the 'd' UART command would never stick. */
                 WR(VTPG_BASE + VTPG_REG_CONTROL, 0x3);  /* sw_fsync rising edge */
                 WR(VTPG_BASE + VTPG_REG_CONTROL, 0x1);  /* release */
             }
@@ -466,13 +472,16 @@ void dp_run(void) {
                 if (box_w < 600) box_w += 16;
                 if (box_h < 400) box_h += 16;
                 WR(VTPG_BASE + VTPG_REG_BOX_SIZE, (box_w << 16) | box_h);
-                vtpg_update_box_image_steps(box_w, box_h);
+                /* Only refresh steps if image-in-box is currently on, so
+                 * resizing the box while in solid-fill mode doesn't sneak
+                 * the image back on. */
+                if (box_img_on) vtpg_update_box_image_steps(box_w, box_h);
                 u1xl("box_size=", (box_w << 16) | box_h);
             } else if (ch == '-') {
                 if (box_w > 32) box_w -= 16;
                 if (box_h > 32) box_h -= 16;
                 WR(VTPG_BASE + VTPG_REG_BOX_SIZE, (box_w << 16) | box_h);
-                vtpg_update_box_image_steps(box_w, box_h);
+                if (box_img_on) vtpg_update_box_image_steps(box_w, box_h);
                 u1xl("box_size=", (box_w << 16) | box_h);
             } else if (ch == 'f') {
                 if (box_dx < 16) box_dx++;
@@ -509,9 +518,11 @@ void dp_run(void) {
                 WR(VTPG_BASE + VTPG_REG_CHECKER_SIZE, checker_size);
                 u1xl("checker=", checker_size);
             } else if (ch == 'e') {
+                vtpg_enabled = 1;
                 WR(VTPG_BASE + VTPG_REG_CONTROL, 1);
                 u1s("enable=1\n");
             } else if (ch == 'd') {
+                vtpg_enabled = 0;
                 WR(VTPG_BASE + VTPG_REG_CONTROL, 0);
                 u1s("enable=0\n");
             } else if (ch == 'v') {
@@ -522,9 +533,21 @@ void dp_run(void) {
                 WR(VTPG_BASE + VTPG_REG_FRAME_RATE,
                    vsync_lock ? 100000000u : 1666666u);
                 u1s(vsync_lock ? "vsync_lock=on\n" : "vsync_lock=off\n");
+            } else if (ch == 'i') {
+                /* Toggle image-in-box. Step=0 in the RTL falls back to
+                 * cfg_box_color (the original solid-fill behaviour). */
+                box_img_on = !box_img_on;
+                if (box_img_on) {
+                    vtpg_update_box_image_steps(box_w, box_h);
+                } else {
+                    WR(VTPG_BASE + VTPG_REG_BOX_IMG_X_STEP, 0);
+                    WR(VTPG_BASE + VTPG_REG_BOX_IMG_Y_STEP, 0);
+                }
+                u1s(box_img_on ? "box_img=on\n" : "box_img=off\n");
             } else if (ch == '?' || ch == 'h') {
                 u1s("keys: 0..9 pattern | +/- size | f/s speed | b box color |\n"
-                    "      c solid color | g/G grid | k/K checker | e/d enable\n");
+                    "      c solid color | g/G grid | k/K checker | e/d enable |\n"
+                    "      v vsync lock | i image-in-box\n");
             }
         }
 

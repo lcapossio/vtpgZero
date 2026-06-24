@@ -935,11 +935,15 @@ module vtpgz_core #(
     end
 
     // When EN_BOX_IMAGE=1 the box interior shows the scaled image instead
-    // of cfg_box_color. Border (when border_width > 0) still wins because
-    // box_on_border_s1 is checked first.
-    wire [11:0] box_inside_c0 = (EN_BOX_IMAGE != 0) ? box_img_r_s1 : box_fill_c0;
-    wire [11:0] box_inside_c1 = (EN_BOX_IMAGE != 0) ? box_img_g_s1 : box_fill_c1;
-    wire [11:0] box_inside_c2 = (EN_BOX_IMAGE != 0) ? box_img_b_s1 : box_fill_c2;
+    // of cfg_box_color -- but only while the host has programmed non-zero
+    // step values; cfg_box_img_x_step==0 is the runtime "fall back to
+    // solid box" sentinel (any real step is > 0). Border (when
+    // border_width > 0) still wins because box_on_border_s1 is checked
+    // first.
+    wire box_image_active = (EN_BOX_IMAGE != 0) && (cfg_box_img_x_step != 32'h0);
+    wire [11:0] box_inside_c0 = box_image_active ? box_img_r_s1 : box_fill_c0;
+    wire [11:0] box_inside_c1 = box_image_active ? box_img_g_s1 : box_fill_c1;
+    wire [11:0] box_inside_c2 = box_image_active ? box_img_b_s1 : box_fill_c2;
 
     wire [11:0] pix_c0 = box_on_border_s1 ? box_bdr_c0 :
                           box_in_s1        ? box_inside_c0 : pat_c0_s1;
