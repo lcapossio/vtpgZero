@@ -63,7 +63,8 @@ connect_bd_net [get_bd_pins zynq_ps/pl_clk0] [get_bd_pins zynq_ps/dp_video_in_cl
 create_bd_cell -type module -reference vtpgz_axilite_top u_tpg
 # IMAGE_HEX_FILE is passed as an absolute path so $readmemh resolves
 # regardless of Vivado's working directory.
-set IMG_HEX [file normalize "$::env(VTPGZ_REPO)/tests/images/mandrill_128x128.mem"]
+set IMG_HEX     [file normalize "$::env(VTPGZ_REPO)/tests/images/mandrill_128x128.mem"]
+set BOX_IMG_HEX [file normalize "$::env(VTPGZ_REPO)/tests/images/mandrill_32x32.mem"]
 set_property -dict [list \
     CONFIG.OUTPUT_MODE             0 \
     CONFIG.RGB_ORDER               0 \
@@ -75,6 +76,10 @@ set_property -dict [list \
     CONFIG.IMAGE_OUT_W          1280 \
     CONFIG.IMAGE_OUT_H           720 \
     CONFIG.IMAGE_HEX_FILE     $IMG_HEX \
+    CONFIG.EN_BOX_IMAGE            1 \
+    CONFIG.BOX_IMAGE_W            32 \
+    CONFIG.BOX_IMAGE_H            32 \
+    CONFIG.BOX_IMAGE_HEX_FILE $BOX_IMG_HEX \
 ] [get_bd_cells u_tpg]
 
 create_bd_cell -type module -reference axis_to_ddr_writer u_writer

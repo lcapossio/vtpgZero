@@ -119,6 +119,22 @@ static void usleep_busy(unsigned us) {
 #define VTPG_REG_HG_STEP       0x48
 #define VTPG_REG_VG_STEP       0x4C
 #define VTPG_REG_BOX_BORDER    0x50
+#define VTPG_REG_BOX_IMG_X_STEP 0x54
+#define VTPG_REG_BOX_IMG_Y_STEP 0x58
+/* Mirrors the build-time BOX_IMAGE_W/H baked into the PL (see
+ * hw/kv260/vivado/build_bd.tcl). Update both sides together. */
+#define VTPG_BOX_IMAGE_W       32u
+#define VTPG_BOX_IMAGE_H       32u
+
+/* Box-image scaler is a Q16 nearest-neighbour accumulator inside the PL,
+ * so the host has to pre-compute the per-pixel step whenever BOX_SIZE
+ * changes. Same pattern as HG_STEP / VG_STEP / BAR_WIDTH. */
+static void vtpg_update_box_image_steps(unsigned box_w, unsigned box_h) {
+    unsigned x_step = (box_w > 0) ? ((VTPG_BOX_IMAGE_W << 16) / box_w) : 0;
+    unsigned y_step = (box_h > 0) ? ((VTPG_BOX_IMAGE_H << 16) / box_h) : 0;
+    WR(VTPG_BASE + VTPG_REG_BOX_IMG_X_STEP, x_step);
+    WR(VTPG_BASE + VTPG_REG_BOX_IMG_Y_STEP, y_step);
+}
 
 #define VTPG_PAT_COLORBAR      0
 #define VTPG_CORE_ID_MAGIC     0x47505456u  /* "VTPG" little-endian */
@@ -158,6 +174,7 @@ static int vtpg_init_moving_box(unsigned w, unsigned h) {
      * a bouncing yellow box on top. */
     WR(VTPG_BASE + VTPG_REG_BOX_COLOR, 0x00FFFFFFu);        /* white */
     WR(VTPG_BASE + VTPG_REG_BOX_SIZE,  (96u << 16) | 64u);  /* {w[16],h[16]} */
+    vtpg_update_box_image_steps(96u, 64u);
     WR(VTPG_BASE + VTPG_REG_BOX_SPEED, (4u  << 16) | 3u);   /* {dx[16],dy[16]} */
     WR(VTPG_BASE + VTPG_REG_BOX_BORDER, (2u << 24) | 0x00000000u);  /* 2px black border */
 
@@ -449,11 +466,13 @@ void dp_run(void) {
                 if (box_w < 600) box_w += 16;
                 if (box_h < 400) box_h += 16;
                 WR(VTPG_BASE + VTPG_REG_BOX_SIZE, (box_w << 16) | box_h);
+                vtpg_update_box_image_steps(box_w, box_h);
                 u1xl("box_size=", (box_w << 16) | box_h);
             } else if (ch == '-') {
                 if (box_w > 32) box_w -= 16;
                 if (box_h > 32) box_h -= 16;
                 WR(VTPG_BASE + VTPG_REG_BOX_SIZE, (box_w << 16) | box_h);
+                vtpg_update_box_image_steps(box_w, box_h);
                 u1xl("box_size=", (box_w << 16) | box_h);
             } else if (ch == 'f') {
                 if (box_dx < 16) box_dx++;
