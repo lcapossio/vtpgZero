@@ -47,6 +47,14 @@ HERE     = Path(__file__).resolve().parent
 RTL_DIR  = (HERE / ".." / "rtl").resolve()
 HW_RTL   = (HERE / ".." / "hw" / "arty_a7_100t" / "rtl").resolve()
 HW_PY    = (HERE / ".." / "hw" / "arty_a7_100t" / "python").resolve()
+TESTS_DIR = (HERE / ".." / "tests").resolve()
+
+# Absolute paths to the embedded mandrill .mem images. The default values
+# inside vtpgz_core.v are repo-relative (good for synthesis from the BD tcl);
+# Verilator resolves $readmemh relative to the sim cwd, so we hand over
+# absolute paths here to make the coverage build cwd-independent.
+IMAGE_HEX_FILE_DEFAULT     = TESTS_DIR / "images" / "mandrill_128x128.mem"
+BOX_IMAGE_HEX_FILE_DEFAULT = TESTS_DIR / "images" / "mandrill_32x32.mem"
 
 TOP      = "vtpgz_axilite_top"
 RTL_SRCS = [RTL_DIR / "vtpgz_axil_regs.v",
@@ -100,11 +108,19 @@ def lint_flags(args: argparse.Namespace) -> list[str]:
 
 
 def build_flags(args: argparse.Namespace) -> list[str]:
+    # Coverage build also enables EN_IMAGE/EN_BOX_IMAGE so the new generate
+    # blocks, the PAT_IMAGE case, and the box-image step input ports get
+    # exercised in the coverage sim (sim_main.cpp drives pattern 9 and
+    # writes the two step regs).
     return ["--cc", "--exe", "--build", "--trace",
             "--coverage", "--coverage-line", "--coverage-toggle",
             "--coverage-user",
             "-Wall", "-Wno-UNUSED", "-Wno-WIDTH", "-Wno-CASEINCOMPLETE",
-            "-I" + str(RTL_DIR), "--top-module", TOP] + generics(args)
+            "-I" + str(RTL_DIR), "--top-module", TOP] + generics(args) + [
+            "-GEN_IMAGE=1",
+            "-GEN_BOX_IMAGE=1",
+            f'-GIMAGE_HEX_FILE="{IMAGE_HEX_FILE_DEFAULT.as_posix()}"',
+            f'-GBOX_IMAGE_HEX_FILE="{BOX_IMAGE_HEX_FILE_DEFAULT.as_posix()}"']
 
 
 def capture_flags(args: argparse.Namespace) -> list[str]:

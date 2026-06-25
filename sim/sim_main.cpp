@@ -33,6 +33,8 @@
 #define VTPGZ_REG_HG_STEP       0x48
 #define VTPGZ_REG_VG_STEP       0x4C
 #define VTPGZ_REG_BOX_BORDER    0x50
+#define VTPGZ_REG_BOX_IMG_X_STEP 0x54
+#define VTPGZ_REG_BOX_IMG_Y_STEP 0x58
 
 static const uint8_t kAllRegs[] = {
     VTPGZ_REG_CONTROL, VTPGZ_REG_IMG_WIDTH, VTPGZ_REG_IMG_HEIGHT, VTPGZ_REG_PATTERN_SEL,
@@ -264,6 +266,18 @@ int main(int argc, char** argv) {
     axi_write(VTPGZ_REG_BAR_WIDTH,    32);    // 256/8
     axi_write(VTPGZ_REG_HG_STEP,      16);    // ~0xFFF/255
     axi_write(VTPGZ_REG_VG_STEP,      32);    // ~0xFFF/127
+    // Exercise the box-image step regs. We hit both ends (0xFFFFFFFF and
+    // 0x00000000) before landing on the real Q16 scaler value to drive full
+    // toggle coverage across the 32-bit input ports. The 0-write also covers
+    // the step=0 runtime sentinel that switches box-image off in RTL.
+    axi_write(VTPGZ_REG_BOX_IMG_X_STEP, 0xFFFFFFFFu);
+    axi_write(VTPGZ_REG_BOX_IMG_Y_STEP, 0xFFFFFFFFu);
+    axi_write(VTPGZ_REG_BOX_IMG_X_STEP, 0x00000000u);
+    axi_write(VTPGZ_REG_BOX_IMG_Y_STEP, 0x00000000u);
+    axi_write(VTPGZ_REG_BOX_IMG_X_STEP, (32u << 16) / 16u);
+    axi_write(VTPGZ_REG_BOX_IMG_Y_STEP, (32u << 16) / 16u);
+    (void)axi_read(VTPGZ_REG_BOX_IMG_X_STEP);
+    (void)axi_read(VTPGZ_REG_BOX_IMG_Y_STEP);
     axi_write(VTPGZ_REG_CHECKER_SIZE, 16);
     axi_write(VTPGZ_REG_GRID_SPACING, 24);
     axi_write(VTPGZ_REG_GRID_COLOR,   0x00FFFF00);
@@ -277,7 +291,7 @@ int main(int argc, char** argv) {
     // OUTPUT_MODE / BPC are now build-time. We sweep just the patterns at
     // runtime; the regression Makefile builds the binary multiple times
     // for the (mode, bpc) coverage.
-    for (int pat = 0; pat <= 8; ++pat) {
+    for (int pat = 0; pat <= 9; ++pat) {
         axi_write(VTPGZ_REG_CONTROL,      0);
         axi_write(VTPGZ_REG_PATTERN_SEL,  pat);
         axi_write(VTPGZ_REG_CONTROL,      1);
