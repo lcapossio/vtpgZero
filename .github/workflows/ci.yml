@@ -7,6 +7,43 @@ on:
     branches: ["**"]
 
 jobs:
+  python-smoke:
+    name: Python smoke
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Syntax-check Python helpers
+        run: |
+          python -c "import ast, pathlib; roots=('scripts','sim','hw/arty_a7_100t/python'); [ast.parse(p.read_text(encoding='utf-8'), filename=str(p)) for root in roots for p in pathlib.Path(root).rglob('*.py')]"
+
+  fcapz-submodule:
+    name: fcapz submodule RTL lint
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install iverilog
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends iverilog
+
+      - name: Run fcapz RTL lint
+        working-directory: fcapz
+        run: python sim/run_sim.py --lint-only
+
   sim:
     name: Verilator simulation
     runs-on: ubuntu-24.04
@@ -25,5 +62,8 @@ jobs:
       - name: Regression (coverage + model gate, RGB 8bpc)
         run: python sim/run_sim.py regression
 
-      - name: All modes (model ↔ sim byte-exact, 20 configs)
+      - name: All modes (model vs sim byte-exact, 20 configs)
         run: python sim/run_sim.py all_modes
+
+      - name: Sequential captures (RGB/RAW/YUV state-leakage gate)
+        run: python sim/run_sim.py check_seq_modes

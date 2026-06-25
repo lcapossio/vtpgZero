@@ -711,14 +711,27 @@ module vtpgz_core #(
         wire [IMG_LOG2H-1:0] src_y = acc_y[ACC_Y_W-1 -: IMG_LOG2H];
 
         wire [IMG_ADDR_W-1:0] image_addr = {src_y, src_x};
-        wire [23:0] image_word = image_mem[image_addr];
 
-        wire [7:0] img_r8 = image_word[23:16];
-        wire [7:0] img_g8 = image_word[15:8];
-        wire [7:0] img_b8 = image_word[7:0];
-        assign image_r = in_image ? {img_r8, img_r8[7:4]} : 12'h000;
-        assign image_g = in_image ? {img_g8, img_g8[7:4]} : 12'h000;
-        assign image_b = in_image ? {img_b8, img_b8[7:4]} : 12'h000;
+        // Synchronous (block-RAM) read + matched in_image delay. Registering
+        // the read lets Vivado map image_word_q into the BRAM tile's
+        // built-in DOUT register, breaking the long combinational
+        // acc_x -> image_mem -> pattern-mux path so the IMAGE pattern closes
+        // timing well above the KV260 ~74 MHz DP rate (e.g. 130 MHz). Costs
+        // one pixel of image latency: a uniform 1-px horizontal shift,
+        // visually imperceptible at any realistic IMAGE_OUT_W:IMAGE_W ratio.
+        reg  [23:0] image_word_q;
+        reg         in_image_q;
+        always @(posedge aclk) begin
+            image_word_q <= image_mem[image_addr];
+            in_image_q   <= in_image;
+        end
+
+        wire [7:0] img_r8 = image_word_q[23:16];
+        wire [7:0] img_g8 = image_word_q[15:8];
+        wire [7:0] img_b8 = image_word_q[7:0];
+        assign image_r = in_image_q ? {img_r8, img_r8[7:4]} : 12'h000;
+        assign image_g = in_image_q ? {img_g8, img_g8[7:4]} : 12'h000;
+        assign image_b = in_image_q ? {img_b8, img_b8[7:4]} : 12'h000;
         // verilator coverage_on
     end else begin : g_image_off
         assign image_r = 12'h000;
@@ -789,11 +802,23 @@ module vtpgz_core #(
         wire [BIMG_LOG2H-1:0] bimg_src_y = bimg_acc_y[BIMG_ACC_Y_W-1 -: BIMG_LOG2H];
 
         wire [BIMG_ADDR_W-1:0] bimg_addr = {bimg_src_y, bimg_src_x};
-        wire [23:0] bimg_word = box_image_mem[bimg_addr];
 
-        wire [7:0] bimg_r8 = bimg_word[23:16];
-        wire [7:0] bimg_g8 = bimg_word[15:8];
-        wire [7:0] bimg_b8 = bimg_word[7:0];
+        // Synchronous read for the same timing reason as the IMAGE
+        // pattern's BRAM (Vivado packs into the BRAM tile's DOUT register;
+        // breaks the BRAM-output-to-pat_c0_s1 combinational path). The
+        // existing pre-mux s1 stage still latches downstream, so the box
+        // image ends up 1 cycle later than the box mask -- a uniform
+        // 1-px horizontal shift inside the box, which matches the
+        // shift on the underlying IMAGE pattern so the two stay
+        // pixel-aligned.
+        reg [23:0] bimg_word_q;
+        always @(posedge aclk) begin
+            bimg_word_q <= box_image_mem[bimg_addr];
+        end
+
+        wire [7:0] bimg_r8 = bimg_word_q[23:16];
+        wire [7:0] bimg_g8 = bimg_word_q[15:8];
+        wire [7:0] bimg_b8 = bimg_word_q[7:0];
         assign box_img_r = {bimg_r8, bimg_r8[7:4]};
         assign box_img_g = {bimg_g8, bimg_g8[7:4]};
         assign box_img_b = {bimg_b8, bimg_b8[7:4]};
