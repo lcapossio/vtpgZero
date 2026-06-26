@@ -40,6 +40,8 @@ from vtpgz_model import (  # noqa: E402
     PAT_RAMP,
     PAT_NOISE,
     CHROMA_NEUTRAL,
+    PALETTE_RGB,
+    PALETTE_YUV,
 )
 
 # Patterns that must emit neutral chroma on every pixel in YUV mode.
@@ -137,11 +139,62 @@ def _check_grid_background() -> int:
     return 0
 
 
+def _decode_bt601_full_range(Y: int, Cb: int, Cr: int) -> tuple[int, int, int]:
+    """12-bit BT.601 full-range YCbCr -> RGB. Inverse of the encoding used
+    to populate PALETTE_YUV (see comment block in vtpgz_model.py). Output
+    is clamped to [0, 0xFFF]."""
+    cb_off = Cb - 0x800
+    cr_off = Cr - 0x800
+    R = Y + 1.402 * cr_off
+    G = Y - 0.344 * cb_off - 0.714 * cr_off
+    B = Y + 1.772 * cb_off
+    def clamp(v: float) -> int:
+        return max(0, min(0xFFF, int(round(v))))
+    return (clamp(R), clamp(G), clamp(B))
+
+
+# Tolerance accommodates 12-bit quantisation of the YUV constants. Empirically
+# every bar decodes to within +/-4 of the SMPTE 12-bit value; +/-8 is the
+# conservative bound that still catches any single-hex-digit transcription
+# typo (which would shift the result by at least 0x100).
+COLORBAR_DECODE_TOL = 8
+
+
+def _check_colorbar_palette_decodes_to_smpte() -> int:
+    """The YUV colorbar palette is hand-tuned in both RTL and model -- so the
+    byte-exact gate trivially passes even if both sources have the same
+    transcription error. This check applies BT.601 full-range YCbCr -> RGB
+    to each PALETTE_YUV entry and asserts it lands within tolerance of the
+    corresponding PALETTE_RGB SMPTE-bar value."""
+    bad: list[str] = []
+    for idx, (yuv, rgb_exp) in enumerate(zip(PALETTE_YUV, PALETTE_RGB)):
+        Y, Cb, Cr = yuv
+        rgb_dec = _decode_bt601_full_range(Y, Cb, Cr)
+        if any(abs(d - e) > COLORBAR_DECODE_TOL
+               for d, e in zip(rgb_dec, rgb_exp)):
+            bad.append(
+                f"bar {idx}: YUV=(0x{Y:03X},0x{Cb:03X},0x{Cr:03X}) decoded "
+                f"-> RGB=(0x{rgb_dec[0]:03X},0x{rgb_dec[1]:03X},"
+                f"0x{rgb_dec[2]:03X}) but expected SMPTE "
+                f"(0x{rgb_exp[0]:03X},0x{rgb_exp[1]:03X},0x{rgb_exp[2]:03X}) "
+                f"(tol +/-{COLORBAR_DECODE_TOL})"
+            )
+    if bad:
+        print("FAIL: colorbar YUV palette does not decode to expected SMPTE bars")
+        for b in bad:
+            print(f"  {b}")
+        return 1
+    print("PASS: colorbar YUV palette decodes to expected SMPTE bars "
+          f"(all 8 within +/-{COLORBAR_DECODE_TOL})")
+    return 0
+
+
 def main() -> int:
     rc = 0
     for pat, name in GRAY_PATTERNS:
         rc |= _check_gray_pattern(pat, name)
     rc |= _check_grid_background()
+    rc |= _check_colorbar_palette_decodes_to_smpte()
     print()
     print("ALL YUV SPEC CHECKS PASS" if rc == 0 else "YUV SPEC CHECKS FAILED")
     return rc
