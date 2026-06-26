@@ -226,9 +226,8 @@ def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int,
             r = ((cfg.grid_color >> 16) & 0xFF) << 4
             g = ((cfg.grid_color >> 8)  & 0xFF) << 4
             b = ( cfg.grid_color        & 0xFF) << 4
-        else:
-            r = g = b = 0
-        return (r, g, b)
+            return (r, g, b)
+        return gray(0)
 
     if pat == PAT_RAMP:
         v = 0xFFF if (regs.ramp_acc >> 12) else (regs.ramp_acc & 0xFFF)

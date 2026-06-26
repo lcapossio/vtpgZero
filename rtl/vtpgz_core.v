@@ -599,13 +599,19 @@ module vtpgz_core #(
             end
         end
         wire on_grid = (gx_cnt == 16'h0) || (gy_cnt == 16'h0);
+        // Off-grid background must be {Y=0, Cb=neutral, Cr=neutral} in YUV mode,
+        // otherwise the receiver's YCbCr->RGB renders {0,0,0} as ~(0,135,0)
+        // green. The other gray-style patterns get the same treatment in the
+        // _c1/_c2 helpers below.
+        wire [11:0] bg_c1 = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
+        wire [11:0] bg_c2 = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
         assign grid_r = on_grid ? {cfg_grid_color[23:16],4'h0} : 12'h000;
-        assign grid_g = on_grid ? {cfg_grid_color[15:8], 4'h0} : 12'h000;
-        assign grid_b = on_grid ? {cfg_grid_color[7:0],  4'h0} : 12'h000;
+        assign grid_g = on_grid ? {cfg_grid_color[15:8], 4'h0} : bg_c1;
+        assign grid_b = on_grid ? {cfg_grid_color[7:0],  4'h0} : bg_c2;
     end else begin : g_grid_off
         assign grid_r = 12'h000;
-        assign grid_g = 12'h000;
-        assign grid_b = 12'h000;
+        assign grid_g = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
+        assign grid_b = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
     end endgenerate
 
     // ---- Ramp ----
