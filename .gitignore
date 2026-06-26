@@ -3,6 +3,7 @@ sim/obj_capture/
 sim/obj_capture_*/
 sim/obj_seq/
 sim/logs/
+sim/cocotb/build/
 *.vcd
 *.vvp
 synth/results/

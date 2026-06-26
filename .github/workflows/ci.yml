@@ -70,3 +70,54 @@ jobs:
 
       - name: Sequential captures (RGB/RAW/YUV state-leakage gate)
         run: python sim/run_sim.py check_seq_modes
+
+  cocotb:
+    name: cocotb (AXI-Lite + AXIS handshake)
+    runs-on: ubuntu-24.04
+    # cocotb 2.0.1 + Verilator needs Verilator >= 5.030 because of
+    # VerilatedVpi::clearEvalNeeded/doInertialPuts/evalNeeded APIs. The
+    # apt verilator on ubuntu-24.04 is 5.020, so we build a tagged
+    # Verilator release from source here. Build is cached on the
+    # release tag so subsequent runs reuse it.
+    env:
+      VERILATOR_VERSION: v5.030
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build deps + cocotb
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            git make g++ perl python3-dev autoconf flex bison libfl-dev \
+            ccache help2man
+          python -m pip install --upgrade pip
+          python -m pip install cocotb==2.0.1
+
+      - name: Cache Verilator build
+        id: verilator-cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/verilator
+          key: verilator-${{ env.VERILATOR_VERSION }}-ubuntu-24.04
+
+      - name: Build Verilator from source
+        if: steps.verilator-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 --branch ${{ env.VERILATOR_VERSION }} \
+            https://github.com/verilator/verilator.git /tmp/verilator
+          cd /tmp/verilator
+          autoconf
+          ./configure --prefix=/opt/verilator
+          make -j$(nproc)
+          sudo make install
+
+      - name: Run cocotb suites
+        run: |
+          export PATH=/opt/verilator/bin:$PATH
+          verilator --version
+          python sim/cocotb/run_cocotb.py
