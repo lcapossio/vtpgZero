@@ -22,6 +22,9 @@ jobs:
         run: |
           python -c "import ast, pathlib; roots=('scripts','sim','hw/arty_a7_100t/python'); [ast.parse(p.read_text(encoding='utf-8'), filename=str(p)) for root in roots for p in pathlib.Path(root).rglob('*.py')]"
 
+      - name: YUV spec test (model-side property gate)
+        run: python hw/arty_a7_100t/python/check_yuv_spec.py
+
   fcapz-submodule:
     name: fcapz submodule RTL lint
     runs-on: ubuntu-24.04
