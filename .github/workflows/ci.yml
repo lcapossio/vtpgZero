@@ -47,6 +47,25 @@ jobs:
         working-directory: fcapz
         run: python sim/run_sim.py --lint-only
 
+  rtl-state-align:
+    name: RTL state/AXIS alignment
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Icarus Verilog
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends iverilog
+
+      - name: Run stateful-pattern alignment regression
+        run: python sim/run_iverilog_state_align.py
+
   sim:
     name: Verilator simulation
     runs-on: ubuntu-24.04

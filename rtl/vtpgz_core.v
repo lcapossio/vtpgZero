@@ -335,17 +335,14 @@ module vtpgz_core #(
                 bar_pix_cnt <= 16'h0;
                 bar_idx     <= 3'h0;
             end else if (source_advance) begin
-                if (pix_sof || last_x) begin
-                    // Pix_sof: first pixel of first frame (frame_init also
-                    // hits this path; redundant but harmless).
-                    // last_x: force the bar walk back to bar 0 at the END
+                if (last_x) begin
+                    // Force the bar walk back to bar 0 at the END
                     // of each line so the next line's pixel 0 reads bar 0
-                    // combinationally. Anchoring on last_x instead of
-                    // (x == 0) avoids a stale-bar_idx read at x=0 caused
-                    // by the NBA delay (the prior code dropped the bar 7
-                    // → bar 0 wrap when bar_width divided img_width
-                    // cleanly, shifting every line's pattern right by one
-                    // pixel).
+                    // combinationally. Do not also reset on pix_sof:
+                    // frame_init already clears the state before the first
+                    // active pixel, and resetting again at x=0 would skip
+                    // counting that beat, shifting every bar transition one
+                    // pixel late.
                     bar_pix_cnt <= 16'h0;
                     bar_idx     <= 3'h0;
                 end else if (bar_pix_cnt + 16'h1 >= bar_width_eff) begin
