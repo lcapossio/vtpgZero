@@ -64,6 +64,18 @@ SUITES = [
             "LINE_GAP_CYCLES": 1,
         },
     },
+    {
+        "name": "tready_probe_min_gap",
+        "test_module": "test_tready_probe",
+        "parameters": {
+            "OUTPUT_MODE":   0,
+            "BPC":           8,
+            "RGB_ORDER":     0,
+            "EN_IMAGE":      0,
+            "EN_BOX_IMAGE":  0,
+            "LINE_GAP_CYCLES": 0,
+        },
+    },
     # NOTE: a YUV spec test ran against the *Python reference model* lives
     # at hw/arty_a7_100t/python/check_yuv_spec.py and is gated under the
     # Python-smoke CI job. A cocotb-driven YUV spec test was attempted but

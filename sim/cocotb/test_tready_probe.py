@@ -36,7 +36,8 @@ REG_BAR_WIDTH   = 0x44
 
 FRAME_W = 32
 FRAME_H = 4
-LINE_GAP_CYCLES = int(os.environ.get("VTPGZ_LINE_GAP_CYCLES", "1"))
+LINE_GAP_CYCLES_CONFIG = int(os.environ.get("VTPGZ_LINE_GAP_CYCLES", "1"))
+LINE_GAP_CYCLES = max(1, LINE_GAP_CYCLES_CONFIG)
 
 
 async def _axi_write(dut, addr, data, timeout=100):

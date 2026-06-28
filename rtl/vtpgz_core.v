@@ -84,7 +84,8 @@ module vtpgz_core #(
     parameter BPC           = 8,
     // ----- AXI4-Stream video line pacing -----
     // Insert this many TVALID-low cycles after each non-final TLAST before
-    // emitting the next line. Set to 0 for a fully continuous stream.
+    // emitting the next line. Values below 1 are clamped to the mandatory
+    // one-cycle minimum gap.
     parameter integer LINE_GAP_CYCLES = 1,
     // ----- derived AXI-Stream tdata width (do NOT override unless you know
     // what you're doing; the default is the smallest multiple-of-8 that
@@ -248,14 +249,13 @@ module vtpgz_core #(
     // beat. The output register inserts the configured inter-line TVALID-low
     // gap after a non-final TLAST handshake and stalls the upstream pipe while
     // that bubble is emitted.
-    localparam [31:0] LINE_GAP_CYCLES_U =
-        (LINE_GAP_CYCLES < 0) ? 32'd0 : LINE_GAP_CYCLES;
+    localparam [31:0] LINE_GAP_CYCLES_MIN1 =
+        (LINE_GAP_CYCLES < 1) ? 32'd1 : LINE_GAP_CYCLES;
     /*verilator coverage_off*/ reg [31:0] axis_gap_cnt; /*verilator coverage_on*/
     reg        teof_r;
     wire axis_handshake = m_axis_tvalid && m_axis_tready;
     wire axis_gap_start =
-        axis_handshake && m_axis_tlast && !teof_r &&
-        (LINE_GAP_CYCLES_U != 32'h0);
+        axis_handshake && m_axis_tlast && !teof_r;
     wire axis_gap_active = (axis_gap_cnt != 32'h0);
     wire axis_can_advance =
         (!m_axis_tvalid || m_axis_tready) && !axis_gap_start && !axis_gap_active;
@@ -1148,7 +1148,7 @@ module vtpgz_core #(
             axis_gap_cnt <= 32'h0;
         end else begin
             if (axis_gap_start)
-                axis_gap_cnt <= LINE_GAP_CYCLES_U - 32'd1;
+                axis_gap_cnt <= LINE_GAP_CYCLES_MIN1 - 32'd1;
             else if (axis_gap_active)
                 axis_gap_cnt <= axis_gap_cnt - 32'd1;
         end
