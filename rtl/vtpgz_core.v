@@ -82,6 +82,10 @@ module vtpgz_core #(
     // 12-bit; for BPC<=12 the pack stage truncates LSBs, for BPC>12 it
     // zero-extends LSBs (the upper 12 bits carry the pattern data).
     parameter BPC           = 8,
+    // ----- AXI4-Stream video line pacing -----
+    // Insert this many TVALID-low cycles after each non-final TLAST before
+    // emitting the next line. Set to 0 for a fully continuous stream.
+    parameter integer LINE_GAP_CYCLES = 1,
     // ----- derived AXI-Stream tdata width (do NOT override unless you know
     // what you're doing; the default is the smallest multiple-of-8 that
     // holds the active components for the chosen mode) -----
@@ -240,10 +244,21 @@ module vtpgz_core #(
     /*verilator coverage_off*/ reg [15:0] y; /*verilator coverage_on*/
     /*verilator coverage_off*/ reg [15:0] frame_num; /*verilator coverage_on*/
 
-    // Source state advances only while a frame is active. The output pipe
-    // also advances for a couple of cycles after ACTIVE drops so delayed tail
-    // beats can flush instead of being stranded until the next frame.
-    wire axis_can_advance = (!m_axis_tvalid || m_axis_tready);
+    // Source state advances only while the output pipe can accept another
+    // beat. The output register inserts the configured inter-line TVALID-low
+    // gap after a non-final TLAST handshake and stalls the upstream pipe while
+    // that bubble is emitted.
+    localparam [31:0] LINE_GAP_CYCLES_U =
+        (LINE_GAP_CYCLES < 0) ? 32'd0 : LINE_GAP_CYCLES;
+    reg [31:0] axis_gap_cnt;
+    reg        teof_r;
+    wire axis_handshake = m_axis_tvalid && m_axis_tready;
+    wire axis_gap_start =
+        axis_handshake && m_axis_tlast && !teof_r &&
+        (LINE_GAP_CYCLES_U != 32'h0);
+    wire axis_gap_active = (axis_gap_cnt != 32'h0);
+    wire axis_can_advance =
+        (!m_axis_tvalid || m_axis_tready) && !axis_gap_start && !axis_gap_active;
     wire source_advance   = active && axis_can_advance;
 
     wire        last_x = (x == img_width_eff  - 16'd1);
@@ -304,8 +319,9 @@ module vtpgz_core #(
     end
 
     wire pix_valid = active;
-    wire pix_sof   = active && (x == 16'h0) && (y == 16'h0);
-    wire pix_eol   = active && last_x;
+    wire pix_sof   = pix_valid && (x == 16'h0) && (y == 16'h0);
+    wire pix_eol   = pix_valid && last_x;
+    wire pix_eof   = pix_valid && end_of_frame;
 
     // ---------------- pattern generators (combinational) ----------------
     // Each pattern is wrapped in a `generate if (EN_xxx)` so disabled patterns
@@ -927,7 +943,7 @@ module vtpgz_core #(
     // stage gets a value computed from the SAME cycle's x,y as box_in_s1
     // (the combinational box_img_* would otherwise be one cycle ahead).
     reg [11:0] box_img_r_s1, box_img_g_s1, box_img_b_s1;
-    reg        pix_valid_s1, pix_sof_s1, pix_eol_s1;
+    reg        pix_valid_s1, pix_sof_s1, pix_eol_s1, pix_eof_s1;
     reg        pix_x_lsb_s1, pix_y_lsb_s1;
     wire       pipe_advance;
     always @(posedge aclk) begin
@@ -943,6 +959,7 @@ module vtpgz_core #(
             pix_valid_s1     <= 1'b0;
             pix_sof_s1       <= 1'b0;
             pix_eol_s1       <= 1'b0;
+            pix_eof_s1       <= 1'b0;
             pix_x_lsb_s1     <= 1'b0;
             pix_y_lsb_s1     <= 1'b0;
         end else if (pipe_advance) begin
@@ -957,6 +974,7 @@ module vtpgz_core #(
             pix_valid_s1     <= pix_valid;
             pix_sof_s1       <= pix_sof;
             pix_eol_s1       <= pix_eol;
+            pix_eof_s1       <= pix_eof;
             pix_x_lsb_s1     <= x[0];
             pix_y_lsb_s1     <= y[0];
         end
@@ -985,7 +1003,7 @@ module vtpgz_core #(
     // output: SOF → first pixel on AXI is delayed by 2 cycles vs. a
     // combinational core, but the per-beat value sequence is unchanged.
     (* keep = "true", dont_touch = "true" *) reg [11:0] pix_c0_q, pix_c1_q, pix_c2_q;
-    reg        pix_valid_q, pix_sof_q, pix_eol_q;
+    reg        pix_valid_q, pix_sof_q, pix_eol_q, pix_eof_q;
     reg        pix_x_lsb_q, pix_y_lsb_q;
     assign pipe_advance = axis_can_advance && (active || pix_valid_s1 || pix_valid_q);
     always @(posedge aclk) begin
@@ -996,6 +1014,7 @@ module vtpgz_core #(
             pix_valid_q <= 1'b0;
             pix_sof_q   <= 1'b0;
             pix_eol_q   <= 1'b0;
+            pix_eof_q   <= 1'b0;
             pix_x_lsb_q <= 1'b0;
             pix_y_lsb_q <= 1'b0;
         end else if (pipe_advance) begin
@@ -1005,6 +1024,7 @@ module vtpgz_core #(
             pix_valid_q <= pix_valid_s1;
             pix_sof_q   <= pix_sof_s1;
             pix_eol_q   <= pix_eol_s1;
+            pix_eof_q   <= pix_eof_s1;
             pix_x_lsb_q <= pix_x_lsb_s1;
             pix_y_lsb_q <= pix_y_lsb_s1;
         end
@@ -1123,6 +1143,17 @@ module vtpgz_core #(
         end
     endgenerate
 
+    always @(posedge aclk) begin
+        if (!aresetn) begin
+            axis_gap_cnt <= 32'h0;
+        end else begin
+            if (axis_gap_start)
+                axis_gap_cnt <= LINE_GAP_CYCLES_U - 32'd1;
+            else if (axis_gap_active)
+                axis_gap_cnt <= axis_gap_cnt - 32'd1;
+        end
+    end
+
     // ---------------- AXI-Stream output register ----------------
     always @(posedge aclk) begin
         if (!aresetn) begin
@@ -1130,15 +1161,23 @@ module vtpgz_core #(
             tvalid_r <= 1'b0;
             tlast_r  <= 1'b0;
             tuser_r  <= 1'b0;
+            teof_r    <= 1'b0;
+        end else if (axis_gap_start || axis_gap_active) begin
+            tvalid_r <= 1'b0;
+            tlast_r  <= 1'b0;
+            tuser_r  <= 1'b0;
+            teof_r    <= 1'b0;
         end else if (pipe_advance) begin
             tdata_r  <= tdata_next;
             tvalid_r <= pix_valid_q;
             tlast_r  <= pix_eol_q;
             tuser_r  <= pix_sof_q;
+            teof_r    <= pix_eof_q;
         end else if (m_axis_tvalid && m_axis_tready) begin
             tvalid_r <= 1'b0;
             tlast_r  <= 1'b0;
             tuser_r  <= 1'b0;
+            teof_r    <= 1'b0;
         end
     end
 

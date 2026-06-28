@@ -9,10 +9,11 @@
 `include "vtpgz_defs.vh"
 
 module tb_state_align;
-    localparam integer W = 16;
-    localparam integer H = 8;
-    localparam integer BAR_W = 2;
-    localparam integer HG_STEP = 16'h0111;
+    localparam integer W = 256;
+    localparam integer H = 128;
+    localparam integer BAR_W = 32;
+    localparam integer HG_STEP = 16;
+    localparam integer LINE_GAP_CYCLES = 1;
     localparam integer FRAMES_PER_PATTERN = 2;
 
     reg aclk = 1'b0;
@@ -26,6 +27,7 @@ module tb_state_align;
     wire [7:0]  sts_frame_count;
     wire [23:0] m_axis_tdata;
     wire        m_axis_tvalid;
+    reg         m_axis_tready = 1'b1;
     wire        m_axis_tlast;
     wire        m_axis_tuser;
 
@@ -42,7 +44,8 @@ module tb_state_align;
         .EN_IMAGE(0),
         .EN_BOX_IMAGE(0),
         .OUTPUT_MODE(`VTPGZ_MODE_RGB),
-        .BPC(8)
+        .BPC(8),
+        .LINE_GAP_CYCLES(LINE_GAP_CYCLES)
     ) dut (
         .aclk(aclk),
         .aresetn(aresetn),
@@ -73,7 +76,7 @@ module tb_state_align;
         .sts_frame_count(sts_frame_count),
         .m_axis_tdata(m_axis_tdata),
         .m_axis_tvalid(m_axis_tvalid),
-        .m_axis_tready(1'b1),
+        .m_axis_tready(m_axis_tready),
         .m_axis_tlast(m_axis_tlast),
         .m_axis_tuser(m_axis_tuser),
         .frame_sync_in(1'b0)
@@ -86,6 +89,18 @@ module tb_state_align;
     integer completed_frames = 0;
     integer in_frame = 0;
     integer active_pattern = `VTPGZ_PAT_COLORBAR;
+    integer gap_remaining = 0;
+    integer ready_cycle = 0;
+
+    always @(negedge aclk) begin
+        if (!aresetn) begin
+            ready_cycle <= 0;
+            m_axis_tready <= 1'b1;
+        end else begin
+            ready_cycle <= ready_cycle + 1;
+            m_axis_tready <= ((ready_cycle & 7) != 0);
+        end
+    end
 
     function [23:0] colorbar_expected;
         input integer x_pos;
@@ -138,6 +153,7 @@ module tb_state_align;
             frame_pix = 0;
             completed_frames = 0;
             in_frame = 0;
+            gap_remaining = 0;
             active_pattern = pattern;
         end
     endtask
@@ -161,38 +177,50 @@ module tb_state_align;
             frame_pix <= 0;
             completed_frames <= 0;
             in_frame <= 0;
-        end else if (m_axis_tvalid) begin
-            if (m_axis_tuser) begin
-                if (in_frame && frame_pix != W * H)
-                    error_at("short-frame", W * H, frame_pix);
-                in_frame <= 1;
-                axis_x <= 0;
-                axis_y <= 0;
-                frame_pix <= 0;
-            end else if (!in_frame) begin
-                error_at("missing-sof", 1, 0);
+            gap_remaining <= 0;
+        end else begin
+            if (gap_remaining > 0) begin
+                if (m_axis_tvalid)
+                    error_at("line-gap-tvalid", 0, 1);
+                gap_remaining <= gap_remaining - 1;
             end
 
-            exp_data = expected_pixel(active_pattern, m_axis_tuser ? 0 : axis_x);
-            if (m_axis_tdata !== exp_data)
-                error_at("pixel", exp_data, m_axis_tdata);
+            if (m_axis_tvalid && m_axis_tready) begin
+                if (m_axis_tuser) begin
+                    if (in_frame && frame_pix != W * H)
+                        error_at("short-frame", W * H, frame_pix);
+                    in_frame <= 1;
+                    axis_x <= 0;
+                    axis_y <= 0;
+                    frame_pix <= 0;
+                end else if (!in_frame) begin
+                    error_at("missing-sof", 1, 0);
+                end
 
-            if (m_axis_tlast !== ((m_axis_tuser ? 0 : axis_x) == W - 1))
-                error_at("tlast", ((m_axis_tuser ? 0 : axis_x) == W - 1), m_axis_tlast);
+                exp_data = expected_pixel(active_pattern, m_axis_tuser ? 0 : axis_x);
+                if (m_axis_tdata !== exp_data)
+                    error_at("pixel", exp_data, m_axis_tdata);
 
-            if ((m_axis_tuser ? 0 : axis_x) == W - 1) begin
-                axis_x <= 0;
-                axis_y <= (m_axis_tuser ? 0 : axis_y) + 1;
-            end else begin
-                axis_x <= (m_axis_tuser ? 0 : axis_x) + 1;
-            end
-            frame_pix <= (m_axis_tuser ? 0 : frame_pix) + 1;
+                if (m_axis_tlast !== ((m_axis_tuser ? 0 : axis_x) == W - 1))
+                    error_at("tlast", ((m_axis_tuser ? 0 : axis_x) == W - 1), m_axis_tlast);
 
-            if ((m_axis_tuser ? 0 : frame_pix) + 1 == W * H) begin
-                if (((m_axis_tuser ? 0 : axis_y) + 1) != H)
-                    error_at("height", H, (m_axis_tuser ? 0 : axis_y) + 1);
-                completed_frames <= completed_frames + 1;
-                in_frame <= 0;
+                if (m_axis_tlast && ((m_axis_tuser ? 0 : axis_y) != H - 1))
+                    gap_remaining <= LINE_GAP_CYCLES;
+
+                if ((m_axis_tuser ? 0 : axis_x) == W - 1) begin
+                    axis_x <= 0;
+                    axis_y <= (m_axis_tuser ? 0 : axis_y) + 1;
+                end else begin
+                    axis_x <= (m_axis_tuser ? 0 : axis_x) + 1;
+                end
+                frame_pix <= (m_axis_tuser ? 0 : frame_pix) + 1;
+
+                if ((m_axis_tuser ? 0 : frame_pix) + 1 == W * H) begin
+                    if (((m_axis_tuser ? 0 : axis_y) + 1) != H)
+                        error_at("height", H, (m_axis_tuser ? 0 : axis_y) + 1);
+                    completed_frames <= completed_frames + 1;
+                    in_frame <= 0;
+                end
             end
         end
     end

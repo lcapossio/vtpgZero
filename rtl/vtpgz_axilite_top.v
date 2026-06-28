@@ -43,6 +43,7 @@ module vtpgz_axilite_top #(
     parameter RAW_BAYER     = `VTPGZ_RAW_RGGB,
     parameter RGB_ORDER     = `VTPGZ_RGB_ORDER_XILINX,
     parameter BPC           = 8,
+    parameter integer LINE_GAP_CYCLES = 1,
     // ----- derived AXI-Stream tdata width (same formula as in core) -----
     parameter C_AXIS_TDATA_WIDTH =
         (OUTPUT_MODE == `VTPGZ_MODE_RGB) ? (((3*BPC + 7) / 8) * 8) :
@@ -197,6 +198,7 @@ module vtpgz_axilite_top #(
         .RAW_BAYER    (RAW_BAYER),
         .RGB_ORDER    (RGB_ORDER),
         .BPC          (BPC),
+        .LINE_GAP_CYCLES(LINE_GAP_CYCLES),
         .C_AXIS_TDATA_WIDTH(C_AXIS_TDATA_WIDTH)
     ) u_core (
         .aclk             (aclk),

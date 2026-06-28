@@ -49,6 +49,7 @@ SUITES = [
             "RGB_ORDER":     0,
             "EN_IMAGE":      0,
             "EN_BOX_IMAGE":  0,
+            "LINE_GAP_CYCLES": 1,
         },
     },
     {
@@ -60,6 +61,7 @@ SUITES = [
             "RGB_ORDER":     0,
             "EN_IMAGE":      0,
             "EN_BOX_IMAGE":  0,
+            "LINE_GAP_CYCLES": 1,
         },
     },
     # NOTE: a YUV spec test ran against the *Python reference model* lives
@@ -108,6 +110,7 @@ def main(argv: list[str]) -> int:
         build_dir.mkdir(parents=True, exist_ok=True)
         print(f"=== cocotb suite: {name}  module={tm}  params={params} ===",
               flush=True)
+        os.environ["VTPGZ_LINE_GAP_CYCLES"] = str(params.get("LINE_GAP_CYCLES", 1))
         runner = get_runner("verilator")
         runner.build(
             sources=[str(s) for s in RTL_SRCS],

@@ -75,13 +75,16 @@ static void set_axis_check(int w, int h) {
 
 static void tick() {
     dut->aclk = 0; dut->eval(); if (tfp) tfp->dump(main_time++);
+    bool axis_hs = dut->m_axis_tvalid && dut->m_axis_tready;
+    bool axis_tuser = dut->m_axis_tuser;
+    bool axis_tlast = dut->m_axis_tlast;
     dut->aclk = 1; dut->eval(); if (tfp) tfp->dump(main_time++);
-    if (dut->m_axis_tvalid && dut->m_axis_tready) {
+    if (axis_hs) {
         ++pixels;
-        if (dut->m_axis_tuser) ++frames;
-        if (dut->m_axis_tlast) ++lines;
+        if (axis_tuser) ++frames;
+        if (axis_tlast) ++lines;
         if (axis_check_en) {
-            if (dut->m_axis_tuser) {
+            if (axis_tuser) {
                 if (axis_in_frame && (axis_x != 0 || axis_y != axis_exp_h)) {
                     fprintf(stderr, "FAIL: short AXIS frame x=%d y=%d expected y=%d\n",
                             axis_x, axis_y, axis_exp_h);
@@ -93,9 +96,9 @@ static void tick() {
             } else if (!axis_in_frame) {
                 return;
             }
-            if (dut->m_axis_tlast != (axis_x == axis_exp_w - 1)) {
+            if (axis_tlast != (axis_x == axis_exp_w - 1)) {
                 fprintf(stderr, "FAIL: AXIS tlast x=%d y=%d got=%d expected=%d\n",
-                        axis_x, axis_y, (int)dut->m_axis_tlast,
+                        axis_x, axis_y, (int)axis_tlast,
                         axis_x == axis_exp_w - 1);
                 ++failures;
             }

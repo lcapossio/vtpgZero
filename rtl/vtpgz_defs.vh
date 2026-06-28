@@ -8,12 +8,13 @@
 `define VTPGZ_DEFS_VH
 
 // IP version
-//   0.1.1 = current: colorbar state/AXIS alignment fix + regression
+//   0.1.2 = current: configurable inter-line TVALID gap
+//   0.1.1: colorbar state/AXIS alignment fix + regression
 //   0.1.0: box overlay + configurable border, no CSC, BPC 8-16,
 //           4 Bayer tiles, CORE_ID at 0x00, vtpgz_core split
 `define VTPGZ_VERSION_MAJOR  8'd0
 `define VTPGZ_VERSION_MINOR  8'd1
-`define VTPGZ_VERSION_PATCH 16'd1
+`define VTPGZ_VERSION_PATCH 16'd2
 
 // Register byte offsets (AXI4-Lite, 32-bit data)
 // 0x00 is a fixed core-identifier ASCII tag "VTPG" (in little-endian

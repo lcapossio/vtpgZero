@@ -277,9 +277,10 @@ def _tick(cfg: VtpgzConfig, regs: VtpgzRegs, x_reg: int, y_reg: int,
     # ---- colorbar ----
     # Anchor the wrap on last_x (end of line) instead of (x_reg == 0).
     # NBA-equivalent: register state set this tick reflects what the next
-    # cycle sees; if we cleared at x==0 the pattern at x=0 had already been
-    # read using the prior bar_idx and the bar 7->0 wrap was lost.
-    if pix_sof or last_x:
+    # cycle sees. frame_init already clears the first active pixel's state;
+    # clearing again on pix_sof would skip counting x=0 and shift every bar
+    # transition one pixel late.
+    if last_x:
         regs.bar_pix_cnt = 0
         regs.bar_idx = 0
     elif regs.bar_pix_cnt + 1 >= cfg.bar_width:

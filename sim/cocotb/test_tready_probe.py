@@ -19,6 +19,8 @@ ships a fix for the packed-output read quirk.
 """
 from __future__ import annotations
 
+import os
+
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge
@@ -31,6 +33,10 @@ REG_IMG_HEIGHT  = 0x14
 REG_PATTERN_SEL = 0x18
 REG_FRAME_RATE  = 0x40
 REG_BAR_WIDTH   = 0x44
+
+FRAME_W = 32
+FRAME_H = 4
+LINE_GAP_CYCLES = int(os.environ.get("VTPGZ_LINE_GAP_CYCLES", "1"))
 
 
 async def _axi_write(dut, addr, data, timeout=100):
@@ -72,8 +78,8 @@ async def tready_low_should_stall_axis(dut):
     for _ in range(5):
         await RisingEdge(dut.aclk)
 
-    await _axi_write(dut, REG_IMG_WIDTH,   32)
-    await _axi_write(dut, REG_IMG_HEIGHT,  4)
+    await _axi_write(dut, REG_IMG_WIDTH,   FRAME_W)
+    await _axi_write(dut, REG_IMG_HEIGHT,  FRAME_H)
     await _axi_write(dut, REG_BAR_WIDTH,   4)
     await _axi_write(dut, REG_FRAME_RATE,  100)
     await _axi_write(dut, REG_PATTERN_SEL, 0)
@@ -115,8 +121,8 @@ async def tready_high_should_produce_handshakes(dut):
     for _ in range(5):
         await RisingEdge(dut.aclk)
 
-    await _axi_write(dut, REG_IMG_WIDTH,   32)
-    await _axi_write(dut, REG_IMG_HEIGHT,  4)
+    await _axi_write(dut, REG_IMG_WIDTH,   FRAME_W)
+    await _axi_write(dut, REG_IMG_HEIGHT,  FRAME_H)
     await _axi_write(dut, REG_BAR_WIDTH,   4)
     await _axi_write(dut, REG_FRAME_RATE,  100)
     await _axi_write(dut, REG_PATTERN_SEL, 0)
@@ -125,14 +131,25 @@ async def tready_high_should_produce_handshakes(dut):
     handshakes = 0
     tuser_seen = 0
     tlast_seen = 0
+    line_idx = 0
+    gap_remaining = 0
     for _ in range(500):
         await RisingEdge(dut.aclk)
+        if gap_remaining:
+            assert int(dut.m_axis_tvalid.value) == 0, (
+                "m_axis_tvalid asserted during configured inter-line gap "
+                f"({gap_remaining} gap cycles still expected)")
+            gap_remaining -= 1
         if int(dut.m_axis_tvalid.value) and int(dut.m_axis_tready.value):
             handshakes += 1
             if int(dut.m_axis_tuser.value):
                 tuser_seen += 1
+                line_idx = 0
             if int(dut.m_axis_tlast.value):
                 tlast_seen += 1
+                line_idx += 1
+                if line_idx < FRAME_H:
+                    gap_remaining = LINE_GAP_CYCLES
     dut._log.info(f"tready=1 result: handshakes={handshakes}, "
                   f"SOFs={tuser_seen}, EOLs={tlast_seen}")
     assert handshakes > 0, "no handshakes -- tready stuck low?"

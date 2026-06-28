@@ -14,6 +14,7 @@ module sim_top #(
     parameter RAW_BAYER     = 1,
     parameter RGB_ORDER     = 0,
     parameter BPC           = 8,
+    parameter LINE_GAP_CYCLES = 1,
     // Derived TDATA_WIDTH (must match vtpgz_axilite_top's localparam)
     parameter TDATA_WIDTH =
         (OUTPUT_MODE == 0) ? (((3*BPC + 7) / 8) * 8) :
@@ -86,7 +87,8 @@ module sim_top #(
         .YUV_SUBSAMPLE(YUV_SUBSAMPLE),
         .RAW_BAYER    (RAW_BAYER),
         .RGB_ORDER    (RGB_ORDER),
-        .BPC          (BPC)
+        .BPC          (BPC),
+        .LINE_GAP_CYCLES(LINE_GAP_CYCLES)
     ) u_vtpgz (
         .aclk          (aclk),
         .aresetn       (aresetn),

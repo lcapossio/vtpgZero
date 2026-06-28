@@ -104,7 +104,7 @@ Expected output:
 
 ```
 Bridge: id=0x454A4158 v0.1 addr_w=32 data_w=32
-VTPGZ VERSION = 0x00010001
+VTPGZ VERSION = 0x00010002
   OK    pat=0 fmt=0 bpp=0
   OK    pat=0 fmt=0 bpp=1
   ...

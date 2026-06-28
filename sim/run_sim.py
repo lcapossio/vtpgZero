@@ -183,6 +183,8 @@ def cmd_cov(args):
     (LOGS_DIR / "coverage_summary.txt").write_text(report)
     m = re.search(r"Total coverage\s+\(\d+/\d+\)\s+([0-9.]+)%", report)
     if not m:
+        m = re.search(r"line\s+:\s+([0-9.]+)%", report)
+    if not m:
         print("ERROR: could not parse total coverage from verilator_coverage output",
               file=sys.stderr)
         sys.exit(1)
