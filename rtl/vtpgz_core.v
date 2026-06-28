@@ -250,7 +250,7 @@ module vtpgz_core #(
     // that bubble is emitted.
     localparam [31:0] LINE_GAP_CYCLES_U =
         (LINE_GAP_CYCLES < 0) ? 32'd0 : LINE_GAP_CYCLES;
-    reg [31:0] axis_gap_cnt;
+    /*verilator coverage_off*/ reg [31:0] axis_gap_cnt; /*verilator coverage_on*/
     reg        teof_r;
     wire axis_handshake = m_axis_tvalid && m_axis_tready;
     wire axis_gap_start =

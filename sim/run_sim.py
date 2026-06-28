@@ -117,6 +117,7 @@ def build_flags(args: argparse.Namespace) -> list[str]:
             "--coverage-user",
             "-Wall", "-Wno-UNUSED", "-Wno-WIDTH", "-Wno-CASEINCOMPLETE",
             "-I" + str(RTL_DIR), "--top-module", TOP] + generics(args) + [
+            "-GLINE_GAP_CYCLES=2",
             "-GEN_IMAGE=1",
             "-GEN_BOX_IMAGE=1",
             f'-GIMAGE_HEX_FILE="{IMAGE_HEX_FILE_DEFAULT.as_posix()}"',
