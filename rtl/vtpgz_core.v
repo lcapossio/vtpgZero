@@ -82,20 +82,36 @@ module vtpgz_core #(
     // 12-bit; for BPC<=12 the pack stage truncates LSBs, for BPC>12 it
     // zero-extends LSBs (the upper 12 bits carry the pattern data).
     parameter BPC           = 8,
+    // ----- pixels emitted per AXI-Stream beat (build-time) -----
+    // 1 (default)  classic one-pixel-per-beat, netlist identical to prior
+    //              releases.
+    // 2 / 4 / 8    pack that many horizontally-adjacent pixels into one wider
+    //              beat, lane 0 (leftmost pixel) in the tdata LSBs. cfg_img_width
+    //              is clamped down to a multiple of PIXELS_PER_CLOCK.
+    //
+    // NOTE (M1 scope): at PIXELS_PER_CLOCK>1 only the position-combinational
+    // patterns are supported -- SOLID, GRID, CHECKER, plus the moving-box
+    // overlay. The accumulator/counter/stateful patterns (COLORBAR, HGRAD,
+    // VGRAD, RAMP, NOISE, IMAGE, BOX_IMAGE) require PIXELS_PER_CLOCK==1 and
+    // their EN_* must be 0 for a PPC>1 build -- enforced by an elaboration
+    // check below (g_ppc_guard).
+    parameter integer PIXELS_PER_CLOCK = 1,
     // ----- AXI4-Stream video line pacing -----
     // Insert this many TVALID-low cycles after each non-final TLAST before
     // emitting the next line. Values below 1 are clamped to the mandatory
     // one-cycle minimum gap.
     parameter integer LINE_GAP_CYCLES = 1,
-    // ----- derived AXI-Stream tdata width (do NOT override unless you know
-    // what you're doing; the default is the smallest multiple-of-8 that
-    // holds the active components for the chosen mode) -----
-    parameter C_AXIS_TDATA_WIDTH =
+    // ----- derived per-PIXEL tdata width: the smallest multiple-of-8 that
+    // holds the active components for the chosen mode/bpc (do NOT override) --
+    parameter PIX_TDATA_WIDTH =
         (OUTPUT_MODE == `VTPGZ_MODE_RGB) ? (((3*BPC + 7) / 8) * 8) :
         (OUTPUT_MODE == `VTPGZ_MODE_RAW) ? (((  BPC + 7) / 8) * 8) :
         /* MODE_YUV */
             (YUV_SUBSAMPLE == `VTPGZ_YUV_444 ? (((3*BPC + 7) / 8) * 8)
-                                              : (((2*BPC + 7) / 8) * 8))
+                                              : (((2*BPC + 7) / 8) * 8)),
+    // ----- derived AXI-Stream beat width = PIXELS_PER_CLOCK per-pixel slots
+    // (do NOT override) -----
+    parameter C_AXIS_TDATA_WIDTH = PIXELS_PER_CLOCK * PIX_TDATA_WIDTH
 )(
     input  wire                          aclk,
     input  wire                          aresetn,
@@ -142,6 +158,30 @@ module vtpgz_core #(
     input  wire                          frame_sync_in
 );
 
+    // ---------------- pixels-per-clock shorthands ----------------
+    localparam integer NPPC = PIXELS_PER_CLOCK;
+
+    // ---------------- elaboration guards ----------------
+    // PIXELS_PER_CLOCK must be one of 1/2/4/8, and (M1 scope) a PPC>1 build
+    // may only enable the position-combinational patterns. Any violation
+    // instantiates an undefined module so elaboration fails loudly with the
+    // offending name, rather than silently producing wrong pixels.
+    generate
+        if (!(NPPC == 1 || NPPC == 2 || NPPC == 4 || NPPC == 8)) begin : g_ppc_bad
+            VTPGZ_PIXELS_PER_CLOCK_MUST_BE_1_2_4_OR_8 guard();
+        end
+        if (NPPC != 1) begin : g_ppc_guard
+            if (EN_COLORBAR || EN_HGRAD || EN_VGRAD || EN_RAMP ||
+                EN_NOISE || EN_IMAGE || EN_BOX_IMAGE) begin : g_unsupported
+                VTPGZ_PPC_GT1_SUPPORTS_ONLY_SOLID_GRID_CHECKER_BOX guard();
+            end
+        end
+    endgenerate
+
+    // Bit-shrink/grow shift amounts (constant): mirror the BPC pack stage.
+    localparam integer SHIFT_DN = (BPC <= 12) ? (12 - BPC) : 0;  // truncate LSBs
+    localparam integer SHIFT_UP = (BPC >  12) ? (BPC - 12) : 0;  // zero-extend LSBs
+
     // ---------------- effective configuration ----------------
     // Clamp unsafe zero / over-large geometry values so malformed software
     // writes cannot underflow the timing or moving-box arithmetic.
@@ -152,14 +192,20 @@ module vtpgz_core #(
     // pulling cfg_img_* onto the box_y/box_x reset path with high-fanout
     // shared LUTs.  cfg_img_* is host-programmed before cfg_enable, so a
     // 1-cycle clamp latency is harmless.
+    // Width is clamped DOWN to a multiple of NPPC (and to at least NPPC) so a
+    // whole number of beats covers each line; at NPPC==1 the mask is 0xFFFF
+    // and this reduces to the original "zero -> 1" clamp exactly.
+    localparam [15:0] WIDTH_ALIGN_MASK = 16'hFFFF - (NPPC - 1);
     reg [15:0] img_width_eff;
     reg [15:0] img_height_eff;
     always @(posedge aclk) begin
         if (!aresetn) begin
-            img_width_eff  <= 16'h1;
+            img_width_eff  <= NPPC[15:0];
             img_height_eff <= 16'h1;
         end else begin
-            img_width_eff  <= (cfg_img_width  == 16'h0) ? 16'h1 : cfg_img_width;
+            img_width_eff  <= ((cfg_img_width & WIDTH_ALIGN_MASK) == 16'h0)
+                                  ? NPPC[15:0]
+                                  : (cfg_img_width & WIDTH_ALIGN_MASK);
             img_height_eff <= (cfg_img_height == 16'h0) ? 16'h1 : cfg_img_height;
         end
     end
@@ -261,7 +307,10 @@ module vtpgz_core #(
         (!m_axis_tvalid || m_axis_tready) && !axis_gap_start && !axis_gap_active;
     wire source_advance   = active && axis_can_advance;
 
-    wire        last_x = (x == img_width_eff  - 16'd1);
+    // At NPPC pixels/beat the base counter x holds lane 0's coordinate and
+    // advances by NPPC; the final beat of a line starts NPPC pixels before
+    // the width (width is a multiple of NPPC). At NPPC==1 this is (x==W-1).
+    wire        last_x = (x == img_width_eff  - NPPC[15:0]);
     wire        last_y = (y == img_height_eff - 16'd1);
     wire        end_of_frame = last_x & last_y;
 
@@ -312,7 +361,7 @@ module vtpgz_core #(
                     x <= 16'h0;
                     y <= y + 16'h1;
                 end else begin
-                    x <= x + 16'h1;
+                    x <= x + NPPC[15:0];
                 end
             end
         end
@@ -339,6 +388,14 @@ module vtpgz_core #(
     wire [11:0] noise_v;
     wire [11:0] image_r, image_g, image_b;
     wire [11:0] box_img_r, box_img_g, box_img_b;
+
+    // ---- Per-lane pattern buses (only meaningful for the M1 patterns) ----
+    // Lane l (l=0..NPPC-1) occupies bits [12*l +: 12]. Lane 0 always equals
+    // the corresponding scalar wire above, so the existing NPPC==1 pattern
+    // mux/pipeline is byte-identical. Lanes 1..NPPC-1 carry the value the
+    // per-pixel path would produce at (x+l, y) and only exist for NPPC>1.
+    wire [12*NPPC-1:0] chk_v_bus;
+    wire [12*NPPC-1:0] grid_r_bus, grid_g_bus, grid_b_bus;
 
     // ---- Color bars (8 SMPTE bars) ----
     // Counter-based: increment bar index every cfg_bar_width pixels.
@@ -454,8 +511,25 @@ module vtpgz_core #(
     // each time they reach cfg_checker_size. No divider, no modulo.
     generate if (EN_CHECKER) begin : g_checker
         wire [15:0] chk_size_eff = (cfg_checker_size == 16'h0) ? 16'h1 : cfg_checker_size;
-        reg [15:0] chk_x_cnt, chk_y_cnt;
+        reg [15:0] chk_x_cnt, chk_y_cnt;   // base = lane 0 state at pixel x
         reg        chk_sel_x, chk_sel_y;
+        // Per-lane x-axis chain: lane 0 = base regs, lane l = one per-pixel
+        // "single-step" of lane l-1. cxc[NPPC]/cxs[NPPC] is the state after
+        // all NPPC lanes = the base for the next beat. At NPPC==1 this is a
+        // single step and collapses to the original recurrence exactly.
+        wire [15:0] cxc [0:NPPC];
+        wire        cxs [0:NPPC];
+        assign cxc[0] = chk_x_cnt;
+        assign cxs[0] = chk_sel_x;
+        genvar gl;
+        for (gl = 0; gl < NPPC; gl = gl + 1) begin : g_chk_chain
+            wire wrap_l = (cxc[gl] + 16'h1 >= chk_size_eff);
+            assign cxc[gl+1] = wrap_l ? 16'h0        : (cxc[gl] + 16'h1);
+            assign cxs[gl+1] = wrap_l ? ~cxs[gl]     : cxs[gl];
+            // lane gl value uses cxs[gl] (state for pixel x+gl)
+            assign chk_v_bus[12*gl +: 12] =
+                (cxs[gl] ^ chk_sel_y) ? 12'hFFF : 12'h000;
+        end
         always @(posedge aclk) begin
             if (!aresetn || frame_init) begin
                 chk_x_cnt <= 16'h0;
@@ -464,17 +538,16 @@ module vtpgz_core #(
                 chk_sel_y <= 1'b0;
             end else if (source_advance) begin
                 // X axis -- anchor reset on last_x of the previous line
-                // (same reasoning as colorbar / hgrad).
+                // (same reasoning as colorbar / hgrad). Otherwise advance the
+                // base by NPPC pixels via the chain's final state.
                 if (last_x) begin
                     chk_x_cnt <= 16'h0;
                     chk_sel_x <= 1'b0;
-                end else if (chk_x_cnt + 16'h1 >= chk_size_eff) begin
-                    chk_x_cnt <= 16'h0;
-                    chk_sel_x <= ~chk_sel_x;
                 end else begin
-                    chk_x_cnt <= chk_x_cnt + 16'h1;
+                    chk_x_cnt <= cxc[NPPC];
+                    chk_sel_x <= cxs[NPPC];
                 end
-                // Y axis (per-line)
+                // Y axis (per-line) -- unchanged by NPPC.
                 if (pix_sof) begin
                     chk_y_cnt <= 16'h0;
                     chk_sel_y <= 1'b0;
@@ -488,9 +561,10 @@ module vtpgz_core #(
                 end
             end
         end
-        assign chk_v = (chk_sel_x ^ chk_sel_y) ? 12'hFFF : 12'h000;
+        assign chk_v = chk_v_bus[11:0];   // lane 0
     end else begin : g_checker_off
-        assign chk_v = 12'h000;
+        assign chk_v     = 12'h000;
+        assign chk_v_bus = {(12*NPPC){1'b0}};
     end endgenerate
 
     // ---- Solid color from register ----
@@ -513,7 +587,8 @@ module vtpgz_core #(
     // The box state is reset on frame_init so each fresh enable starts
     // with the box at (0,0). This matches the Python model which
     // constructs a fresh VtpgzRegs per render_frame call.
-    wire box_in;
+    wire box_in;                       // lane 0 (== box_in_bus[0])
+    wire [NPPC-1:0] box_in_bus;        // per-lane box-region membership
     generate if (EN_MOVING_BOX) begin : g_box
         reg [15:0] box_x;
         reg [15:0] box_y;
@@ -584,25 +659,42 @@ module vtpgz_core #(
                 end
             end
         end
-        assign box_in = (x >= box_x) && (x < box_x + box_width_eff) &&
-                        (y >= box_y) && (y < box_y + box_height_eff);
+        // Per-lane box membership: lane gl tests column (x+gl). The y test is
+        // common to all lanes in a beat. At NPPC==1 lane 0 is exactly the
+        // original expression.
+        wire box_in_y = (y >= box_y) && (y < box_y + box_height_eff);
+        genvar gbl;
+        for (gbl = 0; gbl < NPPC; gbl = gbl + 1) begin : g_box_lane
+            wire [15:0] xl = x + gbl[15:0];
+            assign box_in_bus[gbl] = (xl >= box_x) && (xl < box_x + box_width_eff) &&
+                                     box_in_y;
+        end
+        assign box_in = box_in_bus[0];
     end else begin : g_box_off
-        assign box_in = 1'b0;
+        assign box_in     = 1'b0;
+        assign box_in_bus = {NPPC{1'b0}};
     end endgenerate
 
     // ---- Grid / crosshatch ----
     // Wrap-counters per axis, "on grid" when counter is at zero.
     generate if (EN_GRID) begin : g_grid
         wire [15:0] grid_eff = (cfg_grid_spacing == 16'h0) ? 16'h1 : cfg_grid_spacing;
-        reg [15:0] gx_cnt, gy_cnt;
+        reg [15:0] gx_cnt, gy_cnt;      // base = lane 0 x-counter at pixel x
+        // Per-lane x-axis chain (see checker for the recurrence rationale).
+        wire [15:0] gxc [0:NPPC];
+        assign gxc[0] = gx_cnt;
+        genvar gl;
+        for (gl = 0; gl < NPPC; gl = gl + 1) begin : g_grid_chain
+            assign gxc[gl+1] = (gxc[gl] + 16'h1 >= grid_eff) ? 16'h0
+                                                             : (gxc[gl] + 16'h1);
+        end
         always @(posedge aclk) begin
             if (!aresetn || frame_init) begin
                 gx_cnt <= 16'h0;
                 gy_cnt <= 16'h0;
             end else if (source_advance) begin
                 if (last_x)                                  gx_cnt <= 16'h0;
-                else if (gx_cnt + 16'h1 >= grid_eff)         gx_cnt <= 16'h0;
-                else                                          gx_cnt <= gx_cnt + 16'h1;
+                else                                          gx_cnt <= gxc[NPPC];
 
                 if (pix_sof)                                  gy_cnt <= 16'h0;
                 else if (last_x) begin
@@ -611,20 +703,32 @@ module vtpgz_core #(
                 end
             end
         end
-        wire on_grid = (gx_cnt == 16'h0) || (gy_cnt == 16'h0);
         // Off-grid background must be {Y=0, Cb=neutral, Cr=neutral} in YUV mode,
         // otherwise the receiver's YCbCr->RGB renders {0,0,0} as ~(0,135,0)
         // green. The other gray-style patterns get the same treatment in the
         // _c1/_c2 helpers below.
         wire [11:0] bg_c1 = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
         wire [11:0] bg_c2 = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
-        assign grid_r = on_grid ? {cfg_grid_color[23:16],4'h0} : 12'h000;
-        assign grid_g = on_grid ? {cfg_grid_color[15:8], 4'h0} : bg_c1;
-        assign grid_b = on_grid ? {cfg_grid_color[7:0],  4'h0} : bg_c2;
+        for (gl = 0; gl < NPPC; gl = gl + 1) begin : g_grid_lane
+            wire on_grid_l = (gxc[gl] == 16'h0) || (gy_cnt == 16'h0);
+            assign grid_r_bus[12*gl +: 12] = on_grid_l ? {cfg_grid_color[23:16],4'h0} : 12'h000;
+            assign grid_g_bus[12*gl +: 12] = on_grid_l ? {cfg_grid_color[15:8], 4'h0} : bg_c1;
+            assign grid_b_bus[12*gl +: 12] = on_grid_l ? {cfg_grid_color[7:0],  4'h0} : bg_c2;
+        end
+        assign grid_r = grid_r_bus[11:0];   // lane 0
+        assign grid_g = grid_g_bus[11:0];
+        assign grid_b = grid_b_bus[11:0];
     end else begin : g_grid_off
         assign grid_r = 12'h000;
         assign grid_g = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
         assign grid_b = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
+        // Off-lanes replicate the lane-0 background across the bus.
+        genvar gof;
+        for (gof = 0; gof < NPPC; gof = gof + 1) begin : g_grid_off_bus
+            assign grid_r_bus[12*gof +: 12] = 12'h000;
+            assign grid_g_bus[12*gof +: 12] = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
+            assign grid_b_bus[12*gof +: 12] = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
+        end
     end endgenerate
 
     // ---- Ramp ----
@@ -889,6 +993,33 @@ module vtpgz_core #(
         endcase
     end
 
+    // ---- Per-lane pattern mux (NPPC>1 only) ----
+    // Lanes 1..NPPC-1 select among the M1 patterns (SOLID / GRID / CHECKER)
+    // for column (x+l). Lane 0 uses the full pat_c0/c1/c2 mux above, so the
+    // NPPC==1 datapath is untouched. The stateful/accumulator patterns are
+    // elaboration-forbidden at NPPC>1 (g_ppc_guard), so a black default here
+    // is never selected in a legal build.
+    wire [12*NPPC-1:0] pat_c0_bus, pat_c1_bus, pat_c2_bus;
+    genvar gpl;
+    generate for (gpl = 0; gpl < NPPC; gpl = gpl + 1) begin : g_pat_lane
+        wire [11:0] chkl   = chk_v_bus[12*gpl +: 12];
+        wire [11:0] chkl_c = is_yuv_build ? CHROMA_NEUTRAL : chkl;
+        reg [11:0] p0, p1, p2;
+        always @* begin
+            case (cfg_pattern)
+                `VTPGZ_PAT_CHECKER : begin p0 = chkl;    p1 = chkl_c;  p2 = chkl_c;  end
+                `VTPGZ_PAT_SOLID   : begin p0 = solid_r; p1 = solid_g; p2 = solid_b; end
+                `VTPGZ_PAT_GRID    : begin p0 = grid_r_bus[12*gpl +: 12];
+                                           p1 = grid_g_bus[12*gpl +: 12];
+                                           p2 = grid_b_bus[12*gpl +: 12]; end
+                default            : begin p0 = 12'h0;   p1 = 12'h0;   p2 = 12'h0;   end
+            endcase
+        end
+        assign pat_c0_bus[12*gpl +: 12] = p0;
+        assign pat_c1_bus[12*gpl +: 12] = p1;
+        assign pat_c2_bus[12*gpl +: 12] = p2;
+    end endgenerate
+
     // ---- Box overlay (post-mux) ----
     // When EN_MOVING_BOX=1 and the current pixel is inside the box
     // region, the pattern output is replaced with cfg_box_color (fill)
@@ -907,8 +1038,9 @@ module vtpgz_core #(
     // Border test: pixel is on the border ring if it's within
     // border_width of any box edge (but still inside box_in).
     // verilator coverage_off
-    wire box_on_border;
+    wire box_on_border;                       // lane 0 (== box_on_border_bus[0])
     // verilator coverage_on
+    wire [NPPC-1:0] box_on_border_bus;        // per-lane border-ring membership
     generate if (EN_MOVING_BOX) begin : g_box_border
         wire [15:0] bw_raw = {8'h0, cfg_box_border_width};
         wire [15:0] bw_x = (bw_raw > box_width_eff)  ? box_width_eff  : bw_raw;
@@ -921,14 +1053,21 @@ module vtpgz_core #(
         // cfg_img_* onto this path with fan-outs of 30+ that routed
         // poorly under heavy congestion.  Equivalent for any non-overflowing
         // input (x + bw < 2^16, satisfied by all practical resolutions).
-        assign box_on_border = box_in && (
-            (x          <  g_box.box_x + bw_x) ||
-            (x + bw_x   >= g_box.box_x + box_width_eff) ||
-            (y          <  g_box.box_y + bw_y) ||
-            (y + bw_y   >= g_box.box_y + box_height_eff)
-        );
+        // Per-lane: lane gl tests column (x+gl); the y-edge terms are common.
+        genvar gbb;
+        for (gbb = 0; gbb < NPPC; gbb = gbb + 1) begin : g_border_lane
+            wire [15:0] xl = x + gbb[15:0];
+            assign box_on_border_bus[gbb] = box_in_bus[gbb] && (
+                (xl          <  g_box.box_x + bw_x) ||
+                (xl + bw_x   >= g_box.box_x + box_width_eff) ||
+                (y           <  g_box.box_y + bw_y) ||
+                (y + bw_y    >= g_box.box_y + box_height_eff)
+            );
+        end
+        assign box_on_border = box_on_border_bus[0];
     end else begin : g_box_border_off
-        assign box_on_border = 1'b0;
+        assign box_on_border     = 1'b0;
+        assign box_on_border_bus = {NPPC{1'b0}};
     end endgenerate
 
     // ---------------- pipeline stage 1 (pre-mux register) ----------------
@@ -937,22 +1076,27 @@ module vtpgz_core #(
     // final pix_c0/c1/c2 mux. Registering box_in / box_on_border here
     // caps that path at the adders+compares and leaves only a 3:1 mux
     // feeding pix_cN_q in stage 2.
-    reg        box_in_s1, box_on_border_s1;
-    reg [11:0] pat_c0_s1, pat_c1_s1, pat_c2_s1;
+    // Per-lane at NPPC>1: lane l occupies bit l (flags) / [12*l +: 12] (triples).
+    // Lane 0 latches the existing scalar signals so the NPPC==1 path is
+    // byte-identical; lanes 1..NPPC-1 latch the per-lane buses.
+    reg [NPPC-1:0]     box_in_s1, box_on_border_s1;
+    reg [12*NPPC-1:0]  pat_c0_s1, pat_c1_s1, pat_c2_s1;
     // Box-image colours land in their own s1 registers so the mux at this
     // stage gets a value computed from the SAME cycle's x,y as box_in_s1
     // (the combinational box_img_* would otherwise be one cycle ahead).
+    // Box-image is a NPPC==1-only feature (elaboration-forbidden at NPPC>1),
+    // so these remain scalar and only feed lane 0's inside-mux.
     reg [11:0] box_img_r_s1, box_img_g_s1, box_img_b_s1;
     reg        pix_valid_s1, pix_sof_s1, pix_eol_s1, pix_eof_s1;
     reg        pix_x_lsb_s1, pix_y_lsb_s1;
     wire       pipe_advance;
     always @(posedge aclk) begin
         if (!aresetn) begin
-            box_in_s1        <= 1'b0;
-            box_on_border_s1 <= 1'b0;
-            pat_c0_s1        <= 12'h0;
-            pat_c1_s1        <= 12'h0;
-            pat_c2_s1        <= 12'h0;
+            box_in_s1        <= {NPPC{1'b0}};
+            box_on_border_s1 <= {NPPC{1'b0}};
+            pat_c0_s1        <= {(12*NPPC){1'b0}};
+            pat_c1_s1        <= {(12*NPPC){1'b0}};
+            pat_c2_s1        <= {(12*NPPC){1'b0}};
             box_img_r_s1     <= 12'h0;
             box_img_g_s1     <= 12'h0;
             box_img_b_s1     <= 12'h0;
@@ -963,11 +1107,12 @@ module vtpgz_core #(
             pix_x_lsb_s1     <= 1'b0;
             pix_y_lsb_s1     <= 1'b0;
         end else if (pipe_advance) begin
-            box_in_s1        <= box_in;
-            box_on_border_s1 <= box_on_border;
-            pat_c0_s1        <= pat_c0;
-            pat_c1_s1        <= pat_c1;
-            pat_c2_s1        <= pat_c2;
+            // lane 0 from the existing scalar mux/comparators
+            box_in_s1[0]        <= box_in;
+            box_on_border_s1[0] <= box_on_border;
+            pat_c0_s1[11:0]     <= pat_c0;
+            pat_c1_s1[11:0]     <= pat_c1;
+            pat_c2_s1[11:0]     <= pat_c2;
             box_img_r_s1     <= box_img_r;
             box_img_g_s1     <= box_img_g;
             box_img_b_s1     <= box_img_b;
@@ -979,6 +1124,27 @@ module vtpgz_core #(
             pix_y_lsb_s1     <= y[0];
         end
     end
+    // lanes 1..NPPC-1 latch the per-lane buses (stripped when NPPC==1)
+    generate
+        genvar gs1;
+        for (gs1 = 1; gs1 < NPPC; gs1 = gs1 + 1) begin : g_s1_lane
+            always @(posedge aclk) begin
+                if (!aresetn) begin
+                    box_in_s1[gs1]        <= 1'b0;
+                    box_on_border_s1[gs1] <= 1'b0;
+                    pat_c0_s1[12*gs1 +: 12] <= 12'h0;
+                    pat_c1_s1[12*gs1 +: 12] <= 12'h0;
+                    pat_c2_s1[12*gs1 +: 12] <= 12'h0;
+                end else if (pipe_advance) begin
+                    box_in_s1[gs1]        <= box_in_bus[gs1];
+                    box_on_border_s1[gs1] <= box_on_border_bus[gs1];
+                    pat_c0_s1[12*gs1 +: 12] <= pat_c0_bus[12*gs1 +: 12];
+                    pat_c1_s1[12*gs1 +: 12] <= pat_c1_bus[12*gs1 +: 12];
+                    pat_c2_s1[12*gs1 +: 12] <= pat_c2_bus[12*gs1 +: 12];
+                end
+            end
+        end
+    endgenerate
 
     // When EN_BOX_IMAGE=1 the box interior shows the scaled image instead
     // of cfg_box_color -- but only while the host has programmed non-zero
@@ -987,30 +1153,50 @@ module vtpgz_core #(
     // border_width > 0) still wins because box_on_border_s1 is checked
     // first.
     wire box_image_active = (EN_BOX_IMAGE != 0) && (cfg_box_img_x_step != 32'h0);
+    // Lane 0's box interior can show the scaled box-image (NPPC==1 only);
+    // lanes 1..NPPC-1 always show the solid fill (box-image is forbidden at
+    // NPPC>1, so this is exact, not an approximation).
     wire [11:0] box_inside_c0 = box_image_active ? box_img_r_s1 : box_fill_c0;
     wire [11:0] box_inside_c1 = box_image_active ? box_img_g_s1 : box_fill_c1;
     wire [11:0] box_inside_c2 = box_image_active ? box_img_b_s1 : box_fill_c2;
 
-    wire [11:0] pix_c0 = box_on_border_s1 ? box_bdr_c0 :
-                          box_in_s1        ? box_inside_c0 : pat_c0_s1;
-    wire [11:0] pix_c1 = box_on_border_s1 ? box_bdr_c1 :
-                          box_in_s1        ? box_inside_c1 : pat_c1_s1;
-    wire [11:0] pix_c2 = box_on_border_s1 ? box_bdr_c2 :
-                          box_in_s1        ? box_inside_c2 : pat_c2_s1;
+    // Per-lane composited pixel. Lane 0 uses box_inside_c* (with box-image);
+    // at NPPC==1 pix_c*_bus[11:0] is exactly the original pix_c*.
+    wire [12*NPPC-1:0] pix_c0_bus, pix_c1_bus, pix_c2_bus;
+    assign pix_c0_bus[11:0] = box_on_border_s1[0] ? box_bdr_c0 :
+                              box_in_s1[0]        ? box_inside_c0 : pat_c0_s1[11:0];
+    assign pix_c1_bus[11:0] = box_on_border_s1[0] ? box_bdr_c1 :
+                              box_in_s1[0]        ? box_inside_c1 : pat_c1_s1[11:0];
+    assign pix_c2_bus[11:0] = box_on_border_s1[0] ? box_bdr_c2 :
+                              box_in_s1[0]        ? box_inside_c2 : pat_c2_s1[11:0];
+    generate
+        genvar gpc;
+        for (gpc = 1; gpc < NPPC; gpc = gpc + 1) begin : g_pix_lane
+            assign pix_c0_bus[12*gpc +: 12] = box_on_border_s1[gpc] ? box_bdr_c0 :
+                                              box_in_s1[gpc]        ? box_fill_c0
+                                                                    : pat_c0_s1[12*gpc +: 12];
+            assign pix_c1_bus[12*gpc +: 12] = box_on_border_s1[gpc] ? box_bdr_c1 :
+                                              box_in_s1[gpc]        ? box_fill_c1
+                                                                    : pat_c1_s1[12*gpc +: 12];
+            assign pix_c2_bus[12*gpc +: 12] = box_on_border_s1[gpc] ? box_bdr_c2 :
+                                              box_in_s1[gpc]        ? box_fill_c2
+                                                                    : pat_c2_s1[12*gpc +: 12];
+        end
+    endgenerate
 
     // ---------------- pipeline stage 2 (post-mux register) ---------------
     // Two pipeline stages total between pattern/box state and the AXI
     // output: SOF → first pixel on AXI is delayed by 2 cycles vs. a
     // combinational core, but the per-beat value sequence is unchanged.
-    (* keep = "true", dont_touch = "true" *) reg [11:0] pix_c0_q, pix_c1_q, pix_c2_q;
+    (* keep = "true", dont_touch = "true" *) reg [12*NPPC-1:0] pix_c0_q, pix_c1_q, pix_c2_q;
     reg        pix_valid_q, pix_sof_q, pix_eol_q, pix_eof_q;
     reg        pix_x_lsb_q, pix_y_lsb_q;
     assign pipe_advance = axis_can_advance && (active || pix_valid_s1 || pix_valid_q);
     always @(posedge aclk) begin
         if (!aresetn) begin
-            pix_c0_q    <= 12'h0;
-            pix_c1_q    <= 12'h0;
-            pix_c2_q    <= 12'h0;
+            pix_c0_q    <= {(12*NPPC){1'b0}};
+            pix_c1_q    <= {(12*NPPC){1'b0}};
+            pix_c2_q    <= {(12*NPPC){1'b0}};
             pix_valid_q <= 1'b0;
             pix_sof_q   <= 1'b0;
             pix_eol_q   <= 1'b0;
@@ -1018,9 +1204,9 @@ module vtpgz_core #(
             pix_x_lsb_q <= 1'b0;
             pix_y_lsb_q <= 1'b0;
         end else if (pipe_advance) begin
-            pix_c0_q    <= pix_c0;
-            pix_c1_q    <= pix_c1;
-            pix_c2_q    <= pix_c2;
+            pix_c0_q    <= pix_c0_bus;
+            pix_c1_q    <= pix_c1_bus;
+            pix_c2_q    <= pix_c2_bus;
             pix_valid_q <= pix_valid_s1;
             pix_sof_q   <= pix_sof_s1;
             pix_eol_q   <= pix_eol_s1;
@@ -1047,99 +1233,76 @@ module vtpgz_core #(
     //   BPC <  12 -> take top BPC bits (truncate LSBs)
     //   BPC >  12 -> zero-extend on the right (BPC-12 zero LSBs)
     // No DSPs in any case.
-    wire [BPC-1:0] c0_s, c1_s, c2_s;
-    generate
-        if (BPC == 12) begin : g_bpc_pass
-            assign c0_s = pix_c0_q;
-            assign c1_s = pix_c1_q;
-            assign c2_s = pix_c2_q;
-        end else if (BPC < 12) begin : g_bpc_shrink
-            assign c0_s = pix_c0_q[11 -: BPC];
-            assign c1_s = pix_c1_q[11 -: BPC];
-            assign c2_s = pix_c2_q[11 -: BPC];
-        end else begin : g_bpc_grow
-            assign c0_s = {pix_c0_q, {(BPC-12){1'b0}}};
-            assign c1_s = {pix_c1_q, {(BPC-12){1'b0}}};
-            assign c2_s = {pix_c2_q, {(BPC-12){1'b0}}};
+    // pack_pixel: shrink/grow each 12-bit component to BPC and pack ONE pixel
+    // into a PIX_TDATA_WIDTH slot per the build-time mode. This is the exact
+    // logic that was previously three parallel `generate ... always` blocks,
+    // now a reusable function so each of the NPPC lanes packs independently.
+    // xlsb/ylsb are the packed pixel's (x[0], y[0]) parity used by the
+    // YUV422 chroma phase and the RAW Bayer 2x2 select.
+    function [PIX_TDATA_WIDTH-1:0] pack_pixel;
+        input [11:0] c0_12, c1_12, c2_12;
+        input        xlsb, ylsb;
+        reg [BPC-1:0] c0, c1, c2, cc, raw_sel;
+        begin
+            // Bit-shrink (BPC<=12: truncate LSBs) / grow (BPC>12: zero-extend).
+            // Truncation to [BPC-1:0] happens on assignment; SHIFT_DN/SHIFT_UP
+            // are non-negative constants so both arms are legal for any BPC.
+            c0 = (BPC <= 12) ? (c0_12 >> SHIFT_DN) : (c0_12 << SHIFT_UP);
+            c1 = (BPC <= 12) ? (c1_12 >> SHIFT_DN) : (c1_12 << SHIFT_UP);
+            c2 = (BPC <= 12) ? (c2_12 >> SHIFT_DN) : (c2_12 << SHIFT_UP);
+            if (OUTPUT_MODE == `VTPGZ_MODE_RGB ||
+                (OUTPUT_MODE == `VTPGZ_MODE_YUV && YUV_SUBSAMPLE == `VTPGZ_YUV_444)) begin
+                if (RGB_ORDER == `VTPGZ_RGB_ORDER_XILINX)
+                    pack_pixel = {{(PIX_TDATA_WIDTH-3*BPC){1'b0}}, c2, c1, c0};
+                else
+                    pack_pixel = {c0, c1, c2, {(PIX_TDATA_WIDTH-3*BPC){1'b0}}};
+            end else if (OUTPUT_MODE == `VTPGZ_MODE_YUV) begin
+                // 4:2:2 -- {Y, C}; C = Cb on even-x, Cr on odd-x
+                cc = (xlsb == 1'b0) ? c1 : c2;
+                if (RGB_ORDER == `VTPGZ_RGB_ORDER_XILINX)
+                    pack_pixel = {{(PIX_TDATA_WIDTH-2*BPC){1'b0}}, cc, c0};
+                else
+                    pack_pixel = {c0, cc, {(PIX_TDATA_WIDTH-2*BPC){1'b0}}};
+            end else begin
+                // RAW: single component, RAW_BAYER selects the 2x2 mosaic.
+                //   PLAIN : monochrome, take G (c1) every pixel
+                //   RGGB  : row0:[R,G] row1:[G,B]      BGGR : row0:[B,G] row1:[G,R]
+                //   GRBG  : row0:[G,R] row1:[B,G]      GBRG : row0:[G,B] row1:[R,G]
+                case (RAW_BAYER)
+                    `VTPGZ_RAW_RGGB: raw_sel = (ylsb==1'b0) ? ((xlsb==1'b0)?c0:c1)
+                                                            : ((xlsb==1'b0)?c1:c2);
+                    `VTPGZ_RAW_BGGR: raw_sel = (ylsb==1'b0) ? ((xlsb==1'b0)?c2:c1)
+                                                            : ((xlsb==1'b0)?c1:c0);
+                    `VTPGZ_RAW_GRBG: raw_sel = (ylsb==1'b0) ? ((xlsb==1'b0)?c1:c0)
+                                                            : ((xlsb==1'b0)?c2:c1);
+                    `VTPGZ_RAW_GBRG: raw_sel = (ylsb==1'b0) ? ((xlsb==1'b0)?c1:c2)
+                                                            : ((xlsb==1'b0)?c0:c1);
+                    default:         raw_sel = c1; // PLAIN
+                endcase
+                pack_pixel = {{(PIX_TDATA_WIDTH-BPC){1'b0}}, raw_sel};
+            end
         end
-    endgenerate
+    endfunction
 
     /*verilator coverage_off*/ reg [C_AXIS_TDATA_WIDTH-1:0] tdata_r; /*verilator coverage_on*/
     reg                          tvalid_r;
     reg                          tlast_r;
     reg                          tuser_r;
 
-    // Combinational pack -> next-tdata
-    /*verilator coverage_off*/ reg [C_AXIS_TDATA_WIDTH-1:0] tdata_next; /*verilator coverage_on*/
+    // Combinational pack -> next-tdata. Each lane packs into its own
+    // PIX_TDATA_WIDTH slot; lane 0 (leftmost pixel) lands in the LSBs. At
+    // NPPC==1 this is a single pack_pixel of lane 0 == the original tdata_next.
+    /*verilator coverage_off*/ wire [C_AXIS_TDATA_WIDTH-1:0] tdata_next; /*verilator coverage_on*/
     generate
-        if (OUTPUT_MODE == `VTPGZ_MODE_RGB || (OUTPUT_MODE == `VTPGZ_MODE_YUV
-                                              && YUV_SUBSAMPLE == `VTPGZ_YUV_444)) begin : g_pack_3c
-            // verilator coverage_off
-            always @* begin
-                if (RGB_ORDER == `VTPGZ_RGB_ORDER_XILINX) begin
-                    tdata_next = {{(C_AXIS_TDATA_WIDTH-3*BPC){1'b0}}, c2_s, c1_s, c0_s};
-                end else begin
-                    tdata_next = {c0_s, c1_s, c2_s, {(C_AXIS_TDATA_WIDTH-3*BPC){1'b0}}};
-                end
-            end
-            // verilator coverage_on
-        end else if (OUTPUT_MODE == `VTPGZ_MODE_YUV) begin : g_pack_yuv422
-            // 4:2:2 -- {Y, C} per beat, C = Cb on even-x, Cr on odd-x
-            // verilator coverage_off
-            wire [BPC-1:0] c_s = (pix_x_lsb_q == 1'b0) ? c1_s : c2_s;
-            always @* begin
-                if (RGB_ORDER == `VTPGZ_RGB_ORDER_XILINX) begin
-                    tdata_next = {{(C_AXIS_TDATA_WIDTH-2*BPC){1'b0}}, c_s, c0_s};
-                end else begin
-                    tdata_next = {c0_s, c_s, {(C_AXIS_TDATA_WIDTH-2*BPC){1'b0}}};
-                end
-            end
-            // verilator coverage_on
-        end else begin : g_pack_raw
-            // RAW: single component. RAW_BAYER selects the 2x2 mosaic.
-            // Triples are always {c0=R, c1=G, c2=B} in RAW mode (RGB
-            // semantics, like the RGB pack path -- the only difference
-            // is that here we mux one component per pixel based on the
-            // Bayer tile and (x[0], y[0])).
-            //
-            //   PLAIN : monochrome, take G          (c1) every pixel
-            //   RGGB  : row0:[R,G] row1:[G,B]
-            //   BGGR  : row0:[B,G] row1:[G,R]
-            //   GRBG  : row0:[G,R] row1:[B,G]
-            //   GBRG  : row0:[G,B] row1:[R,G]
-            // verilator coverage_off
-            reg [BPC-1:0] raw_sel;
-            always @* begin
-                case (RAW_BAYER)
-                    `VTPGZ_RAW_RGGB: begin
-                        if (pix_y_lsb_q == 1'b0)
-                            raw_sel = (pix_x_lsb_q == 1'b0) ? c0_s : c1_s;
-                        else
-                            raw_sel = (pix_x_lsb_q == 1'b0) ? c1_s : c2_s;
-                    end
-                    `VTPGZ_RAW_BGGR: begin
-                        if (pix_y_lsb_q == 1'b0)
-                            raw_sel = (pix_x_lsb_q == 1'b0) ? c2_s : c1_s;
-                        else
-                            raw_sel = (pix_x_lsb_q == 1'b0) ? c1_s : c0_s;
-                    end
-                    `VTPGZ_RAW_GRBG: begin
-                        if (pix_y_lsb_q == 1'b0)
-                            raw_sel = (pix_x_lsb_q == 1'b0) ? c1_s : c0_s;
-                        else
-                            raw_sel = (pix_x_lsb_q == 1'b0) ? c2_s : c1_s;
-                    end
-                    `VTPGZ_RAW_GBRG: begin
-                        if (pix_y_lsb_q == 1'b0)
-                            raw_sel = (pix_x_lsb_q == 1'b0) ? c1_s : c2_s;
-                        else
-                            raw_sel = (pix_x_lsb_q == 1'b0) ? c0_s : c1_s;
-                    end
-                    default: raw_sel = c1_s; // PLAIN: G channel monochrome
-                endcase
-                tdata_next = {{(C_AXIS_TDATA_WIDTH-BPC){1'b0}}, raw_sel};
-            end
-            // verilator coverage_on
+        genvar gpk;
+        for (gpk = 0; gpk < NPPC; gpk = gpk + 1) begin : g_pack_lane
+            // lane gpk parity: x_base[0] ^ (gpk&1); y is common to the beat.
+            assign tdata_next[PIX_TDATA_WIDTH*gpk +: PIX_TDATA_WIDTH] =
+                pack_pixel(pix_c0_q[12*gpk +: 12],
+                           pix_c1_q[12*gpk +: 12],
+                           pix_c2_q[12*gpk +: 12],
+                           pix_x_lsb_q ^ (gpk & 1),
+                           pix_y_lsb_q);
         end
     endgenerate
 

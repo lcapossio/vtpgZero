@@ -43,14 +43,16 @@ module vtpgz_axilite_top #(
     parameter RAW_BAYER     = `VTPGZ_RAW_RGGB,
     parameter RGB_ORDER     = `VTPGZ_RGB_ORDER_XILINX,
     parameter BPC           = 8,
+    parameter integer PIXELS_PER_CLOCK = 1,
     parameter integer LINE_GAP_CYCLES = 1,
-    // ----- derived AXI-Stream tdata width (same formula as in core) -----
-    parameter C_AXIS_TDATA_WIDTH =
+    // ----- derived tdata widths (same formulas as in core) -----
+    parameter PIX_TDATA_WIDTH =
         (OUTPUT_MODE == `VTPGZ_MODE_RGB) ? (((3*BPC + 7) / 8) * 8) :
         (OUTPUT_MODE == `VTPGZ_MODE_RAW) ? (((  BPC + 7) / 8) * 8) :
         /* MODE_YUV */
             (YUV_SUBSAMPLE == `VTPGZ_YUV_444 ? (((3*BPC + 7) / 8) * 8)
-                                              : (((2*BPC + 7) / 8) * 8))
+                                              : (((2*BPC + 7) / 8) * 8)),
+    parameter C_AXIS_TDATA_WIDTH = PIXELS_PER_CLOCK * PIX_TDATA_WIDTH
 )(
     input  wire                          aclk,
     input  wire                          aresetn,
@@ -122,6 +124,7 @@ module vtpgz_axilite_top #(
         .RAW_BAYER    (RAW_BAYER),
         .RGB_ORDER    (RGB_ORDER),
         .BPC          (BPC),
+        .PIXELS_PER_CLOCK(PIXELS_PER_CLOCK),
         .TDATA_WIDTH  (C_AXIS_TDATA_WIDTH)
     ) u_regs (
         .aclk             (aclk),
@@ -198,7 +201,9 @@ module vtpgz_axilite_top #(
         .RAW_BAYER    (RAW_BAYER),
         .RGB_ORDER    (RGB_ORDER),
         .BPC          (BPC),
+        .PIXELS_PER_CLOCK(PIXELS_PER_CLOCK),
         .LINE_GAP_CYCLES(LINE_GAP_CYCLES),
+        .PIX_TDATA_WIDTH(PIX_TDATA_WIDTH),
         .C_AXIS_TDATA_WIDTH(C_AXIS_TDATA_WIDTH)
     ) u_core (
         .aclk             (aclk),

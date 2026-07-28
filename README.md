@@ -87,7 +87,7 @@ standard AXI4-Stream with backpressure (`tready`), `tlast` = end of line, and
 | 0x24   | BOX_COLOR      | moving box color                                     |
 | 0x28   | BOX_SIZE       | `{width[16], height[16]}`                            |
 | 0x2C   | BOX_SPEED      | `{dx[16], dy[16]}` pixels per frame                  |
-| 0x30   | *(reserved)*   | future use                                           |
+| 0x30   | PIXELS_PER_CLOCK | **RO** build-time pixels-per-AXI-beat (1/2/4/8)     |
 | 0x34   | GRID_SPACING   | grid line spacing in pixels                          |
 | 0x38   | GRID_COLOR     | grid line color                                      |
 | 0x3C   | CHECKER_SIZE   | checkerboard square size in pixels                   |
@@ -283,7 +283,22 @@ rtl/vtpgz_axilite_top.v  — thin wrapper that adds an AXI4-Lite slave on
 | `RAW_BAYER`     | 1 (RGGB)| Only meaningful when `OUTPUT_MODE=1`. **0** = plain monochrome (G channel); **1** = RGGB; **2** = BGGR; **3** = GRBG; **4** = GBRG. The four Bayer tiles follow standard naming (row-by-row, left to right, top to bottom) |
 | `RGB_ORDER`     | 0 (Xilinx) | Component order in `tdata`. **0** = `{pad, B, G, R}` Xilinx PG044; **1** = `{R, G, B, pad}` legacy MSB-first |
 | `BPC`           | 8 | Bits per component. Allowed: 8, 10, 12, 14, 16. Patterns render at 12-bit; pack stage truncates LSBs (`BPC<12`), passes through (`BPC=12`), or zero-extends LSBs (`BPC>12`) |
-| `C_AXIS_TDATA_WIDTH` | (auto) | **Derived**: smallest multiple-of-8 that holds the active components. Don't override unless you really know what you're doing |
+| `PIXELS_PER_CLOCK` | 1 | Pixels emitted per AXI-Stream beat. **1** (default) = classic one-pixel-per-beat, netlist identical to prior releases. **2 / 4 / 8** pack that many horizontally-adjacent pixels into one wider beat (lane 0 = leftmost pixel in the `tdata` LSBs), multiplying line bandwidth. `IMG_WIDTH` is clamped **down** to a multiple of `PIXELS_PER_CLOCK`. See the note below for the pattern-support caveat. |
+| `PIX_TDATA_WIDTH` | (auto) | **Derived**: per-*pixel* packed width — smallest multiple-of-8 that holds the active components. Don't override. |
+| `C_AXIS_TDATA_WIDTH` | (auto) | **Derived**: full beat width = `PIXELS_PER_CLOCK × PIX_TDATA_WIDTH`. Don't override unless you really know what you're doing |
+
+**Multi-pixel-per-clock (`PIXELS_PER_CLOCK` > 1) — current support (M1)**:
+At `PIXELS_PER_CLOCK` of 2/4/8 the build is restricted to the
+position-combinational patterns — **SOLID, GRID, CHECKER**, plus the
+**moving-box overlay** (fill + border). These produce byte-exact output at
+any PPC. The accumulator / counter / stateful patterns (**COLORBAR, HGRAD,
+VGRAD, RAMP, NOISE, IMAGE, BOX_IMAGE**) still require `PIXELS_PER_CLOCK=1`;
+enabling any of their `EN_*` in a PPC>1 build **fails elaboration** with a
+named error module rather than emitting wrong pixels. All output modes
+(RGB / RAW-Bayer / YUV 4:4:4 / YUV 4:2:2) and all bit depths are supported
+at every PPC. The `PIXELS_PER_CLOCK` value is mirrored read-only at register
+offset `0x30` so software can discover it. Widening the remaining patterns
+to PPC>1 is planned follow-on work (M2/M3).
 
 **Output mode notes**:
 - `OUTPUT_MODE=0` (RGB) outputs 3-component RGB packed as

@@ -16,6 +16,7 @@ module vtpgz_axil_regs #(
     parameter RAW_BAYER     = `VTPGZ_RAW_RGGB,
     parameter RGB_ORDER     = `VTPGZ_RGB_ORDER_XILINX,
     parameter BPC           = 8,
+    parameter integer PIXELS_PER_CLOCK = 1,
     parameter TDATA_WIDTH   = 24
 )(
     input  wire        aclk,
@@ -227,6 +228,7 @@ module vtpgz_axil_regs #(
                     `VTPGZ_REG_IMG_WIDTH    : s_axi_rdata <= reg_img_width;
                     `VTPGZ_REG_IMG_HEIGHT   : s_axi_rdata <= reg_img_height;
                     `VTPGZ_REG_PATTERN_SEL  : s_axi_rdata <= reg_pattern_sel;
+                    `VTPGZ_REG_PIXELS_PER_CLOCK : s_axi_rdata <= PIXELS_PER_CLOCK;
                     `VTPGZ_REG_COLOR_FORMAT : s_axi_rdata <= {
                         TDATA_WIDTH[15:0],
                         BPC[7:0],
