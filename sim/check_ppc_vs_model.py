@@ -2,10 +2,11 @@
 # SPDX-FileCopyrightText: 2026 Leonardo Capossio - bard0 design - hello@bard0.com
 # SPDX-License-Identifier: Apache-2.0
 """
-iverilog(RTL) <-> Python-model beat-exact gate for the pixels-per-clock (M1)
-feature. Builds tb_ppc_capture.v once per (ppc, mode, bpc, ...) config with
-iverilog -P overrides, sweeps the M1 patterns, and compares each captured
-frame (one hex beat per line) against render_frame_beats().
+iverilog(RTL) <-> Python-model beat-exact gate for the pixels-per-clock
+feature (M1+M2 patterns). Builds tb_ppc_capture.v once per (ppc, mode, bpc,
+...) config with iverilog -P overrides, sweeps the PPC-supported patterns,
+and compares each captured frame (one hex beat per line) against
+render_frame_beats().
 
 Requires iverilog + vvp in PATH. Verilator is NOT needed here (that remains
 the byte-exact gate for the PPC=1 baseline via sim/run_sim.py).
@@ -34,6 +35,7 @@ from vtpgz_model import (  # noqa: E402
     RAW_PLAIN, RAW_RGGB, RAW_BGGR, RAW_GRBG, RAW_GBRG,
     RGB_ORDER_XILINX, RGB_ORDER_LEGACY,
     PAT_SOLID, PAT_GRID, PAT_CHECKER,
+    PAT_COLORBAR, PAT_HGRAD, PAT_VGRAD, PAT_RAMP,
 )
 
 MODE_MAP = {"rgb": MODE_RGB, "raw": MODE_RAW, "yuv": MODE_YUV}
@@ -42,9 +44,13 @@ BAYER_MAP = {"plain": RAW_PLAIN, "rggb": RAW_RGGB, "bggr": RAW_BGGR,
              "grbg": RAW_GRBG, "gbrg": RAW_GBRG}
 ORDER_MAP = {"xilinx": RGB_ORDER_XILINX, "legacy": RGB_ORDER_LEGACY}
 
-# Patterns exercised at PPC>1 (M1 scope) and the box-overlay (pattern SOLID
-# with the box enabled is covered too, driven by the harness box_* config).
-M1_PATTERNS = [("solid", PAT_SOLID), ("grid", PAT_GRID), ("checker", PAT_CHECKER)]
+# Patterns exercised at PPC>1 (M1 + M2 scope). The box overlay rides on top
+# of every pattern (driven by the harness box_* config), so it is covered too.
+PPC_PATTERNS = [
+    ("solid", PAT_SOLID), ("grid", PAT_GRID), ("checker", PAT_CHECKER),
+    ("colorbar", PAT_COLORBAR), ("hgrad", PAT_HGRAD),
+    ("vgrad", PAT_VGRAD), ("ramp", PAT_RAMP),
+]
 
 # Must mirror the constant cfg_* the harness drives (tb_ppc_capture.v).
 HARNESS_CFG = dict(
@@ -73,6 +79,8 @@ def build(ppc: int, mode: int, sub: int, bayer: int, order: int, bpc: int,
     params = {
         "PIXELS_PER_CLOCK": ppc, "OUTPUT_MODE": mode, "YUV_SUBSAMPLE": sub,
         "RAW_BAYER": bayer, "RGB_ORDER": order, "BPC": bpc,
+        # M2 patterns are legal at PPC>1 now; enable them for the sweep.
+        "EN_COLORBAR": 1, "EN_HGRAD": 1, "EN_VGRAD": 1, "EN_RAMP": 1,
     }
     cmd = [iverilog, "-g2001", "-Wall", "-I", str(RTL), "-s", top,
            "-o", str(out_vvp)]
@@ -117,7 +125,7 @@ def check_one(ppc: int, mode_name: str, bpc: int, sub_name: str,
     vvp_bin = tmp / f"ppc{ppc}_{mode_name}_{bpc}.vvp"
     build(ppc, mode, sub, bayer, order, bpc, vvp_bin)
     fails: list[str] = []
-    for pname, pat in M1_PATTERNS:
+    for pname, pat in PPC_PATTERNS:
         hexf = tmp / f"cap_{ppc}_{mode_name}_{bpc}_{pname}.hex"
         run_capture(vvp_bin, pat, width, height, hexf)
         sim = load_beats(hexf)

@@ -287,18 +287,18 @@ rtl/vtpgz_axilite_top.v  — thin wrapper that adds an AXI4-Lite slave on
 | `PIX_TDATA_WIDTH` | (auto) | **Derived**: per-*pixel* packed width — smallest multiple-of-8 that holds the active components. Don't override. |
 | `C_AXIS_TDATA_WIDTH` | (auto) | **Derived**: full beat width = `PIXELS_PER_CLOCK × PIX_TDATA_WIDTH`. Don't override unless you really know what you're doing |
 
-**Multi-pixel-per-clock (`PIXELS_PER_CLOCK` > 1) — current support (M1)**:
-At `PIXELS_PER_CLOCK` of 2/4/8 the build is restricted to the
-position-combinational patterns — **SOLID, GRID, CHECKER**, plus the
-**moving-box overlay** (fill + border). These produce byte-exact output at
-any PPC. The accumulator / counter / stateful patterns (**COLORBAR, HGRAD,
-VGRAD, RAMP, NOISE, IMAGE, BOX_IMAGE**) still require `PIXELS_PER_CLOCK=1`;
-enabling any of their `EN_*` in a PPC>1 build **fails elaboration** with a
-named error module rather than emitting wrong pixels. All output modes
-(RGB / RAW-Bayer / YUV 4:4:4 / YUV 4:2:2) and all bit depths are supported
-at every PPC. The `PIXELS_PER_CLOCK` value is mirrored read-only at register
-offset `0x30` so software can discover it. Widening the remaining patterns
-to PPC>1 is planned follow-on work (M2/M3).
+**Multi-pixel-per-clock (`PIXELS_PER_CLOCK` > 1) — current support**:
+At `PIXELS_PER_CLOCK` of 2/4/8 the following patterns produce beat-exact
+output: **SOLID, GRID, CHECKER, COLORBAR, HGRAD, VGRAD, RAMP**, plus the
+**moving-box overlay** (fill + border). Only the sequential-LFSR **NOISE**
+and the BRAM-backed **IMAGE / BOX_IMAGE** patterns still require
+`PIXELS_PER_CLOCK=1`; enabling any of `EN_NOISE`, `EN_IMAGE`, or
+`EN_BOX_IMAGE` in a PPC>1 build **fails elaboration** with a named error
+module rather than emitting wrong pixels. All output modes (RGB / RAW-Bayer /
+YUV 4:4:4 / YUV 4:2:2) and all bit depths are supported at every PPC. The
+`PIXELS_PER_CLOCK` value is mirrored read-only at register offset `0x30` so
+software can discover it. Widening NOISE and the image patterns to PPC>1 is
+planned follow-on work (M3).
 
 **Output mode notes**:
 - `OUTPUT_MODE=0` (RGB) outputs 3-component RGB packed as

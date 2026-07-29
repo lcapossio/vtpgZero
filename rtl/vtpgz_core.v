@@ -171,9 +171,10 @@ module vtpgz_core #(
             VTPGZ_PIXELS_PER_CLOCK_MUST_BE_1_2_4_OR_8 guard();
         end
         if (NPPC != 1) begin : g_ppc_guard
-            if (EN_COLORBAR || EN_HGRAD || EN_VGRAD || EN_RAMP ||
-                EN_NOISE || EN_IMAGE || EN_BOX_IMAGE) begin : g_unsupported
-                VTPGZ_PPC_GT1_SUPPORTS_ONLY_SOLID_GRID_CHECKER_BOX guard();
+            // M2 lifts colorbar/hgrad/vgrad/ramp; noise (sequential LFSR) and
+            // the BRAM-backed image patterns remain PPC=1-only (M3).
+            if (EN_NOISE || EN_IMAGE || EN_BOX_IMAGE) begin : g_unsupported
+                VTPGZ_PPC_GT1_DOES_NOT_YET_SUPPORT_NOISE_OR_IMAGE guard();
             end
         end
     endgenerate
@@ -396,73 +397,95 @@ module vtpgz_core #(
     // per-pixel path would produce at (x+l, y) and only exist for NPPC>1.
     wire [12*NPPC-1:0] chk_v_bus;
     wire [12*NPPC-1:0] grid_r_bus, grid_g_bus, grid_b_bus;
+    wire [12*NPPC-1:0] cb_r_bus, cb_g_bus, cb_b_bus;   // colorbar palette triple
+    wire [12*NPPC-1:0] hg_bus, vg_bus, ramp_bus;       // gray-value patterns
 
     // ---- Color bars (8 SMPTE bars) ----
     // Counter-based: increment bar index every cfg_bar_width pixels.
     // Host writes BAR_WIDTH = img_width/8 once per resolution change.
+    //
+    // Mode-aware palette as a function so each lane can look up its own bar
+    // index. In RGB/RAW the triple is {R,G,B}; in YUV it is {Y,Cb,Cr}.
+    // Returns {c0[12], c1[12], c2[12]}. Constants only -- no DSPs.
+    function [35:0] bar_palette;
+        input [2:0] idx;
+        begin
+            if (OUTPUT_MODE == `VTPGZ_MODE_YUV) begin
+                case (idx)
+                    3'd0: bar_palette = {12'hFFF, 12'h800, 12'h800}; // white
+                    3'd1: bar_palette = {12'hE2C, 12'h000, 12'h94D}; // yellow
+                    3'd2: bar_palette = {12'hB37, 12'hAB3, 12'h000}; // cyan
+                    3'd3: bar_palette = {12'h964, 12'h2B4, 12'h14E}; // green
+                    3'd4: bar_palette = {12'h69B, 12'hD4C, 12'hEB2}; // magenta
+                    3'd5: bar_palette = {12'h4C8, 12'h54D, 12'hFFF}; // red
+                    3'd6: bar_palette = {12'h1D3, 12'hFFF, 12'h6B3}; // blue
+                    default: bar_palette = {12'h000, 12'h800, 12'h800}; // black
+                endcase
+            end else begin
+                case (idx)
+                    3'd0: bar_palette = {12'hFFF, 12'hFFF, 12'hFFF};
+                    3'd1: bar_palette = {12'hFFF, 12'hFFF, 12'h000};
+                    3'd2: bar_palette = {12'h000, 12'hFFF, 12'hFFF};
+                    3'd3: bar_palette = {12'h000, 12'hFFF, 12'h000};
+                    3'd4: bar_palette = {12'hFFF, 12'h000, 12'hFFF};
+                    3'd5: bar_palette = {12'hFFF, 12'h000, 12'h000};
+                    3'd6: bar_palette = {12'h000, 12'h000, 12'hFFF};
+                    default: bar_palette = {12'h000, 12'h000, 12'h000};
+                endcase
+            end
+        end
+    endfunction
+
     generate if (EN_COLORBAR) begin : g_colorbar
         reg [15:0] bar_pix_cnt;
         reg [2:0]  bar_idx;
+        // Per-lane (bar_pix_cnt, bar_idx) chain: same single-step recurrence
+        // as the base counter, one step per lane. bix_l[gl] is lane gl's bar
+        // index; the base advances by NPPC steps per beat. At NPPC==1 this is
+        // one step and reproduces the original recurrence exactly.
+        wire [15:0] bpc_l [0:NPPC];
+        wire [2:0]  bix_l [0:NPPC];
+        assign bpc_l[0] = bar_pix_cnt;
+        assign bix_l[0] = bar_idx;
+        genvar cbl;
+        for (cbl = 0; cbl < NPPC; cbl = cbl + 1) begin : g_cb_chain
+            wire wrap_l = (bpc_l[cbl] + 16'h1 >= bar_width_eff);
+            assign bpc_l[cbl+1] = wrap_l ? 16'h0          : (bpc_l[cbl] + 16'h1);
+            assign bix_l[cbl+1] = wrap_l ? (bix_l[cbl] + 3'h1) : bix_l[cbl];
+            wire [35:0] pal_l = bar_palette(bix_l[cbl]);
+            assign cb_r_bus[12*cbl +: 12] = pal_l[35:24];
+            assign cb_g_bus[12*cbl +: 12] = pal_l[23:12];
+            assign cb_b_bus[12*cbl +: 12] = pal_l[11:0];
+        end
         always @(posedge aclk) begin
             if (!aresetn || frame_init) begin
                 bar_pix_cnt <= 16'h0;
                 bar_idx     <= 3'h0;
             end else if (source_advance) begin
+                // Force the bar walk back to bar 0 at the END of each line so
+                // the next line's pixel 0 reads bar 0 combinationally (do not
+                // also reset on pix_sof -- frame_init already clears the first
+                // active pixel; resetting at x=0 would shift every transition
+                // one pixel late). Otherwise advance the base by NPPC pixels.
                 if (last_x) begin
-                    // Force the bar walk back to bar 0 at the END
-                    // of each line so the next line's pixel 0 reads bar 0
-                    // combinationally. Do not also reset on pix_sof:
-                    // frame_init already clears the state before the first
-                    // active pixel, and resetting again at x=0 would skip
-                    // counting that beat, shifting every bar transition one
-                    // pixel late.
                     bar_pix_cnt <= 16'h0;
                     bar_idx     <= 3'h0;
-                end else if (bar_pix_cnt + 16'h1 >= bar_width_eff) begin
-                    bar_pix_cnt <= 16'h0;
-                    bar_idx     <= bar_idx + 3'h1;
                 end else begin
-                    bar_pix_cnt <= bar_pix_cnt + 16'h1;
+                    bar_pix_cnt <= bpc_l[NPPC];
+                    bar_idx     <= bix_l[NPPC];
                 end
             end
         end
-        // Mode-aware palette: in RGB/RAW the triple is {R,G,B}; in YUV the
-        // triple is {Y,Cb,Cr}. Constants only -- no DSPs needed.
-        reg [11:0] cb_c0_r, cb_c1_r, cb_c2_r;
-        if (OUTPUT_MODE == `VTPGZ_MODE_YUV) begin : g_yuv_pal
-            always @* begin
-                case (bar_idx)
-                    3'd0: begin cb_c0_r=12'hFFF; cb_c1_r=12'h800; cb_c2_r=12'h800; end // white
-                    3'd1: begin cb_c0_r=12'hE2C; cb_c1_r=12'h000; cb_c2_r=12'h94D; end // yellow
-                    3'd2: begin cb_c0_r=12'hB37; cb_c1_r=12'hAB3; cb_c2_r=12'h000; end // cyan
-                    3'd3: begin cb_c0_r=12'h964; cb_c1_r=12'h2B4; cb_c2_r=12'h14E; end // green
-                    3'd4: begin cb_c0_r=12'h69B; cb_c1_r=12'hD4C; cb_c2_r=12'hEB2; end // magenta
-                    3'd5: begin cb_c0_r=12'h4C8; cb_c1_r=12'h54D; cb_c2_r=12'hFFF; end // red
-                    3'd6: begin cb_c0_r=12'h1D3; cb_c1_r=12'hFFF; cb_c2_r=12'h6B3; end // blue
-                    default:begin cb_c0_r=12'h000; cb_c1_r=12'h800; cb_c2_r=12'h800; end // black
-                endcase
-            end
-        end else begin : g_rgb_pal
-            always @* begin
-                case (bar_idx)
-                    3'd0: begin cb_c0_r=12'hFFF; cb_c1_r=12'hFFF; cb_c2_r=12'hFFF; end
-                    3'd1: begin cb_c0_r=12'hFFF; cb_c1_r=12'hFFF; cb_c2_r=12'h000; end
-                    3'd2: begin cb_c0_r=12'h000; cb_c1_r=12'hFFF; cb_c2_r=12'hFFF; end
-                    3'd3: begin cb_c0_r=12'h000; cb_c1_r=12'hFFF; cb_c2_r=12'h000; end
-                    3'd4: begin cb_c0_r=12'hFFF; cb_c1_r=12'h000; cb_c2_r=12'hFFF; end
-                    3'd5: begin cb_c0_r=12'hFFF; cb_c1_r=12'h000; cb_c2_r=12'h000; end
-                    3'd6: begin cb_c0_r=12'h000; cb_c1_r=12'h000; cb_c2_r=12'hFFF; end
-                    default:begin cb_c0_r=12'h000; cb_c1_r=12'h000; cb_c2_r=12'h000; end
-                endcase
-            end
-        end
-        assign cb_r = cb_c0_r;
-        assign cb_g = cb_c1_r;
-        assign cb_b = cb_c2_r;
+        assign cb_r = cb_r_bus[11:0];
+        assign cb_g = cb_g_bus[11:0];
+        assign cb_b = cb_b_bus[11:0];
     end else begin : g_colorbar_off
         assign cb_r = 12'h000;
         assign cb_g = 12'h000;
         assign cb_b = 12'h000;
+        assign cb_r_bus = {(12*NPPC){1'b0}};
+        assign cb_g_bus = {(12*NPPC){1'b0}};
+        assign cb_b_bus = {(12*NPPC){1'b0}};
     end endgenerate
 
     // ---- Horizontal gradient ----
@@ -471,6 +494,18 @@ module vtpgz_core #(
     // ~ 0xFFF / width, written once per resolution change.
     generate if (EN_HGRAD) begin : g_hgrad
         reg [19:0] hg_acc;  // 4 int + 12 frac of headroom + 4 guard
+        // Per-lane accumulator chain: lane gl sees hg_acc + gl*step. The base
+        // advances by NPPC*step per beat; at NPPC==1 this is one +step and is
+        // identical to the original.
+        wire [19:0] hga_l [0:NPPC];
+        assign hga_l[0] = hg_acc;
+        genvar hgl;
+        for (hgl = 0; hgl < NPPC; hgl = hgl + 1) begin : g_hg_chain
+            assign hga_l[hgl+1] = hga_l[hgl] + {4'h0, cfg_hg_step};
+            // Saturate each lane to 12 bits.
+            assign hg_bus[12*hgl +: 12] =
+                (|hga_l[hgl][19:12]) ? 12'hFFF : hga_l[hgl][11:0];
+        end
         always @(posedge aclk) begin
             if (!aresetn || frame_init) hg_acc <= 20'h0;
             else if (source_advance) begin
@@ -481,13 +516,14 @@ module vtpgz_core #(
                 // from the previous line and producing a bright artifact
                 // at col 0 of every row.
                 if (last_x)     hg_acc <= 20'h0;
-                else            hg_acc <= hg_acc + {4'h0, cfg_hg_step};
+                else            hg_acc <= hga_l[NPPC];
             end
         end
-        // Saturate to 12 bits
-        assign hg_val = (|hg_acc[19:12]) ? 12'hFFF : hg_acc[11:0];
+        // Saturate to 12 bits (lane 0)
+        assign hg_val = hg_bus[11:0];
     end else begin : g_hgrad_off
         assign hg_val = 12'h000;
+        assign hg_bus = {(12*NPPC){1'b0}};
     end endgenerate
 
     // ---- Vertical gradient ----
@@ -501,9 +537,16 @@ module vtpgz_core #(
                 else if (last_x)          vg_acc <= vg_acc + {4'h0, cfg_vg_step};
             end
         end
+        // vg_acc only changes per LINE, so every lane in a beat shares the
+        // same value -- replicate it across the bus.
         assign vg_val = (|vg_acc[19:12]) ? 12'hFFF : vg_acc[11:0];
+        genvar vgl;
+        for (vgl = 0; vgl < NPPC; vgl = vgl + 1) begin : g_vg_lane
+            assign vg_bus[12*vgl +: 12] = vg_val;
+        end
     end else begin : g_vgrad_off
         assign vg_val = 12'h000;
+        assign vg_bus = {(12*NPPC){1'b0}};
     end endgenerate
 
     // ---- Checkerboard ----
@@ -735,16 +778,26 @@ module vtpgz_core #(
     // Same accumulator approach as hgrad. Reuses cfg_hg_step.
     generate if (EN_RAMP) begin : g_ramp
         reg [19:0] ramp_acc;
+        // Per-lane accumulator chain (same structure as hgrad).
+        wire [19:0] rmp_l [0:NPPC];
+        assign rmp_l[0] = ramp_acc;
+        genvar rml;
+        for (rml = 0; rml < NPPC; rml = rml + 1) begin : g_ramp_chain
+            assign rmp_l[rml+1] = rmp_l[rml] + {4'h0, cfg_hg_step};
+            assign ramp_bus[12*rml +: 12] =
+                (|rmp_l[rml][19:12]) ? 12'hFFF : rmp_l[rml][11:0];
+        end
         always @(posedge aclk) begin
             if (!aresetn || frame_init) ramp_acc <= 20'h0;
             else if (source_advance) begin
                 if (last_x)     ramp_acc <= 20'h0;
-                else            ramp_acc <= ramp_acc + {4'h0, cfg_hg_step};
+                else            ramp_acc <= rmp_l[NPPC];
             end
         end
-        assign ramp_v = (|ramp_acc[19:12]) ? 12'hFFF : ramp_acc[11:0];
+        assign ramp_v = ramp_bus[11:0];
     end else begin : g_ramp_off
         assign ramp_v = 12'h000;
+        assign ramp_bus = {(12*NPPC){1'b0}};
     end endgenerate
 
     // ---- Noise (LFSR-16) ----
@@ -1002,16 +1055,30 @@ module vtpgz_core #(
     wire [12*NPPC-1:0] pat_c0_bus, pat_c1_bus, pat_c2_bus;
     genvar gpl;
     generate for (gpl = 0; gpl < NPPC; gpl = gpl + 1) begin : g_pat_lane
-        wire [11:0] chkl   = chk_v_bus[12*gpl +: 12];
+        wire [11:0] chkl  = chk_v_bus[12*gpl +: 12];
+        wire [11:0] hgl   = hg_bus  [12*gpl +: 12];
+        wire [11:0] vgl   = vg_bus  [12*gpl +: 12];
+        wire [11:0] rmpl  = ramp_bus[12*gpl +: 12];
+        // Gray-to-triple chroma for the build's color space (see the scalar
+        // hg_c1/hg_c2 helpers): luma in c0, neutral chroma in c1/c2 for YUV.
         wire [11:0] chkl_c = is_yuv_build ? CHROMA_NEUTRAL : chkl;
+        wire [11:0] hgl_c  = is_yuv_build ? CHROMA_NEUTRAL : hgl;
+        wire [11:0] vgl_c  = is_yuv_build ? CHROMA_NEUTRAL : vgl;
+        wire [11:0] rmpl_c = is_yuv_build ? CHROMA_NEUTRAL : rmpl;
         reg [11:0] p0, p1, p2;
         always @* begin
             case (cfg_pattern)
+                `VTPGZ_PAT_COLORBAR: begin p0 = cb_r_bus[12*gpl +: 12];
+                                           p1 = cb_g_bus[12*gpl +: 12];
+                                           p2 = cb_b_bus[12*gpl +: 12]; end
+                `VTPGZ_PAT_HGRAD   : begin p0 = hgl;     p1 = hgl_c;   p2 = hgl_c;   end
+                `VTPGZ_PAT_VGRAD   : begin p0 = vgl;     p1 = vgl_c;   p2 = vgl_c;   end
                 `VTPGZ_PAT_CHECKER : begin p0 = chkl;    p1 = chkl_c;  p2 = chkl_c;  end
                 `VTPGZ_PAT_SOLID   : begin p0 = solid_r; p1 = solid_g; p2 = solid_b; end
                 `VTPGZ_PAT_GRID    : begin p0 = grid_r_bus[12*gpl +: 12];
                                            p1 = grid_g_bus[12*gpl +: 12];
                                            p2 = grid_b_bus[12*gpl +: 12]; end
+                `VTPGZ_PAT_RAMP    : begin p0 = rmpl;    p1 = rmpl_c;  p2 = rmpl_c;  end
                 default            : begin p0 = 12'h0;   p1 = 12'h0;   p2 = 12'h0;   end
             endcase
         end
