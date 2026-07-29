@@ -287,18 +287,26 @@ rtl/vtpgz_axilite_top.v  — thin wrapper that adds an AXI4-Lite slave on
 | `PIX_TDATA_WIDTH` | (auto) | **Derived**: per-*pixel* packed width — smallest multiple-of-8 that holds the active components. Don't override. |
 | `C_AXIS_TDATA_WIDTH` | (auto) | **Derived**: full beat width = `PIXELS_PER_CLOCK × PIX_TDATA_WIDTH`. Don't override unless you really know what you're doing |
 
-**Multi-pixel-per-clock (`PIXELS_PER_CLOCK` > 1) — current support**:
-At `PIXELS_PER_CLOCK` of 2/4/8 the following patterns produce beat-exact
-output: **SOLID, GRID, CHECKER, COLORBAR, HGRAD, VGRAD, RAMP**, plus the
-**moving-box overlay** (fill + border). Only the sequential-LFSR **NOISE**
-and the BRAM-backed **IMAGE / BOX_IMAGE** patterns still require
-`PIXELS_PER_CLOCK=1`; enabling any of `EN_NOISE`, `EN_IMAGE`, or
-`EN_BOX_IMAGE` in a PPC>1 build **fails elaboration** with a named error
-module rather than emitting wrong pixels. All output modes (RGB / RAW-Bayer /
-YUV 4:4:4 / YUV 4:2:2) and all bit depths are supported at every PPC. The
-`PIXELS_PER_CLOCK` value is mirrored read-only at register offset `0x30` so
-software can discover it. Widening NOISE and the image patterns to PPC>1 is
-planned follow-on work (M3).
+**Multi-pixel-per-clock (`PIXELS_PER_CLOCK` > 1)**:
+At `PIXELS_PER_CLOCK` of 2/4/8, **every** pattern produces beat-exact output
+— SOLID, GRID, CHECKER, COLORBAR, HGRAD, VGRAD, RAMP, NOISE, IMAGE — plus the
+moving-box overlay (fill, border, and box-image). All output modes (RGB /
+RAW-Bayer / YUV 4:4:4 / YUV 4:2:2) and all bit depths are supported at every
+PPC. `IMG_WIDTH` is clamped down to a multiple of `PIXELS_PER_CLOCK`. Only an
+illegal `PIXELS_PER_CLOCK` (not 1/2/4/8) fails elaboration. The value is
+mirrored read-only at register offset `0x30` so software can discover it.
+
+Implementation notes:
+- The `PIXELS_PER_CLOCK=1` build is byte-identical to prior releases (the
+  per-lane logic is generate-gated behind `PPC>1`).
+- NOISE uses a leap-ahead LFSR (the feedback is unrolled `PIXELS_PER_CLOCK`
+  times so each lane gets consecutive states and the base register jumps
+  ahead one beat).
+- IMAGE / BOX_IMAGE replicate their source memory once per lane and read it
+  combinationally, so keep `IMAGE_W`/`IMAGE_H` (and `BOX_IMAGE_W/H`) modest at
+  high PPC — total image storage scales with `PIXELS_PER_CLOCK`. The `PPC>1`
+  image read is shift-free (matches the reference model); the `PPC=1` path
+  keeps its registered BRAM read and the pre-existing uniform 1-px shift.
 
 **Output mode notes**:
 - `OUTPUT_MODE=0` (RGB) outputs 3-component RGB packed as

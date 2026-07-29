@@ -162,20 +162,12 @@ module vtpgz_core #(
     localparam integer NPPC = PIXELS_PER_CLOCK;
 
     // ---------------- elaboration guards ----------------
-    // PIXELS_PER_CLOCK must be one of 1/2/4/8, and (M1 scope) a PPC>1 build
-    // may only enable the position-combinational patterns. Any violation
-    // instantiates an undefined module so elaboration fails loudly with the
-    // offending name, rather than silently producing wrong pixels.
+    // PIXELS_PER_CLOCK must be one of 1/2/4/8. As of M3 every pattern (and
+    // the box + box-image overlays) is supported at PPC>1, so there is no
+    // longer a per-pattern restriction -- only the legal-value check remains.
     generate
         if (!(NPPC == 1 || NPPC == 2 || NPPC == 4 || NPPC == 8)) begin : g_ppc_bad
             VTPGZ_PIXELS_PER_CLOCK_MUST_BE_1_2_4_OR_8 guard();
-        end
-        if (NPPC != 1) begin : g_ppc_guard
-            // M2 lifts colorbar/hgrad/vgrad/ramp; noise (sequential LFSR) and
-            // the BRAM-backed image patterns remain PPC=1-only (M3).
-            if (EN_NOISE || EN_IMAGE || EN_BOX_IMAGE) begin : g_unsupported
-                VTPGZ_PPC_GT1_DOES_NOT_YET_SUPPORT_NOISE_OR_IMAGE guard();
-            end
         end
     endgenerate
 
@@ -399,6 +391,9 @@ module vtpgz_core #(
     wire [12*NPPC-1:0] grid_r_bus, grid_g_bus, grid_b_bus;
     wire [12*NPPC-1:0] cb_r_bus, cb_g_bus, cb_b_bus;   // colorbar palette triple
     wire [12*NPPC-1:0] hg_bus, vg_bus, ramp_bus;       // gray-value patterns
+    wire [12*NPPC-1:0] noise_bus;                      // per-lane LFSR value
+    wire [12*NPPC-1:0] image_r_bus, image_g_bus, image_b_bus; // per-lane IMAGE
+    wire [12*NPPC-1:0] box_img_r_bus, box_img_g_bus, box_img_b_bus; // per-lane box-image
 
     // ---- Color bars (8 SMPTE bars) ----
     // Counter-based: increment bar index every cfg_bar_width pixels.
@@ -801,18 +796,30 @@ module vtpgz_core #(
     end endgenerate
 
     // ---- Noise (LFSR-16) ----
+    // The LFSR advances one step per pixel and runs continuously across a
+    // frame (re-seeded only on frame_init, NOT reset per line). For NPPC>1
+    // each lane needs the state N consecutive steps apart, so we leap-ahead
+    // by unrolling the single-step feedback NPPC times combinationally: lane
+    // gl reads lf_l[gl], and the base register jumps to lf_l[NPPC] each beat.
+    // At NPPC==1 this is a single step -- identical to the original.
     generate if (EN_NOISE) begin : g_noise
         reg [15:0] lfsr;
-        wire       lfsr_fb = lfsr[15] ^ lfsr[13] ^ lfsr[12] ^ lfsr[10];
-        // LFSR is re-seeded on frame_init so each fresh enable starts with
-        // the same state, matching the Python model.
+        wire [15:0] lf_l [0:NPPC];
+        assign lf_l[0] = lfsr;
+        genvar nl;
+        for (nl = 0; nl < NPPC; nl = nl + 1) begin : g_noise_chain
+            wire fb_l = lf_l[nl][15] ^ lf_l[nl][13] ^ lf_l[nl][12] ^ lf_l[nl][10];
+            assign lf_l[nl+1] = {lf_l[nl][14:0], fb_l};
+            assign noise_bus[12*nl +: 12] = lf_l[nl][11:0];
+        end
         always @(posedge aclk) begin
             if (!aresetn || frame_init) lfsr <= 16'hACE1;
-            else if (source_advance) lfsr <= {lfsr[14:0], lfsr_fb};
+            else if (source_advance)    lfsr <= lf_l[NPPC];
         end
-        assign noise_v = lfsr[11:0];
+        assign noise_v = noise_bus[11:0];
     end else begin : g_noise_off
-        assign noise_v = 12'h000;
+        assign noise_v   = 12'h000;
+        assign noise_bus = {(12*NPPC){1'b0}};
     end endgenerate
 
     // ---- IMAGE (BRAM-baked synth-time image, with optional nearest-
@@ -838,42 +845,18 @@ module vtpgz_core #(
         localparam ACC_X_W     = IMG_LOG2W + FRAC_BITS;
         localparam ACC_Y_W     = IMG_LOG2H + FRAC_BITS;
 
-        (* ram_style = "block" *)
-        reg [23:0] image_mem [0:IMG_DEPTH-1];
-        initial begin
-            $readmemh(IMAGE_HEX_FILE, image_mem);
-        end
-
         // Centred window offsets. Clamped to 0 if the output window is
         // wider/taller than the active region (image truncated, no error).
         wire [15:0] img_x_off = (img_width_eff  > IMAGE_OUT_W)
                               ? ((img_width_eff  - IMAGE_OUT_W) >> 1) : 16'h0;
         wire [15:0] img_y_off = (img_height_eff > IMAGE_OUT_H)
                               ? ((img_height_eff - IMAGE_OUT_H) >> 1) : 16'h0;
-
-        wire in_image = (x >= img_x_off) && (x < img_x_off + IMAGE_OUT_W) &&
-                        (y >= img_y_off) && (y < img_y_off + IMAGE_OUT_H);
         wire in_image_y = (y >= img_y_off) && (y < img_y_off + IMAGE_OUT_H);
 
-        // X accumulator: reset at the end of each line so the next line
-        // starts at acc_x=0; increment by IMG_X_STEP each cycle while
-        // inside the image-x window. Outside, the accumulator holds (its
-        // value is muxed to black anyway).
-        reg [ACC_X_W-1:0] acc_x;
-        always @(posedge aclk) begin
-            if (!aresetn || frame_init)        acc_x <= {ACC_X_W{1'b0}};
-            else if (source_advance) begin
-                if (last_x)                    acc_x <= {ACC_X_W{1'b0}};
-                else if (in_image)             acc_x <= acc_x + IMG_X_STEP[ACC_X_W-1:0];
-            end
-        end
-
-        // Y accumulator: step at end of each line that lies in the image-y
-        // window. Anchor the reset on end_of_frame (one cycle BEFORE the
-        // next frame's pix_sof) so cycle (x=0, y=0) reads acc_y=0
-        // combinationally -- resetting on pix_sof would land one cycle
-        // late via the NBA and leak the previous frame's last src_y into
-        // the first output pixel.
+        // Y accumulator (shared across lanes -- y is common to a beat). Step
+        // at end of each line that lies in the image-y window. Anchor the
+        // reset on end_of_frame (one cycle BEFORE the next frame's pix_sof)
+        // so cycle (x=0, y=0) reads acc_y=0 combinationally.
         reg [ACC_Y_W-1:0] acc_y;
         always @(posedge aclk) begin
             if (!aresetn || frame_init)               acc_y <= {ACC_Y_W{1'b0}};
@@ -882,37 +865,98 @@ module vtpgz_core #(
                 else if (last_x && in_image_y)        acc_y <= acc_y + IMG_Y_STEP[ACC_Y_W-1:0];
             end
         end
-
-        wire [IMG_LOG2W-1:0] src_x = acc_x[ACC_X_W-1 -: IMG_LOG2W];
         wire [IMG_LOG2H-1:0] src_y = acc_y[ACC_Y_W-1 -: IMG_LOG2H];
 
-        wire [IMG_ADDR_W-1:0] image_addr = {src_y, src_x};
-
-        // Synchronous (block-RAM) read + matched in_image delay. Registering
-        // the read lets Vivado map image_word_q into the BRAM tile's
-        // built-in DOUT register, breaking the long combinational
-        // acc_x -> image_mem -> pattern-mux path so the IMAGE pattern closes
-        // timing well above the KV260 ~74 MHz DP rate (e.g. 130 MHz). Costs
-        // one pixel of image latency: a uniform 1-px horizontal shift,
-        // visually imperceptible at any realistic IMAGE_OUT_W:IMAGE_W ratio.
-        reg  [23:0] image_word_q;
-        reg         in_image_q;
-        always @(posedge aclk) begin
-            image_word_q <= image_mem[image_addr];
-            in_image_q   <= in_image;
+        if (NPPC == 1) begin : g_img_ppc1
+            // ---- NPPC==1: original single-BRAM registered-read path ----
+            // Synchronous read maps into the BRAM DOUT register for timing;
+            // costs a uniform 1-px horizontal shift (unchanged from before).
+            (* ram_style = "block" *)
+            reg [23:0] image_mem [0:IMG_DEPTH-1];
+            initial begin
+                $readmemh(IMAGE_HEX_FILE, image_mem);
+            end
+            wire in_image = in_image_y &&
+                            (x >= img_x_off) && (x < img_x_off + IMAGE_OUT_W);
+            reg [ACC_X_W-1:0] acc_x;
+            always @(posedge aclk) begin
+                if (!aresetn || frame_init)        acc_x <= {ACC_X_W{1'b0}};
+                else if (source_advance) begin
+                    if (last_x)                    acc_x <= {ACC_X_W{1'b0}};
+                    else if (in_image)             acc_x <= acc_x + IMG_X_STEP[ACC_X_W-1:0];
+                end
+            end
+            wire [IMG_LOG2W-1:0] src_x = acc_x[ACC_X_W-1 -: IMG_LOG2W];
+            wire [IMG_ADDR_W-1:0] image_addr = {src_y, src_x};
+            reg  [23:0] image_word_q;
+            reg         in_image_q;
+            always @(posedge aclk) begin
+                image_word_q <= image_mem[image_addr];
+                in_image_q   <= in_image;
+            end
+            wire [7:0] img_r8 = image_word_q[23:16];
+            wire [7:0] img_g8 = image_word_q[15:8];
+            wire [7:0] img_b8 = image_word_q[7:0];
+            assign image_r = in_image_q ? {img_r8, img_r8[7:4]} : 12'h000;
+            assign image_g = in_image_q ? {img_g8, img_g8[7:4]} : 12'h000;
+            assign image_b = in_image_q ? {img_b8, img_b8[7:4]} : 12'h000;
+            assign image_r_bus = image_r;   // NPPC==1: bus == lane 0
+            assign image_g_bus = image_g;
+            assign image_b_bus = image_b;
+        end else begin : g_img_ppcN
+            // ---- NPPC>1: N replicated memories, combinational read ----
+            // Each lane reads its own copy at column (x+lane), so the image
+            // is shift-free and matches the reference model exactly (the
+            // NPPC==1 registered read's 1-px shift does not apply). Cost is
+            // N image copies -- keep IMAGE_W/H modest for high PPC.
+            reg [ACC_X_W-1:0] acc_x;   // base = lane 0 acc at pixel x
+            wire [ACC_X_W-1:0] axc [0:NPPC];
+            assign axc[0] = acc_x;
+            genvar il;
+            for (il = 0; il < NPPC; il = il + 1) begin : g_img_lane
+                wire [15:0] xl = x + il[15:0];
+                wire in_img_l = in_image_y &&
+                                (xl >= img_x_off) && (xl < img_x_off + IMAGE_OUT_W);
+                // Advance the accumulator only across in-window columns, so
+                // lane gl sees acc = (col - off)*step, i.e. src = model's
+                // ((X-off)*step>>16) & (IMAGE_W-1).
+                assign axc[il+1] = in_img_l ? (axc[il] + IMG_X_STEP[ACC_X_W-1:0])
+                                            : axc[il];
+                wire [IMG_LOG2W-1:0] sx_l = axc[il][ACC_X_W-1 -: IMG_LOG2W];
+                wire [IMG_ADDR_W-1:0] addr_l = {src_y, sx_l};
+                (* ram_style = "block" *)
+                reg [23:0] mem_l [0:IMG_DEPTH-1];
+                initial begin
+                    $readmemh(IMAGE_HEX_FILE, mem_l);
+                end
+                reg [23:0] word_l;
+                always @* word_l = mem_l[addr_l];
+                wire [7:0] r8 = word_l[23:16];
+                wire [7:0] g8 = word_l[15:8];
+                wire [7:0] b8 = word_l[7:0];
+                assign image_r_bus[12*il +: 12] = in_img_l ? {r8, r8[7:4]} : 12'h000;
+                assign image_g_bus[12*il +: 12] = in_img_l ? {g8, g8[7:4]} : 12'h000;
+                assign image_b_bus[12*il +: 12] = in_img_l ? {b8, b8[7:4]} : 12'h000;
+            end
+            always @(posedge aclk) begin
+                if (!aresetn || frame_init) acc_x <= {ACC_X_W{1'b0}};
+                else if (source_advance) begin
+                    if (last_x) acc_x <= {ACC_X_W{1'b0}};
+                    else        acc_x <= axc[NPPC];
+                end
+            end
+            assign image_r = image_r_bus[11:0];
+            assign image_g = image_g_bus[11:0];
+            assign image_b = image_b_bus[11:0];
         end
-
-        wire [7:0] img_r8 = image_word_q[23:16];
-        wire [7:0] img_g8 = image_word_q[15:8];
-        wire [7:0] img_b8 = image_word_q[7:0];
-        assign image_r = in_image_q ? {img_r8, img_r8[7:4]} : 12'h000;
-        assign image_g = in_image_q ? {img_g8, img_g8[7:4]} : 12'h000;
-        assign image_b = in_image_q ? {img_b8, img_b8[7:4]} : 12'h000;
         // verilator coverage_on
     end else begin : g_image_off
         assign image_r = 12'h000;
         assign image_g = 12'h000;
         assign image_b = 12'h000;
+        assign image_r_bus = {(12*NPPC){1'b0}};
+        assign image_g_bus = {(12*NPPC){1'b0}};
+        assign image_b_bus = {(12*NPPC){1'b0}};
     end endgenerate
 
     // ---- BOX-image overlay ----
@@ -935,35 +979,10 @@ module vtpgz_core #(
         localparam BIMG_ACC_X_W = BIMG_LOG2W + BIMG_FRAC;
         localparam BIMG_ACC_Y_W = BIMG_LOG2H + BIMG_FRAC;
 
-        (* ram_style = "block" *)
-        reg [23:0] box_image_mem [0:BIMG_DEPTH-1];
-        initial begin
-            $readmemh(BOX_IMAGE_HEX_FILE, box_image_mem);
-        end
-
-        // Per-axis "inside box's x/y range" derived from x, y and the
-        // box position registers in g_box. Need both for proper acc gating.
-        wire bimg_in_x = (x >= g_box.box_x) &&
-                         (x <  g_box.box_x + box_width_eff);
+        // Y accumulator (shared across lanes). Zero on end_of_frame, step at
+        // last_x of each line inside box-y.
         wire bimg_in_y = (y >= g_box.box_y) &&
                          (y <  g_box.box_y + box_height_eff);
-
-        // X accumulator: zero on last_x (so x=0 of next line starts at
-        // 0), increment while inside box-x. First in-box cycle reads
-        // acc_x=0 -> src_x=0. Last in-box reads near BOX_IMAGE_W-1.
-        reg [BIMG_ACC_X_W-1:0] bimg_acc_x;
-        always @(posedge aclk) begin
-            if (!aresetn || frame_init) bimg_acc_x <= {BIMG_ACC_X_W{1'b0}};
-            else if (source_advance) begin
-                if (last_x)                bimg_acc_x <= {BIMG_ACC_X_W{1'b0}};
-                else if (bimg_in_x)        bimg_acc_x <= bimg_acc_x +
-                                                          cfg_box_img_x_step[BIMG_ACC_X_W-1:0];
-            end
-        end
-
-        // Y accumulator: zero on end_of_frame (avoiding the pix_sof NBA
-        // leak that bit the IMAGE pattern), step at last_x of each line
-        // that's inside box-y.
         reg [BIMG_ACC_Y_W-1:0] bimg_acc_y;
         always @(posedge aclk) begin
             if (!aresetn || frame_init) bimg_acc_y <= {BIMG_ACC_Y_W{1'b0}};
@@ -973,36 +992,91 @@ module vtpgz_core #(
                                                                 cfg_box_img_y_step[BIMG_ACC_Y_W-1:0];
             end
         end
-
-        wire [BIMG_LOG2W-1:0] bimg_src_x = bimg_acc_x[BIMG_ACC_X_W-1 -: BIMG_LOG2W];
         wire [BIMG_LOG2H-1:0] bimg_src_y = bimg_acc_y[BIMG_ACC_Y_W-1 -: BIMG_LOG2H];
 
-        wire [BIMG_ADDR_W-1:0] bimg_addr = {bimg_src_y, bimg_src_x};
-
-        // Synchronous read for the same timing reason as the IMAGE
-        // pattern's BRAM (Vivado packs into the BRAM tile's DOUT register;
-        // breaks the BRAM-output-to-pat_c0_s1 combinational path). The
-        // existing pre-mux s1 stage still latches downstream, so the box
-        // image ends up 1 cycle later than the box mask -- a uniform
-        // 1-px horizontal shift inside the box, which matches the
-        // shift on the underlying IMAGE pattern so the two stay
-        // pixel-aligned.
-        reg [23:0] bimg_word_q;
-        always @(posedge aclk) begin
-            bimg_word_q <= box_image_mem[bimg_addr];
+        if (NPPC == 1) begin : g_bimg_ppc1
+            // ---- NPPC==1: original single-BRAM registered-read path ----
+            (* ram_style = "block" *)
+            reg [23:0] box_image_mem [0:BIMG_DEPTH-1];
+            initial begin
+                $readmemh(BOX_IMAGE_HEX_FILE, box_image_mem);
+            end
+            wire bimg_in_x = (x >= g_box.box_x) &&
+                             (x <  g_box.box_x + box_width_eff);
+            reg [BIMG_ACC_X_W-1:0] bimg_acc_x;
+            always @(posedge aclk) begin
+                if (!aresetn || frame_init) bimg_acc_x <= {BIMG_ACC_X_W{1'b0}};
+                else if (source_advance) begin
+                    if (last_x)                bimg_acc_x <= {BIMG_ACC_X_W{1'b0}};
+                    else if (bimg_in_x)        bimg_acc_x <= bimg_acc_x +
+                                                              cfg_box_img_x_step[BIMG_ACC_X_W-1:0];
+                end
+            end
+            wire [BIMG_LOG2W-1:0] bimg_src_x = bimg_acc_x[BIMG_ACC_X_W-1 -: BIMG_LOG2W];
+            wire [BIMG_ADDR_W-1:0] bimg_addr = {bimg_src_y, bimg_src_x};
+            // Synchronous read (BRAM DOUT reg) -- costs the same uniform 1-px
+            // shift as the IMAGE pattern (kept identical to prior releases).
+            reg [23:0] bimg_word_q;
+            always @(posedge aclk) begin
+                bimg_word_q <= box_image_mem[bimg_addr];
+            end
+            wire [7:0] bimg_r8 = bimg_word_q[23:16];
+            wire [7:0] bimg_g8 = bimg_word_q[15:8];
+            wire [7:0] bimg_b8 = bimg_word_q[7:0];
+            assign box_img_r = {bimg_r8, bimg_r8[7:4]};
+            assign box_img_g = {bimg_g8, bimg_g8[7:4]};
+            assign box_img_b = {bimg_b8, bimg_b8[7:4]};
+            assign box_img_r_bus = box_img_r;
+            assign box_img_g_bus = box_img_g;
+            assign box_img_b_bus = box_img_b;
+        end else begin : g_bimg_ppcN
+            // ---- NPPC>1: N replicated memories, combinational shift-free ----
+            reg [BIMG_ACC_X_W-1:0] bimg_acc_x;   // base = lane 0 acc at pixel x
+            wire [BIMG_ACC_X_W-1:0] bxc [0:NPPC];
+            assign bxc[0] = bimg_acc_x;
+            genvar bil;
+            for (bil = 0; bil < NPPC; bil = bil + 1) begin : g_bimg_lane
+                wire [15:0] xl = x + bil[15:0];
+                wire bin_x_l = (xl >= g_box.box_x) &&
+                               (xl <  g_box.box_x + box_width_eff);
+                assign bxc[bil+1] = bin_x_l ? (bxc[bil] +
+                                               cfg_box_img_x_step[BIMG_ACC_X_W-1:0])
+                                            : bxc[bil];
+                wire [BIMG_LOG2W-1:0] sx_l = bxc[bil][BIMG_ACC_X_W-1 -: BIMG_LOG2W];
+                wire [BIMG_ADDR_W-1:0] addr_l = {bimg_src_y, sx_l};
+                (* ram_style = "block" *)
+                reg [23:0] mem_l [0:BIMG_DEPTH-1];
+                initial begin
+                    $readmemh(BOX_IMAGE_HEX_FILE, mem_l);
+                end
+                reg [23:0] word_l;
+                always @* word_l = mem_l[addr_l];
+                wire [7:0] r8 = word_l[23:16];
+                wire [7:0] g8 = word_l[15:8];
+                wire [7:0] b8 = word_l[7:0];
+                assign box_img_r_bus[12*bil +: 12] = {r8, r8[7:4]};
+                assign box_img_g_bus[12*bil +: 12] = {g8, g8[7:4]};
+                assign box_img_b_bus[12*bil +: 12] = {b8, b8[7:4]};
+            end
+            always @(posedge aclk) begin
+                if (!aresetn || frame_init) bimg_acc_x <= {BIMG_ACC_X_W{1'b0}};
+                else if (source_advance) begin
+                    if (last_x) bimg_acc_x <= {BIMG_ACC_X_W{1'b0}};
+                    else        bimg_acc_x <= bxc[NPPC];
+                end
+            end
+            assign box_img_r = box_img_r_bus[11:0];
+            assign box_img_g = box_img_g_bus[11:0];
+            assign box_img_b = box_img_b_bus[11:0];
         end
-
-        wire [7:0] bimg_r8 = bimg_word_q[23:16];
-        wire [7:0] bimg_g8 = bimg_word_q[15:8];
-        wire [7:0] bimg_b8 = bimg_word_q[7:0];
-        assign box_img_r = {bimg_r8, bimg_r8[7:4]};
-        assign box_img_g = {bimg_g8, bimg_g8[7:4]};
-        assign box_img_b = {bimg_b8, bimg_b8[7:4]};
         // verilator coverage_on
     end else begin : g_box_image_off
         assign box_img_r = 12'h000;
         assign box_img_g = 12'h000;
         assign box_img_b = 12'h000;
+        assign box_img_r_bus = {(12*NPPC){1'b0}};
+        assign box_img_g_bus = {(12*NPPC){1'b0}};
+        assign box_img_b_bus = {(12*NPPC){1'b0}};
     end endgenerate
 
     // ---------------- pattern mux ----------------
@@ -1069,12 +1143,14 @@ module vtpgz_core #(
         wire [11:0] hgl   = hg_bus  [12*gpl +: 12];
         wire [11:0] vgl   = vg_bus  [12*gpl +: 12];
         wire [11:0] rmpl  = ramp_bus[12*gpl +: 12];
+        wire [11:0] nzl   = noise_bus[12*gpl +: 12];
         // Gray-to-triple chroma for the build's color space (see the scalar
         // hg_c1/hg_c2 helpers): luma in c0, neutral chroma in c1/c2 for YUV.
         wire [11:0] chkl_c = is_yuv_build ? CHROMA_NEUTRAL : chkl;
         wire [11:0] hgl_c  = is_yuv_build ? CHROMA_NEUTRAL : hgl;
         wire [11:0] vgl_c  = is_yuv_build ? CHROMA_NEUTRAL : vgl;
         wire [11:0] rmpl_c = is_yuv_build ? CHROMA_NEUTRAL : rmpl;
+        wire [11:0] nzl_c  = is_yuv_build ? CHROMA_NEUTRAL : nzl;
         reg [11:0] p0, p1, p2;
         always @* begin
             case (cfg_pattern)
@@ -1089,6 +1165,10 @@ module vtpgz_core #(
                                            p1 = grid_g_bus[12*gpl +: 12];
                                            p2 = grid_b_bus[12*gpl +: 12]; end
                 `VTPGZ_PAT_RAMP    : begin p0 = rmpl;    p1 = rmpl_c;  p2 = rmpl_c;  end
+                `VTPGZ_PAT_NOISE   : begin p0 = nzl;     p1 = nzl_c;   p2 = nzl_c;   end
+                `VTPGZ_PAT_IMAGE   : begin p0 = image_r_bus[12*gpl +: 12];
+                                           p1 = image_g_bus[12*gpl +: 12];
+                                           p2 = image_b_bus[12*gpl +: 12]; end
                 default            : begin p0 = 12'h0;   p1 = 12'h0;   p2 = 12'h0;   end
             endcase
         end
@@ -1166,9 +1246,8 @@ module vtpgz_core #(
     // Box-image colours land in their own s1 registers so the mux at this
     // stage gets a value computed from the SAME cycle's x,y as box_in_s1
     // (the combinational box_img_* would otherwise be one cycle ahead).
-    // Box-image is a NPPC==1-only feature (elaboration-forbidden at NPPC>1),
-    // so these remain scalar and only feed lane 0's inside-mux.
-    reg [11:0] box_img_r_s1, box_img_g_s1, box_img_b_s1;
+    // Per-lane like the pattern buses: lane 0 in [11:0], lanes 1..N-1 above.
+    reg [12*NPPC-1:0] box_img_r_s1, box_img_g_s1, box_img_b_s1;
     reg        pix_valid_s1, pix_sof_s1, pix_eol_s1, pix_eof_s1;
     reg        pix_x_lsb_s1, pix_y_lsb_s1;
     wire       pipe_advance;
@@ -1179,9 +1258,9 @@ module vtpgz_core #(
             pat_c0_s1        <= {(12*NPPC){1'b0}};
             pat_c1_s1        <= {(12*NPPC){1'b0}};
             pat_c2_s1        <= {(12*NPPC){1'b0}};
-            box_img_r_s1     <= 12'h0;
-            box_img_g_s1     <= 12'h0;
-            box_img_b_s1     <= 12'h0;
+            box_img_r_s1     <= {(12*NPPC){1'b0}};
+            box_img_g_s1     <= {(12*NPPC){1'b0}};
+            box_img_b_s1     <= {(12*NPPC){1'b0}};
             pix_valid_s1     <= 1'b0;
             pix_sof_s1       <= 1'b0;
             pix_eol_s1       <= 1'b0;
@@ -1195,9 +1274,9 @@ module vtpgz_core #(
             pat_c0_s1[11:0]     <= pat_c0;
             pat_c1_s1[11:0]     <= pat_c1;
             pat_c2_s1[11:0]     <= pat_c2;
-            box_img_r_s1     <= box_img_r;
-            box_img_g_s1     <= box_img_g;
-            box_img_b_s1     <= box_img_b;
+            box_img_r_s1[11:0]  <= box_img_r;
+            box_img_g_s1[11:0]  <= box_img_g;
+            box_img_b_s1[11:0]  <= box_img_b;
             pix_valid_s1     <= pix_valid;
             pix_sof_s1       <= pix_sof;
             pix_eol_s1       <= pix_eol;
@@ -1217,12 +1296,18 @@ module vtpgz_core #(
                     pat_c0_s1[12*gs1 +: 12] <= 12'h0;
                     pat_c1_s1[12*gs1 +: 12] <= 12'h0;
                     pat_c2_s1[12*gs1 +: 12] <= 12'h0;
+                    box_img_r_s1[12*gs1 +: 12] <= 12'h0;
+                    box_img_g_s1[12*gs1 +: 12] <= 12'h0;
+                    box_img_b_s1[12*gs1 +: 12] <= 12'h0;
                 end else if (pipe_advance) begin
                     box_in_s1[gs1]        <= box_in_bus[gs1];
                     box_on_border_s1[gs1] <= box_on_border_bus[gs1];
                     pat_c0_s1[12*gs1 +: 12] <= pat_c0_bus[12*gs1 +: 12];
                     pat_c1_s1[12*gs1 +: 12] <= pat_c1_bus[12*gs1 +: 12];
                     pat_c2_s1[12*gs1 +: 12] <= pat_c2_bus[12*gs1 +: 12];
+                    box_img_r_s1[12*gs1 +: 12] <= box_img_r_bus[12*gs1 +: 12];
+                    box_img_g_s1[12*gs1 +: 12] <= box_img_g_bus[12*gs1 +: 12];
+                    box_img_b_s1[12*gs1 +: 12] <= box_img_b_bus[12*gs1 +: 12];
                 end
             end
         end
@@ -1235,12 +1320,11 @@ module vtpgz_core #(
     // border_width > 0) still wins because box_on_border_s1 is checked
     // first.
     wire box_image_active = (EN_BOX_IMAGE != 0) && (cfg_box_img_x_step != 32'h0);
-    // Lane 0's box interior can show the scaled box-image (NPPC==1 only);
-    // lanes 1..NPPC-1 always show the solid fill (box-image is forbidden at
-    // NPPC>1, so this is exact, not an approximation).
-    wire [11:0] box_inside_c0 = box_image_active ? box_img_r_s1 : box_fill_c0;
-    wire [11:0] box_inside_c1 = box_image_active ? box_img_g_s1 : box_fill_c1;
-    wire [11:0] box_inside_c2 = box_image_active ? box_img_b_s1 : box_fill_c2;
+    // Per-lane box interior: the scaled box-image when active, else solid fill.
+    // Lane 0 keeps the exact NPPC==1 expression (bus == lane 0 there).
+    wire [11:0] box_inside_c0 = box_image_active ? box_img_r_s1[11:0] : box_fill_c0;
+    wire [11:0] box_inside_c1 = box_image_active ? box_img_g_s1[11:0] : box_fill_c1;
+    wire [11:0] box_inside_c2 = box_image_active ? box_img_b_s1[11:0] : box_fill_c2;
 
     // Per-lane composited pixel. Lane 0 uses box_inside_c* (with box-image);
     // at NPPC==1 pix_c*_bus[11:0] is exactly the original pix_c*.
@@ -1254,14 +1338,17 @@ module vtpgz_core #(
     generate
         genvar gpc;
         for (gpc = 1; gpc < NPPC; gpc = gpc + 1) begin : g_pix_lane
+            wire [11:0] insd_c0 = box_image_active ? box_img_r_s1[12*gpc +: 12] : box_fill_c0;
+            wire [11:0] insd_c1 = box_image_active ? box_img_g_s1[12*gpc +: 12] : box_fill_c1;
+            wire [11:0] insd_c2 = box_image_active ? box_img_b_s1[12*gpc +: 12] : box_fill_c2;
             assign pix_c0_bus[12*gpc +: 12] = box_on_border_s1[gpc] ? box_bdr_c0 :
-                                              box_in_s1[gpc]        ? box_fill_c0
+                                              box_in_s1[gpc]        ? insd_c0
                                                                     : pat_c0_s1[12*gpc +: 12];
             assign pix_c1_bus[12*gpc +: 12] = box_on_border_s1[gpc] ? box_bdr_c1 :
-                                              box_in_s1[gpc]        ? box_fill_c1
+                                              box_in_s1[gpc]        ? insd_c1
                                                                     : pat_c1_s1[12*gpc +: 12];
             assign pix_c2_bus[12*gpc +: 12] = box_on_border_s1[gpc] ? box_bdr_c2 :
-                                              box_in_s1[gpc]        ? box_fill_c2
+                                              box_in_s1[gpc]        ? insd_c2
                                                                     : pat_c2_s1[12*gpc +: 12];
         end
     endgenerate

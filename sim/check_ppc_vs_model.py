@@ -35,8 +35,29 @@ from vtpgz_model import (  # noqa: E402
     RAW_PLAIN, RAW_RGGB, RAW_BGGR, RAW_GRBG, RAW_GBRG,
     RGB_ORDER_XILINX, RGB_ORDER_LEGACY,
     PAT_SOLID, PAT_GRID, PAT_CHECKER,
-    PAT_COLORBAR, PAT_HGRAD, PAT_VGRAD, PAT_RAMP,
+    PAT_COLORBAR, PAT_HGRAD, PAT_VGRAD, PAT_RAMP, PAT_NOISE, PAT_IMAGE,
 )
+
+# ---- IMAGE test config: a 16x16 source scaled to an 8x8 window (exercises
+# the per-lane Q16 scaler at PPC>1). Deterministic RGB888 so the model and
+# the $readmemh'd RTL BRAMs hold identical data.
+IMG_W_T, IMG_H_T = 16, 16
+IMG_OUT_T = 8
+
+
+def gen_image() -> list[int]:
+    data = []
+    for iy in range(IMG_H_T):
+        for ix in range(IMG_W_T):
+            r = (ix * 16) & 0xFF
+            g = (iy * 16) & 0xFF
+            b = ((ix * 7 + iy * 13) * 3) & 0xFF
+            data.append((r << 16) | (g << 8) | b)
+    return data
+
+
+IMAGE_DATA = gen_image()
+IMAGE_HEX_PATH = ""  # set in main()
 
 MODE_MAP = {"rgb": MODE_RGB, "raw": MODE_RAW, "yuv": MODE_YUV}
 SUB_MAP = {"444": YUV_444, "422": YUV_422}
@@ -49,7 +70,8 @@ ORDER_MAP = {"xilinx": RGB_ORDER_XILINX, "legacy": RGB_ORDER_LEGACY}
 PPC_PATTERNS = [
     ("solid", PAT_SOLID), ("grid", PAT_GRID), ("checker", PAT_CHECKER),
     ("colorbar", PAT_COLORBAR), ("hgrad", PAT_HGRAD),
-    ("vgrad", PAT_VGRAD), ("ramp", PAT_RAMP),
+    ("vgrad", PAT_VGRAD), ("ramp", PAT_RAMP), ("noise", PAT_NOISE),
+    ("image", PAT_IMAGE),
 ]
 
 # Must mirror the constant cfg_* the harness drives (tb_ppc_capture.v).
@@ -79,13 +101,19 @@ def build(ppc: int, mode: int, sub: int, bayer: int, order: int, bpc: int,
     params = {
         "PIXELS_PER_CLOCK": ppc, "OUTPUT_MODE": mode, "YUV_SUBSAMPLE": sub,
         "RAW_BAYER": bayer, "RGB_ORDER": order, "BPC": bpc,
-        # M2 patterns are legal at PPC>1 now; enable them for the sweep.
+        # M2/M3 patterns are legal at PPC>1 now; enable them for the sweep.
         "EN_COLORBAR": 1, "EN_HGRAD": 1, "EN_VGRAD": 1, "EN_RAMP": 1,
+        "EN_NOISE": 1,
     }
     cmd = [iverilog, "-g2001", "-Wall", "-I", str(RTL), "-s", top,
            "-o", str(out_vvp)]
     for k, v in params.items():
         cmd += ["-P", f"{top}.{k}={v}"]
+    # IMAGE pattern: enable the BRAM path with the small scaled test image.
+    cmd += ["-P", f"{top}.EN_IMAGE=1",
+            "-P", f"{top}.IMAGE_W={IMG_W_T}", "-P", f"{top}.IMAGE_H={IMG_H_T}",
+            "-P", f"{top}.IMAGE_OUT_W={IMG_OUT_T}", "-P", f"{top}.IMAGE_OUT_H={IMG_OUT_T}",
+            "-P", f'{top}.IMAGE_HEX_FILE="{IMAGE_HEX_PATH}"']
     cmd += [str(RTL / "vtpgz_core.v"), str(HERE / "tb_ppc_capture.v")]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
@@ -111,6 +139,9 @@ def model_beats(pat: int, ppc: int, mode: int, sub: int, bayer: int,
     cfg = VtpgzConfig(width=width, height=height, pattern=pat,
                       output_mode=mode, yuv_subsample=sub, raw_bayer=bayer,
                       rgb_order=order, bpc=bpc, pixels_per_clock=ppc,
+                      image_w=IMG_W_T, image_h=IMG_H_T,
+                      image_out_w=IMG_OUT_T, image_out_h=IMG_OUT_T,
+                      image_rgb888=IMAGE_DATA,
                       **HARNESS_CFG)
     return render_frame_beats(cfg)
 
@@ -125,7 +156,12 @@ def check_one(ppc: int, mode_name: str, bpc: int, sub_name: str,
     vvp_bin = tmp / f"ppc{ppc}_{mode_name}_{bpc}.vvp"
     build(ppc, mode, sub, bayer, order, bpc, vvp_bin)
     fails: list[str] = []
-    for pname, pat in PPC_PATTERNS:
+    # At PPC=1 the IMAGE pattern keeps its registered-read 1-px horizontal
+    # shift (unchanged from prior releases and never model-gated), so it is
+    # not beat-comparable to the shift-free model. The PPC>1 path is
+    # combinational/shift-free and IS compared. Skip image only at PPC=1.
+    patterns = [p for p in PPC_PATTERNS if not (ppc == 1 and p[0] == "image")]
+    for pname, pat in patterns:
         hexf = tmp / f"cap_{ppc}_{mode_name}_{bpc}_{pname}.hex"
         run_capture(vvp_bin, pat, width, height, hexf)
         sim = load_beats(hexf)
@@ -141,6 +177,69 @@ def check_one(ppc: int, mode_name: str, bpc: int, sub_name: str,
         else:
             print(f"  OK  ppc={ppc} mode={mode_name} bpc={bpc} pat={pname} "
                   f"({len(sim)} beats)")
+    return fails
+
+
+# ---- BOX-IMAGE test: an 8x8 source scaled into the 12x8 moving box. ----
+BIMG_W_T, BIMG_H_T = 8, 8
+BIMG_X_STEP = (BIMG_W_T << 16) // 12   # box_width=12 (HARNESS_CFG)
+BIMG_Y_STEP = (BIMG_H_T << 16) // 8    # box_height=8
+
+
+def gen_box_image() -> list[int]:
+    data = []
+    for iy in range(BIMG_H_T):
+        for ix in range(BIMG_W_T):
+            data.append(((ix * 30) << 16) | ((iy * 30) << 8) | ((ix ^ iy) * 20 & 0xFF))
+    return data
+
+
+BIMG_DATA = gen_box_image()
+
+
+def check_box_image(tmp: Path) -> list[str]:
+    """Box-image overlay at PPC>1: build with EN_BOX_IMAGE + non-zero runtime
+    steps so the box interior shows the scaled image, capture a couple of
+    patterns, and compare to the model (which applies the same box overlay).
+    PPC=1 is skipped -- its registered read keeps the legacy 1-px shift."""
+    iverilog = need("iverilog")
+    top = "tb_ppc_capture"
+    mem = tmp / "ppc_boximg.mem"
+    mem.write_text("\n".join(f"{w:06x}" for w in BIMG_DATA) + "\n")
+    fails: list[str] = []
+    for ppc in (2, 4, 8):
+        vvp_bin = tmp / f"boximg_ppc{ppc}.vvp"
+        cmd = [iverilog, "-g2001", "-Wall", "-I", str(RTL), "-s", top,
+               "-o", str(vvp_bin),
+               "-P", f"{top}.PIXELS_PER_CLOCK={ppc}",
+               "-P", f"{top}.OUTPUT_MODE={MODE_RGB}", "-P", f"{top}.BPC=8",
+               "-P", f"{top}.EN_BOX_IMAGE=1",
+               "-P", f"{top}.BOX_IMAGE_W={BIMG_W_T}", "-P", f"{top}.BOX_IMAGE_H={BIMG_H_T}",
+               "-P", f'{top}.BOX_IMAGE_HEX_FILE="{mem.as_posix()}"',
+               "-P", f"{top}.BOX_IMG_X_STEP={BIMG_X_STEP}",
+               "-P", f"{top}.BOX_IMG_Y_STEP={BIMG_Y_STEP}",
+               str(RTL / "vtpgz_core.v"), str(HERE / "tb_ppc_capture.v")]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            fails.append(f"box-image ppc={ppc} build: {r.stdout}{r.stderr}")
+            continue
+        for pname, pat in (("solid", PAT_SOLID), ("checker", PAT_CHECKER)):
+            hexf = tmp / f"boximg_{ppc}_{pname}.hex"
+            run_capture(vvp_bin, pat, 32, 12, hexf)
+            sim = load_beats(hexf)
+            cfg = VtpgzConfig(width=32, height=12, pattern=pat,
+                              output_mode=MODE_RGB, bpc=8, pixels_per_clock=ppc,
+                              box_image_w=BIMG_W_T, box_image_h=BIMG_H_T,
+                              box_img_x_step=BIMG_X_STEP, box_img_y_step=BIMG_Y_STEP,
+                              box_image_rgb888=BIMG_DATA, **HARNESS_CFG)
+            mod = render_frame_beats(cfg)
+            if sim != mod:
+                first = next((i for i, (a, b) in enumerate(zip(sim, mod)) if a != b),
+                             min(len(sim), len(mod)))
+                fails.append(f"box-image ppc={ppc} pat={pname}: first_diff@{first} "
+                             f"sim=0x{sim[first]:X} mod=0x{mod[first]:X}")
+            else:
+                print(f"  OK  box-image ppc={ppc} pat={pname} ({len(sim)} beats)")
     return fails
 
 
@@ -162,8 +261,13 @@ def main() -> int:
 
     all_fails: list[str] = []
     n = 0
+    global IMAGE_HEX_PATH
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
+        # Write the test image .mem for $readmemh (forward slashes for iverilog).
+        mem = tmp / "ppc_test_img.mem"
+        mem.write_text("\n".join(f"{w:06x}" for w in IMAGE_DATA) + "\n")
+        IMAGE_HEX_PATH = mem.as_posix()
         for ppc in ppcs:
             # width must be a multiple of ppc; pick one that is for the sweep.
             width = args.width
@@ -178,6 +282,13 @@ def main() -> int:
                                                width, args.height, tmp)
                     except RuntimeError as e:
                         all_fails.append(f"ppc={ppc} mode={mode} bpc={bpc}: {e}")
+
+        # Dedicated box-image overlay check (only when sweeping all ppc).
+        if not args.ppc:
+            try:
+                all_fails += check_box_image(tmp)
+            except RuntimeError as e:
+                all_fails.append(f"box-image: {e}")
 
     print()
     if all_fails:

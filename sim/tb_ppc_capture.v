@@ -36,6 +36,20 @@ module tb_ppc_capture;
     parameter integer EN_VGRAD    = 0;
     parameter integer EN_RAMP     = 0;
     parameter integer EN_NOISE    = 0;
+    parameter integer EN_IMAGE    = 0;
+    parameter integer IMAGE_W     = 16;
+    parameter integer IMAGE_H     = 16;
+    parameter integer IMAGE_OUT_W = 16;
+    parameter integer IMAGE_OUT_H = 16;
+    parameter IMAGE_HEX_FILE = "tests/images/mandrill_128x128.mem";
+    parameter integer EN_BOX_IMAGE = 0;
+    parameter integer BOX_IMAGE_W  = 8;
+    parameter integer BOX_IMAGE_H  = 8;
+    parameter BOX_IMAGE_HEX_FILE = "tests/images/mandrill_32x32.mem";
+    // Runtime Q16 box-image scaler steps (host-computed). 0 = box-image
+    // inactive (solid box). Set non-zero to exercise the overlay.
+    parameter [31:0] BOX_IMG_X_STEP = 32'h0;
+    parameter [31:0] BOX_IMG_Y_STEP = 32'h0;
 
     localparam integer PIX_TDATA_WIDTH =
         (OUTPUT_MODE == `VTPGZ_MODE_RGB) ? (((3*BPC + 7) / 8) * 8) :
@@ -70,8 +84,16 @@ module tb_ppc_capture;
         .EN_GRID      (EN_GRID),
         .EN_RAMP      (EN_RAMP),
         .EN_NOISE     (EN_NOISE),
-        .EN_IMAGE     (0),
-        .EN_BOX_IMAGE (0),
+        .EN_IMAGE     (EN_IMAGE),
+        .IMAGE_W      (IMAGE_W),
+        .IMAGE_H      (IMAGE_H),
+        .IMAGE_OUT_W  (IMAGE_OUT_W),
+        .IMAGE_OUT_H  (IMAGE_OUT_H),
+        .IMAGE_HEX_FILE(IMAGE_HEX_FILE),
+        .EN_BOX_IMAGE (EN_BOX_IMAGE),
+        .BOX_IMAGE_W  (BOX_IMAGE_W),
+        .BOX_IMAGE_H  (BOX_IMAGE_H),
+        .BOX_IMAGE_HEX_FILE(BOX_IMAGE_HEX_FILE),
         .OUTPUT_MODE  (OUTPUT_MODE),
         .YUV_SUBSAMPLE(YUV_SUBSAMPLE),
         .RAW_BAYER    (RAW_BAYER),
@@ -102,8 +124,8 @@ module tb_ppc_capture;
         .cfg_vg_step(16'd128),
         .cfg_box_border_color(24'hFF_00_00),
         .cfg_box_border_width(8'd2),
-        .cfg_box_img_x_step(32'h0),
-        .cfg_box_img_y_step(32'h0),
+        .cfg_box_img_x_step(BOX_IMG_X_STEP),
+        .cfg_box_img_y_step(BOX_IMG_Y_STEP),
         .sts_busy(),
         .sts_frame_count(),
         .m_axis_tdata(m_tdata),
