@@ -1052,9 +1052,19 @@ module vtpgz_core #(
     // NPPC==1 datapath is untouched. The stateful/accumulator patterns are
     // elaboration-forbidden at NPPC>1 (g_ppc_guard), so a black default here
     // is never selected in a legal build.
+    // Gated on NPPC>1: at NPPC==1 the pipeline latches lane 0 from the scalar
+    // pat_c0/c1/c2 above and never reads this bus, so building it would be
+    // dead logic. Explicitly stripping it (rather than leaning on synthesis
+    // DCE) keeps the 1ppc build provably identical to prior releases. The
+    // loop also starts at lane 1 -- lane 0 of the bus is always sourced from
+    // the scalar mux -- so no lane's mux is duplicated at any NPPC.
     wire [12*NPPC-1:0] pat_c0_bus, pat_c1_bus, pat_c2_bus;
     genvar gpl;
-    generate for (gpl = 0; gpl < NPPC; gpl = gpl + 1) begin : g_pat_lane
+    generate if (NPPC > 1) begin : g_pat_lanes
+      assign pat_c0_bus[11:0] = 12'h0;   // lane 0 unused (scalar path drives it)
+      assign pat_c1_bus[11:0] = 12'h0;
+      assign pat_c2_bus[11:0] = 12'h0;
+      for (gpl = 1; gpl < NPPC; gpl = gpl + 1) begin : g_pat_lane
         wire [11:0] chkl  = chk_v_bus[12*gpl +: 12];
         wire [11:0] hgl   = hg_bus  [12*gpl +: 12];
         wire [11:0] vgl   = vg_bus  [12*gpl +: 12];
@@ -1085,6 +1095,11 @@ module vtpgz_core #(
         assign pat_c0_bus[12*gpl +: 12] = p0;
         assign pat_c1_bus[12*gpl +: 12] = p1;
         assign pat_c2_bus[12*gpl +: 12] = p2;
+      end
+    end else begin : g_pat_lanes_off
+      assign pat_c0_bus = 12'h0;
+      assign pat_c1_bus = 12'h0;
+      assign pat_c2_bus = 12'h0;
     end endgenerate
 
     // ---- Box overlay (post-mux) ----
