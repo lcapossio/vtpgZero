@@ -185,6 +185,28 @@ Outputs land in `sim/logs/`:
 - `coverage_summary.txt` — overall coverage summary
 - `annotated/` — line-annotated source (uncovered lines marked `%00`)
 
+### cocotb
+
+Python-authored spec/property tests live under `sim/cocotb/`. There are two
+runners, split by simulator because of a tool quirk:
+
+```sh
+# Control plane + AXIS handshake (Verilator runner).
+python sim/cocotb/run_cocotb.py
+
+# Pixels-per-clock data path (Icarus runner): programs the core over
+# AXI-Lite, captures every AXIS beat, and checks it beat-exact against the
+# Python reference model across PIXELS_PER_CLOCK 1/2/4/8 × RGB/RAW/YUV,
+# sweeping all 8 synthetic patterns per build (12 suites).
+python sim/cocotb/run_ppc.py
+```
+
+The PPC data-path suite uses Icarus because cocotb 2.0.1 + Verilator returns
+a sampled-once value for the packed `m_axis_tdata`; Icarus reads it
+correctly. The Verilator-backed cocotb suites are therefore scoped to the
+control plane, and the byte-exact C++ gate in `sim/run_sim.py` remains the
+Verilator-backed data-path regression.
+
 ### Hardware test on Arty A7-100T
 
 A complete reference design under `hw/arty_a7_100t/` instantiates the VTPGZ
@@ -812,6 +834,10 @@ sim/
   sim_capture_seq.cpp  multi-capture (sequential) sim ↔ model gate
   sim_top.v          tpg + frame_capture wrapper for the seq harness
   run_sim.py         Verilator orchestration (lint/build/run/cov/all_modes)
+  check_ppc_vs_model.py  iverilog ↔ model beat-exact PPC gate (all patterns)
+  tb_ppc_capture.v   iverilog PPC capture harness (port-driven core)
+  cocotb/            cocotb suites (run_cocotb.py control plane;
+                     run_ppc.py PPC data path vs model)
 synth/
   synth_matrix.tcl   Vivado synth-only TCL for one config
   run_matrix.py      driver: synth N parameter configs, build matrix CSV
