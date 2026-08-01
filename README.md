@@ -241,6 +241,17 @@ Expected: `Ran 108 combinations, 0 failures` / `HW PASS - byte-exact across all 
 Architecture and address map are documented in
 [hw/arty_a7_100t/README.md](hw/arty_a7_100t/README.md).
 
+**Pixels-per-clock on silicon.** The demo builds at `PIXELS_PER_CLOCK=1`
+by default. To validate packed-pixel output on hardware, set
+`VTPGZ_PIXELS_PER_CLOCK` in [demo_top.v](hw/arty_a7_100t/rtl/demo_top.v)
+(2/4/8), rebuild, and re-run — `frame_capture` serializes each wide beat
+into `ceil(TDATA_WIDTH/32)` little-endian words and `run_hw_test.py`
+reads back the configured PPC and checks byte-exact. PPC>1 builds run the
+demo at a lower clock (`clk_gen`'s `CLKOUT0_DIVIDE`): the per-lane
+counter-chain patterns (checker/grid) do not close 130 MHz, and the demo
+targets correctness rather than throughput. PPC=4 is verified byte-exact
+across all patterns on the board.
+
 
 [↑ back to top](#index)
 
