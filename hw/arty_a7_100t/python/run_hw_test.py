@@ -50,7 +50,8 @@ sys.path.insert(0, str(FCAPZ_HOST))
 from fcapz.transport import XilinxHwServerTransport  # noqa: E402
 from fcapz.ejtagaxi import EjtagAxiController, AXIError  # noqa: E402
 from vtpgz_model import (  # noqa: E402
-    VtpgzConfig, VtpgzRegs, render_frame, tdata_to_bram_words,
+    VtpgzConfig, VtpgzRegs, render_frame, render_frame_beats,
+    tdata_to_bram_words,
     MODE_RGB, MODE_RAW, MODE_YUV,
     YUV_444, YUV_422,
     RAW_PLAIN, RAW_RGGB, RAW_BGGR, RAW_GRBG, RAW_GBRG,
@@ -79,6 +80,7 @@ VTPGZ_IMG_WIDTH     = 0x10
 VTPGZ_IMG_HEIGHT    = 0x14
 VTPGZ_PATTERN_SEL   = 0x18
 VTPGZ_COLOR_FORMAT  = 0x1C
+VTPGZ_PIXELS_PER_CLOCK = 0x30  # RO: build-time PIXELS_PER_CLOCK (1/2/4/8)
 VTPGZ_SOLID_COLOR   = 0x20
 VTPGZ_BOX_COLOR     = 0x24
 VTPGZ_BOX_SIZE      = 0x28
@@ -105,12 +107,12 @@ DEFAULT_BIT = HERE.parent / "build" / "demo_top.bit"
 
 
 def cfg_for(pat: int, mode: int, bpc: int, sub: int,
-            bayer: int, order: int) -> VtpgzConfig:
+            bayer: int, order: int, ppc: int = 1) -> VtpgzConfig:
     return VtpgzConfig(
         width=WIDTH, height=HEIGHT,
         pattern=pat,
         output_mode=mode, yuv_subsample=sub, raw_bayer=bayer,
-        rgb_order=order, bpc=bpc,
+        rgb_order=order, bpc=bpc, pixels_per_clock=ppc,
         bar_width=WIDTH // 8,
         hg_step=0xFFF // (WIDTH - 1),
         vg_step=0xFFF // (HEIGHT - 1),
@@ -170,8 +172,12 @@ def run_one(axi: EjtagAxiController, cfg: VtpgzConfig,
         axi.axi_write(VTPGZ_BASE + VTPGZ_CONTROL, 0)
         return False, f"timeout (status=0x{sts:08X}, words={word_count})"
     if verbose: print(f"  after capture: status=0x{sts:08X} words={word_count}")
-    # 5. Burst-read the frame
-    expected_words = cfg.width * cfg.height
+    # 5. Render the reference beats, serialized to 32-bit BRAM words exactly as
+    # frame_capture stores them: ceil(beat_width/32) little-endian words/beat.
+    # At ppc=1 render_frame_beats == render_frame and beat_width == tdata_width,
+    # so this reduces to the classic one-word-per-pixel layout.
+    sw_words = tdata_to_bram_words(render_frame_beats(cfg), cfg.beat_tdata_width)
+    expected_words = len(sw_words)
     if word_count < expected_words:
         axi.axi_write(VTPGZ_BASE + VTPGZ_CONTROL, 0)
         return False, f"short frame: got {word_count} expected {expected_words}"
@@ -182,8 +188,6 @@ def run_one(axi: EjtagAxiController, cfg: VtpgzConfig,
     except AXIError as e:
         axi.axi_write(VTPGZ_BASE + VTPGZ_CONTROL, 0)
         return False, f"read_block failed: {e}"
-    # 6. Render reference and compare
-    sw_words = tdata_to_bram_words(render_frame(cfg), cfg.tdata_width)
     # 7. Disable
     axi.axi_write(VTPGZ_BASE + VTPGZ_CONTROL, 0)
 
@@ -275,8 +279,12 @@ def main() -> int:
         rb_order = (cf >> 6)  & 0x1
         rb_bpc   = (cf >> 8)  & 0xFF
         rb_tw    = (cf >> 16) & 0xFFFF
+        rb_ppc = bridge.axi_read(VTPGZ_BASE + VTPGZ_PIXELS_PER_CLOCK)
         print(f"Build cfg: mode={rb_mode} sub={rb_sub} bayer={rb_bayer} "
-              f"order={rb_order} bpc={rb_bpc} tdata_width={rb_tw}")
+              f"order={rb_order} bpc={rb_bpc} tdata_width={rb_tw} ppc={rb_ppc}")
+        if rb_ppc not in (1, 2, 4, 8):
+            print(f"ERROR: bogus PIXELS_PER_CLOCK readback {rb_ppc}", file=sys.stderr)
+            return 2
 
         # CLI overrides take precedence over the read-back, but warn the
         # user if the override actually disagrees with the loaded
@@ -304,7 +312,7 @@ def main() -> int:
 
         for pat in pats:
             n += 1
-            cfg = cfg_for(pat, mode, bpc, sub, bayer, order)
+            cfg = cfg_for(pat, mode, bpc, sub, bayer, order, ppc=rb_ppc)
             ok, err = run_one(bridge, cfg, verbose=(args.only is not None))
             tag = "OK  " if ok else "FAIL"
             print(f"  {tag}  pat={pat}" + (f"  {err}" if err else ""))
