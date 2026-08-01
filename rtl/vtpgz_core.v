@@ -1311,7 +1311,12 @@ module vtpgz_core #(
             pix_eof_s1       <= pix_eof;
             pix_x_lsb_s1     <= x[0];
             pix_y_lsb_s1     <= y[0];
-            // lanes 1..NPPC-1 latch the per-lane buses (unrolls away at NPPC==1)
+            // lanes 1..NPPC-1 latch the per-lane buses. This behavioural loop
+            // has zero iterations at NPPC==1 (unlike the old generate block it
+            // is not elaborated away), so its body is dead in the PPC=1
+            // coverage sim -- exclude it, like the PPC>1-only pat_c*_bus logic.
+            // PPC>1 is covered by the cocotb data-path suite and iverilog gate.
+            // verilator coverage_off
             for (li_s1 = 1; li_s1 < NPPC; li_s1 = li_s1 + 1) begin
                 box_in_s1[li_s1]        <= box_in_bus[li_s1];
                 box_on_border_s1[li_s1] <= box_on_border_bus[li_s1];
@@ -1322,6 +1327,7 @@ module vtpgz_core #(
                 box_img_g_s1[12*li_s1 +: 12] <= box_img_g_bus[12*li_s1 +: 12];
                 box_img_b_s1[12*li_s1 +: 12] <= box_img_b_bus[12*li_s1 +: 12];
             end
+            // verilator coverage_on
         end
     end
 
