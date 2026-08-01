@@ -228,7 +228,12 @@ module vtpgz_axil_regs #(
                     `VTPGZ_REG_IMG_WIDTH    : s_axi_rdata <= reg_img_width;
                     `VTPGZ_REG_IMG_HEIGHT   : s_axi_rdata <= reg_img_height;
                     `VTPGZ_REG_PATTERN_SEL  : s_axi_rdata <= reg_pattern_sel;
+                    // verilator coverage_off
+                    // RO build-time param readback; exercised by the cocotb
+                    // PPC suite and the Arty HW test (both read 0x30), not the
+                    // coverage register sweep in sim_main.cpp.
                     `VTPGZ_REG_PIXELS_PER_CLOCK : s_axi_rdata <= PIXELS_PER_CLOCK;
+                    // verilator coverage_on
                     `VTPGZ_REG_COLOR_FORMAT : s_axi_rdata <= {
                         TDATA_WIDTH[15:0],
                         BPC[7:0],

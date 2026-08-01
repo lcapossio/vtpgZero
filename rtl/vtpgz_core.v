@@ -174,6 +174,13 @@ module vtpgz_core #(
     // Bit-shrink/grow shift amounts (constant): mirror the BPC pack stage.
     localparam integer SHIFT_DN = (BPC <= 12) ? (12 - BPC) : 0;  // truncate LSBs
     localparam integer SHIFT_UP = (BPC >  12) ? (BPC - 12) : 0;  // zero-extend LSBs
+    // Legacy-order (components in MSBs) left-shift amounts, clamped to be
+    // non-negative for every build. Only the build's native mode is reachable;
+    // in a non-native mode's dead branch these could otherwise go negative
+    // (3*BPC/2*BPC > PIX_TDATA_WIDTH), so clamp to 0 to keep the dead code
+    // width-legal on Verilator 5.020.
+    localparam integer PAD3 = (PIX_TDATA_WIDTH >= 3*BPC) ? (PIX_TDATA_WIDTH - 3*BPC) : 0;
+    localparam integer PAD2 = (PIX_TDATA_WIDTH >= 2*BPC) ? (PIX_TDATA_WIDTH - 2*BPC) : 0;
 
     // ---------------- effective configuration ----------------
     // Clamp unsafe zero / over-large geometry values so malformed software
@@ -402,6 +409,11 @@ module vtpgz_core #(
     // Mode-aware palette as a function so each lane can look up its own bar
     // index. In RGB/RAW the triple is {R,G,B}; in YUV it is {Y,Cb,Cr}.
     // Returns {c0[12], c1[12], c2[12]}. Constants only -- no DSPs.
+    // verilator coverage_off
+    // Only the build's OUTPUT_MODE arm is reachable (YUV vs RGB/RAW palette);
+    // the other arm is dead code in any single-mode build. Cross-mode
+    // correctness is the byte-exact all_modes model gate's job, not this
+    // single-config coverage sim.
     function [35:0] bar_palette;
         input [2:0] idx;
         begin
@@ -418,7 +430,7 @@ module vtpgz_core #(
                 endcase
             end else begin
                 case (idx)
-                    3'd0: bar_palette = {12'hFFF, 12'hFFF, 12'hFFF};
+                    3'd0: bar_palette = {12'hFFF, 12'hFFF, 12'hFFF};  // white
                     3'd1: bar_palette = {12'hFFF, 12'hFFF, 12'h000};
                     3'd2: bar_palette = {12'h000, 12'hFFF, 12'hFFF};
                     3'd3: bar_palette = {12'h000, 12'hFFF, 12'h000};
@@ -430,6 +442,7 @@ module vtpgz_core #(
             end
         end
     endfunction
+    // verilator coverage_on
 
     generate if (EN_COLORBAR) begin : g_colorbar
         reg [15:0] bar_pix_cnt;
@@ -438,8 +451,8 @@ module vtpgz_core #(
         // as the base counter, one step per lane. bix_l[gl] is lane gl's bar
         // index; the base advances by NPPC steps per beat. At NPPC==1 this is
         // one step and reproduces the original recurrence exactly.
-        wire [15:0] bpc_l [0:NPPC];
-        wire [2:0]  bix_l [0:NPPC];
+        wire [15:0] bpc_l [0:NPPC] /* verilator split_var */;
+        wire [2:0]  bix_l [0:NPPC] /* verilator split_var */;
         assign bpc_l[0] = bar_pix_cnt;
         assign bix_l[0] = bar_idx;
         genvar cbl;
@@ -492,7 +505,7 @@ module vtpgz_core #(
         // Per-lane accumulator chain: lane gl sees hg_acc + gl*step. The base
         // advances by NPPC*step per beat; at NPPC==1 this is one +step and is
         // identical to the original.
-        wire [19:0] hga_l [0:NPPC];
+        wire [19:0] hga_l [0:NPPC] /* verilator split_var */;
         assign hga_l[0] = hg_acc;
         genvar hgl;
         for (hgl = 0; hgl < NPPC; hgl = hgl + 1) begin : g_hg_chain
@@ -555,8 +568,8 @@ module vtpgz_core #(
         // "single-step" of lane l-1. cxc[NPPC]/cxs[NPPC] is the state after
         // all NPPC lanes = the base for the next beat. At NPPC==1 this is a
         // single step and collapses to the original recurrence exactly.
-        wire [15:0] cxc [0:NPPC];
-        wire        cxs [0:NPPC];
+        wire [15:0] cxc [0:NPPC] /* verilator split_var */;
+        wire        cxs [0:NPPC] /* verilator split_var */;
         assign cxc[0] = chk_x_cnt;
         assign cxs[0] = chk_sel_x;
         genvar gl;
@@ -719,7 +732,7 @@ module vtpgz_core #(
         wire [15:0] grid_eff = (cfg_grid_spacing == 16'h0) ? 16'h1 : cfg_grid_spacing;
         reg [15:0] gx_cnt, gy_cnt;      // base = lane 0 x-counter at pixel x
         // Per-lane x-axis chain (see checker for the recurrence rationale).
-        wire [15:0] gxc [0:NPPC];
+        wire [15:0] gxc [0:NPPC] /* verilator split_var */;
         assign gxc[0] = gx_cnt;
         genvar gl;
         for (gl = 0; gl < NPPC; gl = gl + 1) begin : g_grid_chain
@@ -774,7 +787,7 @@ module vtpgz_core #(
     generate if (EN_RAMP) begin : g_ramp
         reg [19:0] ramp_acc;
         // Per-lane accumulator chain (same structure as hgrad).
-        wire [19:0] rmp_l [0:NPPC];
+        wire [19:0] rmp_l [0:NPPC] /* verilator split_var */;
         assign rmp_l[0] = ramp_acc;
         genvar rml;
         for (rml = 0; rml < NPPC; rml = rml + 1) begin : g_ramp_chain
@@ -804,7 +817,7 @@ module vtpgz_core #(
     // At NPPC==1 this is a single step -- identical to the original.
     generate if (EN_NOISE) begin : g_noise
         reg [15:0] lfsr;
-        wire [15:0] lf_l [0:NPPC];
+        wire [15:0] lf_l [0:NPPC] /* verilator split_var */;
         assign lf_l[0] = lfsr;
         genvar nl;
         for (nl = 0; nl < NPPC; nl = nl + 1) begin : g_noise_chain
@@ -910,7 +923,7 @@ module vtpgz_core #(
             // NPPC==1 registered read's 1-px shift does not apply). Cost is
             // N image copies -- keep IMAGE_W/H modest for high PPC.
             reg [ACC_X_W-1:0] acc_x;   // base = lane 0 acc at pixel x
-            wire [ACC_X_W-1:0] axc [0:NPPC];
+            wire [ACC_X_W-1:0] axc [0:NPPC] /* verilator split_var */;
             assign axc[0] = acc_x;
             genvar il;
             for (il = 0; il < NPPC; il = il + 1) begin : g_img_lane
@@ -1032,7 +1045,7 @@ module vtpgz_core #(
         end else begin : g_bimg_ppcN
             // ---- NPPC>1: N replicated memories, combinational shift-free ----
             reg [BIMG_ACC_X_W-1:0] bimg_acc_x;   // base = lane 0 acc at pixel x
-            wire [BIMG_ACC_X_W-1:0] bxc [0:NPPC];
+            wire [BIMG_ACC_X_W-1:0] bxc [0:NPPC] /* verilator split_var */;
             assign bxc[0] = bimg_acc_x;
             genvar bil;
             for (bil = 0; bil < NPPC; bil = bil + 1) begin : g_bimg_lane
@@ -1132,7 +1145,13 @@ module vtpgz_core #(
     // DCE) keeps the 1ppc build provably identical to prior releases. The
     // loop also starts at lane 1 -- lane 0 of the bus is always sourced from
     // the scalar mux -- so no lane's mux is duplicated at any NPPC.
+    // verilator coverage_off
+    // At NPPC==1 these per-lane pattern buses are tied to 0 (g_pat_lanes_off)
+    // and never toggle; they carry real data only at NPPC>1, which the
+    // coverage sim (PPC=1) does not build. PPC>1 is verified by the cocotb
+    // data-path suite and the iverilog beat-exact gate.
     wire [12*NPPC-1:0] pat_c0_bus, pat_c1_bus, pat_c2_bus;
+    // verilator coverage_on
     genvar gpl;
     generate if (NPPC > 1) begin : g_pat_lanes
       assign pat_c0_bus[11:0] = 12'h0;   // lane 0 unused (scalar path drives it)
@@ -1408,10 +1427,16 @@ module vtpgz_core #(
     // now a reusable function so each of the NPPC lanes packs independently.
     // xlsb/ylsb are the packed pixel's (x[0], y[0]) parity used by the
     // YUV422 chroma phase and the RAW Bayer 2x2 select.
+    // verilator coverage_off
+    // Only the build's OUTPUT_MODE / RGB_ORDER / RAW_BAYER arm is reachable;
+    // the other mode/order/bayer arms are dead code in any single-config
+    // build. All 20 mode/bpc configs are verified byte-exact by the
+    // all_modes model gate, so packing correctness is covered there.
     function [PIX_TDATA_WIDTH-1:0] pack_pixel;
         input [11:0] c0_12, c1_12, c2_12;
         input        xlsb, ylsb;
         reg [BPC-1:0] c0, c1, c2, cc, raw_sel;
+        reg [PIX_TDATA_WIDTH-1:0] p;
         begin
             // Bit-shrink (BPC<=12: truncate LSBs) / grow (BPC>12: zero-extend).
             // Truncation to [BPC-1:0] happens on assignment; SHIFT_DN/SHIFT_UP
@@ -1419,19 +1444,30 @@ module vtpgz_core #(
             c0 = (BPC <= 12) ? (c0_12 >> SHIFT_DN) : (c0_12 << SHIFT_UP);
             c1 = (BPC <= 12) ? (c1_12 >> SHIFT_DN) : (c1_12 << SHIFT_UP);
             c2 = (BPC <= 12) ? (c2_12 >> SHIFT_DN) : (c2_12 << SHIFT_UP);
+            // Assign the component concat to the full-width word (auto
+            // zero-extends for the Xilinx order = components in the LSBs) or
+            // left-shift it by a clamped pad (legacy order = components in the
+            // MSBs). This avoids both `{0{1'b0}}` zero-width replications
+            // (which crash Verilator 5.020) and out-of-range part selects in
+            // the non-native mode's dead branches. Width mismatches in dead
+            // branches are truncations only (covered by -Wno-WIDTH).
             if (OUTPUT_MODE == `VTPGZ_MODE_RGB ||
                 (OUTPUT_MODE == `VTPGZ_MODE_YUV && YUV_SUBSAMPLE == `VTPGZ_YUV_444)) begin
-                if (RGB_ORDER == `VTPGZ_RGB_ORDER_XILINX)
-                    pack_pixel = {{(PIX_TDATA_WIDTH-3*BPC){1'b0}}, c2, c1, c0};
-                else
-                    pack_pixel = {c0, c1, c2, {(PIX_TDATA_WIDTH-3*BPC){1'b0}}};
+                if (RGB_ORDER == `VTPGZ_RGB_ORDER_XILINX) begin
+                    p = {c2, c1, c0};
+                end else begin
+                    p = {c0, c1, c2};
+                    p = p << PAD3;
+                end
             end else if (OUTPUT_MODE == `VTPGZ_MODE_YUV) begin
                 // 4:2:2 -- {Y, C}; C = Cb on even-x, Cr on odd-x
                 cc = (xlsb == 1'b0) ? c1 : c2;
-                if (RGB_ORDER == `VTPGZ_RGB_ORDER_XILINX)
-                    pack_pixel = {{(PIX_TDATA_WIDTH-2*BPC){1'b0}}, cc, c0};
-                else
-                    pack_pixel = {c0, cc, {(PIX_TDATA_WIDTH-2*BPC){1'b0}}};
+                if (RGB_ORDER == `VTPGZ_RGB_ORDER_XILINX) begin
+                    p = {cc, c0};
+                end else begin
+                    p = {c0, cc};
+                    p = p << PAD2;
+                end
             end else begin
                 // RAW: single component, RAW_BAYER selects the 2x2 mosaic.
                 //   PLAIN : monochrome, take G (c1) every pixel
@@ -1448,10 +1484,12 @@ module vtpgz_core #(
                                                             : ((xlsb==1'b0)?c0:c1);
                     default:         raw_sel = c1; // PLAIN
                 endcase
-                pack_pixel = {{(PIX_TDATA_WIDTH-BPC){1'b0}}, raw_sel};
+                p = raw_sel;   // single component in LSBs, high bits zero
             end
+            pack_pixel = p;
         end
     endfunction
+    // verilator coverage_on
 
     /*verilator coverage_off*/ reg [C_AXIS_TDATA_WIDTH-1:0] tdata_r; /*verilator coverage_on*/
     reg                          tvalid_r;

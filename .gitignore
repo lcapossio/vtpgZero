@@ -11,6 +11,7 @@ synth/results/
 synth/run_matrix.log
 hw/arty_a7_100t/build/
 hw/arty_a7_100t/build.log
+hw/arty_a7_100t/build_ppc1.log
 hw/kv260/build/
 .Xil/
 vivado*.jou
