@@ -1270,6 +1270,15 @@ module vtpgz_core #(
     reg        pix_valid_s1, pix_sof_s1, pix_eol_s1, pix_eof_s1;
     reg        pix_x_lsb_s1, pix_y_lsb_s1;
     wire       pipe_advance;
+    // Single-driver latch: lane 0 from the scalar mux, lanes 1..NPPC-1 from
+    // the per-lane buses, all in ONE always block. A separate generate always
+    // block per lane (the prior structure) leaves each packed s1 register
+    // multi-driven; Vivado then preserves the reset/GND driver for the upper
+    // lanes and silently drops the per-lane driver (Synth 8-6858/8-6859),
+    // zeroing lanes 1..N-1 in silicon while sim tolerates the slice writes.
+    // The loop bound is a constant, so at NPPC==1 it unrolls to nothing and
+    // the 1ppc build stays byte-identical to prior releases.
+    integer li_s1;
     always @(posedge aclk) begin
         if (!aresetn) begin
             box_in_s1        <= {NPPC{1'b0}};
@@ -1302,35 +1311,19 @@ module vtpgz_core #(
             pix_eof_s1       <= pix_eof;
             pix_x_lsb_s1     <= x[0];
             pix_y_lsb_s1     <= y[0];
-        end
-    end
-    // lanes 1..NPPC-1 latch the per-lane buses (stripped when NPPC==1)
-    generate
-        genvar gs1;
-        for (gs1 = 1; gs1 < NPPC; gs1 = gs1 + 1) begin : g_s1_lane
-            always @(posedge aclk) begin
-                if (!aresetn) begin
-                    box_in_s1[gs1]        <= 1'b0;
-                    box_on_border_s1[gs1] <= 1'b0;
-                    pat_c0_s1[12*gs1 +: 12] <= 12'h0;
-                    pat_c1_s1[12*gs1 +: 12] <= 12'h0;
-                    pat_c2_s1[12*gs1 +: 12] <= 12'h0;
-                    box_img_r_s1[12*gs1 +: 12] <= 12'h0;
-                    box_img_g_s1[12*gs1 +: 12] <= 12'h0;
-                    box_img_b_s1[12*gs1 +: 12] <= 12'h0;
-                end else if (pipe_advance) begin
-                    box_in_s1[gs1]        <= box_in_bus[gs1];
-                    box_on_border_s1[gs1] <= box_on_border_bus[gs1];
-                    pat_c0_s1[12*gs1 +: 12] <= pat_c0_bus[12*gs1 +: 12];
-                    pat_c1_s1[12*gs1 +: 12] <= pat_c1_bus[12*gs1 +: 12];
-                    pat_c2_s1[12*gs1 +: 12] <= pat_c2_bus[12*gs1 +: 12];
-                    box_img_r_s1[12*gs1 +: 12] <= box_img_r_bus[12*gs1 +: 12];
-                    box_img_g_s1[12*gs1 +: 12] <= box_img_g_bus[12*gs1 +: 12];
-                    box_img_b_s1[12*gs1 +: 12] <= box_img_b_bus[12*gs1 +: 12];
-                end
+            // lanes 1..NPPC-1 latch the per-lane buses (unrolls away at NPPC==1)
+            for (li_s1 = 1; li_s1 < NPPC; li_s1 = li_s1 + 1) begin
+                box_in_s1[li_s1]        <= box_in_bus[li_s1];
+                box_on_border_s1[li_s1] <= box_on_border_bus[li_s1];
+                pat_c0_s1[12*li_s1 +: 12] <= pat_c0_bus[12*li_s1 +: 12];
+                pat_c1_s1[12*li_s1 +: 12] <= pat_c1_bus[12*li_s1 +: 12];
+                pat_c2_s1[12*li_s1 +: 12] <= pat_c2_bus[12*li_s1 +: 12];
+                box_img_r_s1[12*li_s1 +: 12] <= box_img_r_bus[12*li_s1 +: 12];
+                box_img_g_s1[12*li_s1 +: 12] <= box_img_g_bus[12*li_s1 +: 12];
+                box_img_b_s1[12*li_s1 +: 12] <= box_img_b_bus[12*li_s1 +: 12];
             end
         end
-    endgenerate
+    end
 
     // When EN_BOX_IMAGE=1 the box interior shows the scaled image instead
     // of cfg_box_color -- but only while the host has programmed non-zero
