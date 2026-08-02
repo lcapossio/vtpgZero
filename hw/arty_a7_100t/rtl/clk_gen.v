@@ -12,10 +12,16 @@
 
 `timescale 1ns/1ps
 
-module clk_gen (
+module clk_gen #(
+    // CLKOUT0 = 650 MHz / CLKOUT0_DIVIDE. Default 5.0 -> 130 MHz. Higher-PPC
+    // demo builds raise this (slower clock) because the per-lane counter-chain
+    // patterns (checker/grid) have a longer combinational path at PPC>1 and
+    // do not close 130 MHz; correctness, not throughput, is the goal there.
+    parameter real CLKOUT0_DIVIDE = 5.000
+)(
     input  wire clk_in,         // 100 MHz oscillator
     input  wire reset_btn,      // active-high external reset (BTN0)
-    output wire clk_out,        // 130 MHz
+    output wire clk_out,        // 650 MHz / CLKOUT0_DIVIDE
     output wire rst_n           // active low, sync to clk_out
 );
 
@@ -28,7 +34,7 @@ module clk_gen (
         .CLKFBOUT_MULT_F   (13.000),   // VCO = 100 * 13 / 2 = 650 MHz
         .CLKFBOUT_PHASE    (0.000),
         .CLKIN1_PERIOD     (10.000),   // 100 MHz
-        .CLKOUT0_DIVIDE_F  (5.000),    // 650 / 5 = 130 MHz
+        .CLKOUT0_DIVIDE_F  (CLKOUT0_DIVIDE),  // 650 / DIV MHz (default 5 -> 130)
         .CLKOUT0_DUTY_CYCLE(0.500),
         .CLKOUT0_PHASE     (0.000),
         .DIVCLK_DIVIDE     (2),

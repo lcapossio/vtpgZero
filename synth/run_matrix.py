@@ -45,6 +45,7 @@ MODE_PARAMS = {
     "RAW_BAYER":     1,   # 0=plain 1=RGGB
     "RGB_ORDER":     0,   # 0=Xilinx 1=legacy
     "BPC":           8,
+    "PIXELS_PER_CLOCK": 1,  # 1/2/4/8 pixels packed per AXI-Stream beat
 }
 
 
@@ -95,9 +96,37 @@ def run_one(tag: str, pat_over: dict[str, int],
     return util
 
 
+def ppc_configs() -> list[tuple[str, dict[str, int], dict[str, int]]]:
+    """All-patterns RGB-8b build swept over PIXELS_PER_CLOCK 1/2/4/8.
+
+    RGB-8b is the reference point (matches full_rgb_8b in the mode sweep,
+    i.e. the PPC=1 row). Holding mode/BPC/patterns fixed isolates the cost
+    of widening the per-lane datapath from 1 to N pixels per beat.
+    """
+    full_pats = {f: 1 for f in PATTERN_FEATURES}
+    cfgs = []
+    for ppc in (1, 2, 4, 8):
+        cfgs.append((f"ppc{ppc}_full_rgb_8b", dict(full_pats),
+                     {"OUTPUT_MODE": 0, "BPC": 8, "PIXELS_PER_CLOCK": ppc}))
+    return cfgs
+
+
 def main() -> int:
     RESULTS.mkdir(parents=True, exist_ok=True)
     configs: list[tuple[str, dict[str, int], dict[str, int]]] = []
+
+    # `run_matrix.py ppc` synthesizes only the PIXELS_PER_CLOCK sweep.
+    if len(sys.argv) > 1 and sys.argv[1] == "ppc":
+        configs = ppc_configs()
+        results = {tag: run_one(tag, p, m) for tag, p, m in configs}
+        print("\n\n## PPC resource sweep (synth-only, xc7a100tcsg324-1)\n")
+        print("| Config | LUT | FF | BRAM36 | DSP |")
+        print("|---|---:|---:|---:|---:|")
+        for tag, _, _ in configs:
+            u = results.get(tag, {})
+            print(f"| `{tag}` | {u.get('LUT','?')} | {u.get('FF','?')} "
+                  f"| {u.get('BRAM36','?')} | {u.get('DSP','?')} |")
+        return 0
 
     # ----- Per-pattern sweeps (full YUV build, isolating each pattern) -----
     base_off = {f: 0 for f in PATTERN_FEATURES}

@@ -106,19 +106,38 @@ module frame_capture #(
     // a previous frame even before saw_sof. Once saw_sof is set, the beats
     // start landing in BRAM. After the second tuser the FSM exits and tready
     // drops.
-    assign s_axis_tready = capturing && !bram_full;
-    wire stream_beat = s_axis_tvalid && s_axis_tready;
-    // BRAM stores the LOW 32 bits of each tdata beat (zero-extended if
-    // TDATA_WIDTH < 32). For wider tdata the upper bits are dropped — bump
-    // BRAM to 64 bits if you need to capture wider streams.
-    wire [31:0] beat_word;
+    // ---- beat serialization ----
+    // Each captured AXIS beat is TDATA_WIDTH wide; the BRAM is 32-bit. Split
+    // every beat into WPB = ceil(TDATA_WIDTH/32) little-endian 32-bit words
+    // (low word first), which is exactly what the host's tdata_to_bram_words()
+    // expects. At WPB==1 (TDATA_WIDTH<=32, e.g. 1 ppc) this collapses to the
+    // original single-word write and tready is unchanged.
+    localparam integer WPB = (TDATA_WIDTH + 31) / 32;
+    // Zero-extend the beat to a whole number of 32-bit words for clean slicing.
+    wire [32*WPB-1:0] tdata_ext;
     generate
-        if (TDATA_WIDTH >= 32) begin : g_tdata_ge32
-            assign beat_word = s_axis_tdata[31:0];
-        end else begin : g_tdata_lt32
-            assign beat_word = {{(32-TDATA_WIDTH){1'b0}}, s_axis_tdata};
+        if (32*WPB == TDATA_WIDTH) begin : g_ext_exact
+            assign tdata_ext = s_axis_tdata;
+        end else begin : g_ext_pad
+            assign tdata_ext = {{(32*WPB - TDATA_WIDTH){1'b0}}, s_axis_tdata};
         end
     endgenerate
+
+    reg              serializing;   // emitting tail words 1..WPB-1 of a beat
+    reg [15:0]       sub_cnt;       // index of the sub-word being written
+    reg [32*WPB-1:0] beat_hold;     // beat latched during serialization
+
+    // While serializing the tail words of a beat, drop tready so the source
+    // holds the next beat until the current one is fully stored.
+    generate
+        if (WPB > 1) begin : g_tready_ser
+            assign s_axis_tready = capturing && !bram_full && !serializing;
+        end else begin : g_tready_simple
+            assign s_axis_tready = capturing && !bram_full;
+        end
+    endgenerate
+    wire stream_beat = s_axis_tvalid && s_axis_tready;
+    wire [31:0] beat_word = tdata_ext[31:0];   // word 0 (low 32 bits)
 
     // Capture FSM
     //   armed -> wait for first tuser (SOF), latch saw_sof
@@ -132,6 +151,8 @@ module frame_capture #(
             capturing  <= 1'b0;
             saw_sof    <= 1'b0;
             wr_idx     <= {(DEPTH_LOG2+1){1'b0}};
+            serializing <= 1'b0;
+            sub_cnt     <= 16'h0;
         end else if (csr_clear_pulse) begin
             // CSR clear has the HIGHEST priority and overrides everything
             // else this cycle. Without this priority, a simultaneous
@@ -141,6 +162,8 @@ module frame_capture #(
             capturing <= 1'b0;
             saw_sof   <= 1'b0;
             wr_idx    <= {(DEPTH_LOG2+1){1'b0}};
+            serializing <= 1'b0;
+            sub_cnt     <= 16'h0;
         end else begin
             // CSR arm latches the request
             if (csr_arm_pulse) begin
@@ -184,6 +207,21 @@ module frame_capture #(
                 end
                 // else: pre-SOF beats (drained but not stored)
             end
+            // Beat serialization (WPB>1): word 0 of an accepted beat is
+            // written/counted by the stream_beat logic above; emit the
+            // remaining WPB-1 words on the following cycles with tready low.
+            if (WPB > 1) begin
+                if (serializing) begin
+                    wr_idx  <= wr_idx + 1'b1;
+                    sub_cnt <= sub_cnt + 16'd1;
+                    if (sub_cnt == WPB[15:0] - 16'd1)
+                        serializing <= 1'b0;
+                end else if (valid_capture_beat) begin
+                    beat_hold   <= tdata_ext;
+                    serializing <= 1'b1;
+                    sub_cnt     <= 16'd1;
+                end
+            end
         end
     end
 
@@ -195,8 +233,17 @@ module frame_capture #(
         (saw_sof && !s_axis_tuser)     // mid-frame
     );
     assign bram_wr_addr_w = wr_idx[DEPTH_LOG2-1:0];
-    assign bram_din_w     = beat_word;
-    assign bram_we_w      = valid_capture_beat;
+    generate
+        if (WPB > 1) begin : g_wr_ser
+            // Word 0 on the accept cycle, tail words while serializing.
+            assign bram_din_w = serializing ? beat_hold[32*sub_cnt +: 32]
+                                            : beat_word;
+            assign bram_we_w  = valid_capture_beat || serializing;
+        end else begin : g_wr_simple
+            assign bram_din_w = beat_word;
+            assign bram_we_w  = valid_capture_beat;
+        end
+    endgenerate
 
     bram_sdp #(.WIDTH(32), .DEPTH(DEPTH)) u_bram (
         .clk     (aclk),

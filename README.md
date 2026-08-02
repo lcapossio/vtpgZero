@@ -87,7 +87,7 @@ standard AXI4-Stream with backpressure (`tready`), `tlast` = end of line, and
 | 0x24   | BOX_COLOR      | moving box color                                     |
 | 0x28   | BOX_SIZE       | `{width[16], height[16]}`                            |
 | 0x2C   | BOX_SPEED      | `{dx[16], dy[16]}` pixels per frame                  |
-| 0x30   | *(reserved)*   | future use                                           |
+| 0x30   | PIXELS_PER_CLOCK | **RO** build-time pixels-per-AXI-beat (1/2/4/8)     |
 | 0x34   | GRID_SPACING   | grid line spacing in pixels                          |
 | 0x38   | GRID_COLOR     | grid line color                                      |
 | 0x3C   | CHECKER_SIZE   | checkerboard square size in pixels                   |
@@ -185,6 +185,28 @@ Outputs land in `sim/logs/`:
 - `coverage_summary.txt` — overall coverage summary
 - `annotated/` — line-annotated source (uncovered lines marked `%00`)
 
+### cocotb
+
+Python-authored spec/property tests live under `sim/cocotb/`. There are two
+runners, split by simulator because of a tool quirk:
+
+```sh
+# Control plane + AXIS handshake (Verilator runner).
+python sim/cocotb/run_cocotb.py
+
+# Pixels-per-clock data path (Icarus runner): programs the core over
+# AXI-Lite, captures every AXIS beat, and checks it beat-exact against the
+# Python reference model across PIXELS_PER_CLOCK 1/2/4/8 × RGB/RAW/YUV,
+# sweeping all 8 synthetic patterns per build (12 suites).
+python sim/cocotb/run_ppc.py
+```
+
+The PPC data-path suite uses Icarus because cocotb 2.0.1 + Verilator returns
+a sampled-once value for the packed `m_axis_tdata`; Icarus reads it
+correctly. The Verilator-backed cocotb suites are therefore scoped to the
+control plane, and the byte-exact C++ gate in `sim/run_sim.py` remains the
+Verilator-backed data-path regression.
+
 ### Hardware test on Arty A7-100T
 
 A complete reference design under `hw/arty_a7_100t/` instantiates the VTPGZ
@@ -218,6 +240,17 @@ Expected: `Ran 108 combinations, 0 failures` / `HW PASS - byte-exact across all 
 
 Architecture and address map are documented in
 [hw/arty_a7_100t/README.md](hw/arty_a7_100t/README.md).
+
+**Pixels-per-clock on silicon.** The demo builds at `PIXELS_PER_CLOCK=1`
+by default. To validate packed-pixel output on hardware, set
+`VTPGZ_PIXELS_PER_CLOCK` in [demo_top.v](hw/arty_a7_100t/rtl/demo_top.v)
+(2/4/8), rebuild, and re-run — `frame_capture` serializes each wide beat
+into `ceil(TDATA_WIDTH/32)` little-endian words and `run_hw_test.py`
+reads back the configured PPC and checks byte-exact. PPC>1 builds run the
+demo at a lower clock (`clk_gen`'s `CLKOUT0_DIVIDE`): the per-lane
+counter-chain patterns (checker/grid) do not close 130 MHz, and the demo
+targets correctness rather than throughput. PPC=4 is verified byte-exact
+across all patterns on the board.
 
 
 [↑ back to top](#index)
@@ -283,7 +316,30 @@ rtl/vtpgz_axilite_top.v  — thin wrapper that adds an AXI4-Lite slave on
 | `RAW_BAYER`     | 1 (RGGB)| Only meaningful when `OUTPUT_MODE=1`. **0** = plain monochrome (G channel); **1** = RGGB; **2** = BGGR; **3** = GRBG; **4** = GBRG. The four Bayer tiles follow standard naming (row-by-row, left to right, top to bottom) |
 | `RGB_ORDER`     | 0 (Xilinx) | Component order in `tdata`. **0** = `{pad, B, G, R}` Xilinx PG044; **1** = `{R, G, B, pad}` legacy MSB-first |
 | `BPC`           | 8 | Bits per component. Allowed: 8, 10, 12, 14, 16. Patterns render at 12-bit; pack stage truncates LSBs (`BPC<12`), passes through (`BPC=12`), or zero-extends LSBs (`BPC>12`) |
-| `C_AXIS_TDATA_WIDTH` | (auto) | **Derived**: smallest multiple-of-8 that holds the active components. Don't override unless you really know what you're doing |
+| `PIXELS_PER_CLOCK` | 1 | Pixels emitted per AXI-Stream beat. **1** (default) = classic one-pixel-per-beat, netlist identical to prior releases. **2 / 4 / 8** pack that many horizontally-adjacent pixels into one wider beat (lane 0 = leftmost pixel in the `tdata` LSBs), multiplying line bandwidth. `IMG_WIDTH` is clamped **down** to a multiple of `PIXELS_PER_CLOCK`. See the note below for the pattern-support caveat. |
+| `PIX_TDATA_WIDTH` | (auto) | **Derived**: per-*pixel* packed width — smallest multiple-of-8 that holds the active components. Don't override. |
+| `C_AXIS_TDATA_WIDTH` | (auto) | **Derived**: full beat width = `PIXELS_PER_CLOCK × PIX_TDATA_WIDTH`. Don't override unless you really know what you're doing |
+
+**Multi-pixel-per-clock (`PIXELS_PER_CLOCK` > 1)**:
+At `PIXELS_PER_CLOCK` of 2/4/8, **every** pattern produces beat-exact output
+— SOLID, GRID, CHECKER, COLORBAR, HGRAD, VGRAD, RAMP, NOISE, IMAGE — plus the
+moving-box overlay (fill, border, and box-image). All output modes (RGB /
+RAW-Bayer / YUV 4:4:4 / YUV 4:2:2) and all bit depths are supported at every
+PPC. `IMG_WIDTH` is clamped down to a multiple of `PIXELS_PER_CLOCK`. Only an
+illegal `PIXELS_PER_CLOCK` (not 1/2/4/8) fails elaboration. The value is
+mirrored read-only at register offset `0x30` so software can discover it.
+
+Implementation notes:
+- The `PIXELS_PER_CLOCK=1` build is byte-identical to prior releases (the
+  per-lane logic is generate-gated behind `PPC>1`).
+- NOISE uses a leap-ahead LFSR (the feedback is unrolled `PIXELS_PER_CLOCK`
+  times so each lane gets consecutive states and the base register jumps
+  ahead one beat).
+- IMAGE / BOX_IMAGE replicate their source memory once per lane and read it
+  combinationally, so keep `IMAGE_W`/`IMAGE_H` (and `BOX_IMAGE_W/H`) modest at
+  high PPC — total image storage scales with `PIXELS_PER_CLOCK`. The `PPC>1`
+  image read is shift-free (matches the reference model); the `PPC=1` path
+  keeps its registered BRAM read and the pre-existing uniform 1-px shift.
 
 **Output mode notes**:
 - `OUTPUT_MODE=0` (RGB) outputs 3-component RGB packed as
@@ -359,12 +415,6 @@ Default `BOX_IMAGE_W` / `BOX_IMAGE_H` = 32 picks up ~1 BRAM36 with the
 24-bit-in-36-bit-tile packing; bump to 64×32 (~1 BRAM36 still) or
 64×64 (~3 BRAM36) if you want more detail. The border ring still draws
 on top, so a small `BOX_BORDER` value frames the embedded image.
-
-**Runtime toggle.** Writing `BOX_IMG_X_STEP = 0` is the sentinel that
-falls back to solid `cfg_box_color` — no other valid step is zero, so
-the RTL keys off this to mux between the BRAM read and the solid fill.
-This lets the host flip image-in-box on/off without re-synth (the
-KV260 demo's `i` UART command uses exactly this).
 
 To enable in a build, pass `EN_IMAGE=1` (and override
 `IMAGE_W`/`IMAGE_H`/`IMAGE_HEX_FILE` if not using the defaults):
@@ -685,8 +735,10 @@ your own pending-bit FF before `frame_sync_in`.
 The numbers above include the full demo wrapper: `vtpgz_axilite_top` +
 `frame_capture` + the fpgacapZero `fcapz_ejtagaxi_xilinx7` JTAG-to-AXI
 bridge + a 32 KB on-chip BRAM frame buffer + clk_gen MMCM. The vtpgZero
-core itself (`rtl/vtpgz_core.v` + AXI-Lite wrapper) is roughly half of
-the total (see the resource matrix below for the standalone numbers).
+core itself (`rtl/vtpgz_core.v` + AXI-Lite wrapper) is the largest single
+block; see the standalone out-of-context synth numbers in the resource
+matrix below (note those are OOC synth, whereas this row is full-design
+post-implementation, so the two aren't directly comparable).
 
 ### Resource matrix per build-time configuration
 
@@ -699,22 +751,22 @@ with Vivado 2025.2's default `synth_design` flow. Reproducible with
 
 | Config | LUT | FF | BRAM36 |
 |---|---:|---:|---:|
-| `full_rgb_8b`     | 968 |  908 | 0 |
-| `full_rgb_10b`    | 968 |  914 | 0 |
-| `full_rgb_12b`    | 968 |  920 | 0 |
-| `full_rgb_14b`    | 967 |  920 | 0 |
-| `full_rgb_16b`    | 967 |  920 | 0 |
-| `full_raw_8b`     | 976 |  894 | 0 |
-| `full_raw_10b`    | 978 |  896 | 0 |
-| `full_raw_12b`    | 980 |  898 | 0 |
-| `full_raw_14b`    | 980 |  898 | 0 |
-| `full_raw_16b`    | 980 |  898 | 0 |
-| `full_yuv_8b`     | 962 |  908 | 0 |
-| `full_yuv_10b`    | 954 |  914 | 0 |
-| `full_yuv_12b`    | 961 |  920 | 0 |
-| `full_yuv_14b`    | 962 |  920 | 0 |
-| `full_yuv_16b`    | 962 |  920 | 0 |
-| `full_yuv422_16b` | 972 |  909 | 0 |
+| `full_rgb_8b`     | 1270 | 1212 | 0 |
+| `full_rgb_10b`    | 1270 | 1218 | 0 |
+| `full_rgb_12b`    | 1270 | 1224 | 0 |
+| `full_rgb_14b`    | 1270 | 1224 | 0 |
+| `full_rgb_16b`    | 1270 | 1224 | 0 |
+| `full_raw_8b`     | 1278 | 1200 | 0 |
+| `full_raw_10b`    | 1280 | 1202 | 0 |
+| `full_raw_12b`    | 1282 | 1204 | 0 |
+| `full_raw_14b`    | 1282 | 1204 | 0 |
+| `full_raw_16b`    | 1282 | 1204 | 0 |
+| `full_yuv_8b`     | 1232 | 1210 | 0 |
+| `full_yuv_10b`    | 1236 | 1216 | 0 |
+| `full_yuv_12b`    | 1236 | 1222 | 0 |
+| `full_yuv_14b`    | 1236 | 1222 | 0 |
+| `full_yuv_16b`    | 1232 | 1222 | 0 |
+| `full_yuv422_16b` | 1245 | 1212 | 0 |
 
 The YUV path produces `{Y,Cb,Cr}` directly from the pattern generators
 (precomputed BT.601 palette for the colorbar, neutral chroma for
@@ -727,28 +779,28 @@ YUV logic added in recent revisions.
 
 | Config | LUT | FF |
 |---|---:|---:|
-| `baseline_solid_yuv`  | 402 |  732 |
-| `only_colorbar_yuv`   | 462 |  752 |
-| `only_hgrad_yuv`      | 431 |  753 |
-| `only_vgrad_yuv`      | 433 |  753 |
-| `only_checker_yuv`    | 431 |  767 |
-| `only_moving_box_yuv` | 695 |  767 |
-| `only_grid_yuv`       | 520 |  765 |
-| `only_ramp_yuv`       | 431 |  753 |
-| `only_noise_yuv`      | 409 |  749 |
+| `baseline_solid_yuv`  |  526 |  926 |
+| `only_colorbar_yuv`   |  549 |  955 |
+| `only_hgrad_yuv`      |  548 |  951 |
+| `only_vgrad_yuv`      |  558 |  951 |
+| `only_checker_yuv`    |  564 |  962 |
+| `only_moving_box_yuv` | 1054 | 1059 |
+| `only_grid_yuv`       |  569 |  959 |
+| `only_ramp_yuv`       |  548 |  951 |
+| `only_noise_yuv`      |  531 |  947 |
 
-Per-feature deltas relative to `baseline_solid_yuv` (402 LUT / 732 FF):
+Per-feature deltas relative to `baseline_solid_yuv` (526 LUT / 926 FF):
 
 | Feature | ΔLUT | ΔFF |
 |---|---:|---:|
-| `EN_COLORBAR`   |  +60 | +20 |
-| `EN_HGRAD`      |  +29 | +21 |
-| `EN_VGRAD`      |  +31 | +21 |
-| `EN_CHECKER`    |  +29 | +35 |
-| `EN_MOVING_BOX` | **+293** | +35 |
-| `EN_GRID`       | +118 | +33 |
-| `EN_RAMP`       |  +29 | +21 |
-| `EN_NOISE`      |   +7 | +17 |
+| `EN_COLORBAR`   |  +23 | +29 |
+| `EN_HGRAD`      |  +22 | +25 |
+| `EN_VGRAD`      |  +32 | +25 |
+| `EN_CHECKER`    |  +38 | +36 |
+| `EN_MOVING_BOX` | **+528** | +133 |
+| `EN_GRID`       |  +43 | +33 |
+| `EN_RAMP`       |  +22 | +25 |
+| `EN_NOISE`      |   +5 | +21 |
 
 `EN_MOVING_BOX` is by far the most expensive feature (the bouncing
 position arithmetic and per-pixel range comparators for the overlay). `EN_NOISE` is
@@ -758,11 +810,34 @@ the cheapest. There are no multiplies anywhere in the design.
 
 | Config | LUT | FF |
 |---|---:|---:|
-| `tiny_raw_8b` (only EN_SOLID, OUTPUT_MODE=RAW, BPC=8) | **410** | 718 |
+| `tiny_raw_8b` (only EN_SOLID, OUTPUT_MODE=RAW, BPC=8) | **534** | 914 |
 
 This is the absolute minimum: 1 pattern, RAW Bayer 8 bpc.
-~410 LUTs total. Useful as an image-sensor-emulator for camera/ISP
+~534 LUTs total. Useful as an image-sensor-emulator for camera/ISP
 bring-up where you only need a controllable raw stream.
+
+#### Pixels-per-clock sweep
+
+All-patterns RGB-8b build swept over `PIXELS_PER_CLOCK` (the `ppc1` row is
+the same build as `full_rgb_8b` above). Mode/BPC/patterns are held fixed so
+the numbers isolate the cost of widening the per-lane datapath from 1 to N
+pixels per beat. Reproducible with `python synth/run_matrix.py ppc`.
+
+| Config | LUT | FF | beat width | vs `ppc1` |
+|---|---:|---:|---:|---|
+| `ppc1_full_rgb_8b` | 1270 | 1212 |  24b | — |
+| `ppc2_full_rgb_8b` | 1338 | 1288 |  48b | +5% LUT / +6% FF |
+| `ppc4_full_rgb_8b` | 1554 | 1406 |  96b | +22% LUT / +16% FF |
+| `ppc8_full_rgb_8b` | 1980 | 1644 | 192b | +56% LUT / +36% FF |
+
+Scaling is strongly sub-linear: 8× the per-clock pixel throughput costs only
+**+56% LUT / +36% FF**. The per-pixel packers and the single-step
+counter/accumulator chains replicate per lane, but the shared timing FSM,
+moving-box position arithmetic, and config registers do not. `PIXELS_PER_CLOCK=1`
+is the default and its netlist is unchanged from releases before the feature
+existed (verified: the pre-feature commit synthesizes to the identical
+1270 LUT / 1212 FF). There is no BRAM or DSP cost at any PPC in this build;
+the `EN_IMAGE` patterns would add BRAM that scales with PPC via replication.
 
 **Test conditions for the matrix above**: Vivado 2025.2, target
 `xc7a100tcsg324-1` -1 speed grade, `synth_design` default strategy,
@@ -795,6 +870,10 @@ sim/
   sim_capture_seq.cpp  multi-capture (sequential) sim ↔ model gate
   sim_top.v          tpg + frame_capture wrapper for the seq harness
   run_sim.py         Verilator orchestration (lint/build/run/cov/all_modes)
+  check_ppc_vs_model.py  iverilog ↔ model beat-exact PPC gate (all patterns)
+  tb_ppc_capture.v   iverilog PPC capture harness (port-driven core)
+  cocotb/            cocotb suites (run_cocotb.py control plane;
+                     run_ppc.py PPC data path vs model)
 synth/
   synth_matrix.tcl   Vivado synth-only TCL for one config
   run_matrix.py      driver: synth N parameter configs, build matrix CSV

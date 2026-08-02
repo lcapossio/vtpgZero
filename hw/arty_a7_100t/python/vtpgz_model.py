@@ -112,10 +112,21 @@ class VtpgzConfig:
     box_img_x_step: int = 0
     box_img_y_step: int = 0
     box_image_rgb888: list = field(default_factory=list)
+    # Pixels emitted per AXI-Stream beat (build-time). 1 = classic
+    # one-pixel-per-beat. 2/4/8 pack that many horizontally-adjacent pixels
+    # into one wider beat, lane 0 (leftmost pixel) in the LSBs. width must
+    # be a multiple of pixels_per_clock. See render_frame_beats().
+    pixels_per_clock: int = 1
 
     @property
     def tdata_width(self) -> int:
+        """Per-PIXEL packed width (unchanged by PPC)."""
         return derived_tdata_width(self.output_mode, self.bpc, self.yuv_subsample)
+
+    @property
+    def beat_tdata_width(self) -> int:
+        """Full AXI-Stream beat width = pixels_per_clock * per-pixel width."""
+        return self.pixels_per_clock * self.tdata_width
 
 
 @dataclass
@@ -558,6 +569,40 @@ def render_frame(cfg: VtpgzConfig, regs: VtpgzRegs | None = None) -> list[int]:
         _tick(cfg, regs, x_reg, y_reg, last_x, pix_sof, end_of_frame)
 
     return out
+
+
+def render_frame_beats(cfg: VtpgzConfig,
+                       regs: VtpgzRegs | None = None) -> list[int]:
+    """Render one frame as multi-pixel-per-clock AXI-Stream beats.
+
+    Semantics are defined entirely in terms of the per-pixel model: a
+    pixels_per_clock=N build emits the EXACT same per-pixel value sequence
+    as a PPC=1 build, just N pixels at a time. Beat b of a line therefore
+    carries pixels x = b*N .. b*N+N-1 (lane 0 = leftmost = LSBs):
+
+        beat = pix[0] | pix[1] << w | ... | pix[N-1] << (N-1)*w
+
+    where w = per-pixel tdata_width and pix[k] is the k-th per-pixel packed
+    value from render_frame(). width MUST be a multiple of N (the RTL clamps
+    it down to one; here we require it so the reference is unambiguous).
+
+    Returns a list of beat values, len = (width // N) * height.
+    """
+    n = cfg.pixels_per_clock
+    if n <= 1:
+        return render_frame(cfg, regs)
+    if cfg.width % n != 0:
+        raise ValueError(
+            f"width={cfg.width} must be a multiple of pixels_per_clock={n}")
+    per_pixel = render_frame(cfg, regs)   # width*height per-pixel words
+    w = cfg.tdata_width
+    beats: list[int] = []
+    for base in range(0, len(per_pixel), n):
+        acc = 0
+        for lane in range(n):
+            acc |= (per_pixel[base + lane] & ((1 << w) - 1)) << (lane * w)
+        beats.append(acc)
+    return beats
 
 
 def tdata_to_bram_words(tdata_list: Iterable[int],

@@ -8,13 +8,22 @@
 `define VTPGZ_DEFS_VH
 
 // IP version
-//   0.1.2 = current: configurable inter-line TVALID gap
+//   0.4.0 = current: PIXELS_PER_CLOCK M3 -- ALL patterns beat-exact at PPC>1.
+//           NOISE via leap-ahead LFSR; IMAGE/BOX_IMAGE via per-lane replicated
+//           combinational read. No per-pattern PPC restriction remains.
+//   0.3.0: PIXELS_PER_CLOCK M2 -- COLORBAR/HGRAD/VGRAD/RAMP now
+//           beat-exact at PPC>1 (join SOLID/GRID/CHECKER + box overlay).
+//           Only NOISE and IMAGE/BOX_IMAGE remain PPC=1-only (M3).
+//   0.2.0: PIXELS_PER_CLOCK build param (1/2/4/8), M1 scope --
+//           SOLID/GRID/CHECKER + moving-box overlay at PPC>1; PPC mirrored
+//           RO at reg 0x30. PPC=1 netlist unchanged.
+//   0.1.2: configurable inter-line TVALID gap
 //   0.1.1: colorbar state/AXIS alignment fix + regression
 //   0.1.0: box overlay + configurable border, no CSC, BPC 8-16,
 //           4 Bayer tiles, CORE_ID at 0x00, vtpgz_core split
 `define VTPGZ_VERSION_MAJOR  8'd0
-`define VTPGZ_VERSION_MINOR  8'd1
-`define VTPGZ_VERSION_PATCH 16'd2
+`define VTPGZ_VERSION_MINOR  8'd4
+`define VTPGZ_VERSION_PATCH 16'd0
 
 // Register byte offsets (AXI4-Lite, 32-bit data)
 // 0x00 is a fixed core-identifier ASCII tag "VTPG" (in little-endian
@@ -32,7 +41,7 @@
 `define VTPGZ_REG_BOX_COLOR     8'h24
 `define VTPGZ_REG_BOX_SIZE      8'h28
 `define VTPGZ_REG_BOX_SPEED     8'h2C
-`define VTPGZ_REG_RSVD_30       8'h30  // reserved — future use
+`define VTPGZ_REG_PIXELS_PER_CLOCK 8'h30  // RO: build-time PIXELS_PER_CLOCK (1/2/4/8)
 `define VTPGZ_REG_GRID_SPACING  8'h34
 `define VTPGZ_REG_GRID_COLOR    8'h38
 `define VTPGZ_REG_CHECKER_SIZE  8'h3C

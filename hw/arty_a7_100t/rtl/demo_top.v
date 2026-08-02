@@ -42,10 +42,18 @@ module demo_top (
     output wire led3
 );
 
+    // Pixels-per-clock for this demo build (1/2/4/8). Declared here so the
+    // clock generator can slow down for PPC>1 (see DEMO_CLK_DIV below).
+    localparam VTPGZ_PIXELS_PER_CLOCK = 4;
+
     // ---------------- clock & reset ----------------
+    // PPC=1 runs 130 MHz (650/5). At PPC>1 the per-lane counter-chain patterns
+    // (checker/grid) don't close 130 MHz, so slow to 50 MHz (650/13) -- this
+    // demo validates PPC correctness on silicon, not maximum throughput.
+    localparam real DEMO_CLK_DIV = (VTPGZ_PIXELS_PER_CLOCK > 1) ? 13.000 : 5.000;
     wire clk;
     wire rst_n;
-    clk_gen u_clkgen (
+    clk_gen #(.CLKOUT0_DIVIDE(DEMO_CLK_DIV)) u_clkgen (
         .clk_in    (CLK100MHZ),
         .reset_btn (btn0),
         .clk_out   (clk),
@@ -230,12 +238,16 @@ module demo_top (
     localparam VTPGZ_YUV_SUBSAMPLE = 0;
     localparam VTPGZ_RAW_BAYER     = 1;
     localparam VTPGZ_RGB_ORDER     = 0; // 0=Xilinx, 1=legacy
-    // Match vtpgz_axilite_top's auto-derived TDATA_WIDTH formula
-    localparam VTPGZ_TDATA_WIDTH =
+    // VTPGZ_PIXELS_PER_CLOCK is declared near the clock generator above.
+    // Match vtpgz_axilite_top's auto-derived TDATA_WIDTH formula (per pixel),
+    // then widen by PIXELS_PER_CLOCK for the packed beat. frame_capture
+    // serializes each wide beat into ceil(width/32) 32-bit BRAM words.
+    localparam VTPGZ_PIX_TDATA_WIDTH =
         (VTPGZ_OUTPUT_MODE == 0) ? (((3*VTPGZ_BPC + 7) / 8) * 8) :
         (VTPGZ_OUTPUT_MODE == 1) ? (((  VTPGZ_BPC + 7) / 8) * 8) :
         (VTPGZ_YUV_SUBSAMPLE == 0 ? (((3*VTPGZ_BPC + 7) / 8) * 8)
                                   : (((2*VTPGZ_BPC + 7) / 8) * 8));
+    localparam VTPGZ_TDATA_WIDTH = VTPGZ_PIXELS_PER_CLOCK * VTPGZ_PIX_TDATA_WIDTH;
 
     wire [VTPGZ_TDATA_WIDTH-1:0] vtpgz_axis_tdata;
     wire        vtpgz_axis_tvalid;
@@ -250,7 +262,8 @@ module demo_top (
         .YUV_SUBSAMPLE(VTPGZ_YUV_SUBSAMPLE),
         .RAW_BAYER    (VTPGZ_RAW_BAYER),
         .RGB_ORDER    (VTPGZ_RGB_ORDER),
-        .BPC          (VTPGZ_BPC)
+        .BPC          (VTPGZ_BPC),
+        .PIXELS_PER_CLOCK(VTPGZ_PIXELS_PER_CLOCK)
     ) u_vtpgz (
         .aclk          (clk),
         .aresetn       (rst_n),

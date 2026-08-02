@@ -81,10 +81,15 @@ SUITES = [
     # Python-smoke CI job. A cocotb-driven YUV spec test was attempted but
     # the cocotb 2.0.1 + Verilator 5.048 combination returns a sampled-once
     # value for the packed m_axis_tdata output even though the C++ harness
-    # reads it correctly (see test_tready_probe.py for the diagnosis). The
-    # byte-exact RTL<->model gate in sim/run_sim.py covers the data path
-    # across all 20 mode/bpc configs, so cocotb is currently scoped to the
-    # AXI-Lite control plane and AXIS handshake protocol.
+    # reads it correctly (see test_tready_probe.py for the diagnosis). So the
+    # Verilator-backed cocotb suites here are scoped to the AXI-Lite control
+    # plane and AXIS handshake protocol.
+    #
+    # The cocotb *data-path* verification (every AXIS beat compared against
+    # the reference model, swept over PIXELS_PER_CLOCK 1/2/4/8 x RGB/RAW/YUV)
+    # lives in run_ppc.py and runs under the Icarus runner, which does read
+    # the packed m_axis_tdata correctly. The byte-exact C++ gate in
+    # sim/run_sim.py remains the Verilator-backed data-path regression.
 ]
 
 
