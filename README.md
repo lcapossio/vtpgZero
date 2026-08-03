@@ -4,26 +4,26 @@ A synthesizable Verilog-2001 video test pattern generator IP core. Outputs
 pixels over an AXI4-Stream master interface and is configured at runtime via
 an AXI4-Lite slave register interface.
 
-![vtpgZero output streamed live over Ethernet as MJPEG](docs/img/mjpeg_eth_demo.gif)
+<p align="center">
+  <img src="docs/img/mjpeg_eth_demo.gif" alt="vtpgZero output streamed live over Ethernet as MJPEG">
+</p>
 
 ## Index
 
 - [What this project does](#what-this-project-does)
 - [Features](#features)
 - [Register map](#register-map-axi4-lite-32-bit)
-- [How to test it](#how-to-test-it)
-  - [Icarus Verilog smoke test](#icarus-verilog-smoke-test)
-  - [Lint](#lint)
-  - [Verilator full simulation + 100% coverage](#verilator-full-simulation--100-coverage)
-  - [Hardware test on Arty A7-100T](#hardware-test-on-arty-a7-100t)
 - [How to use it](#how-to-use-it)
   - [Build-time parameters](#build-time-parameters)
   - [Using vtpgz_core (port-driven, no AXI slave)](#using-vtpgz_core-port-driven)
   - [Using vtpgz_axilite_top (AXI4-Lite controlled)](#using-vtpgz_axilite_top-axi4-lite-controlled)
   - [Programming sequence](#programming-sequence)
   - [External frame sync](#external-frame-sync)
+  - [Multi-pixel-per-clock](#multi-pixel-per-clock)
+  - [Output modes](#output-modes)
+  - [Image patterns](#image-patterns)
+- [How to test it](#how-to-test-it)
 - [FPGA resource usage and frequency](#fpga-resource-usage-and-frequency)
-  - [Resource matrix per build-time configuration](#resource-matrix-per-build-time-configuration)
 - [File layout](#file-layout)
 - [Author and license](#author-and-license)
 
@@ -35,6 +35,18 @@ divider or be locked to an external frame-sync signal. The output stream is
 standard AXI4-Stream with backpressure (`tready`), `tlast` = end of line, and
 `tuser` = start of frame.
 
+It ships in two flavors:
+
+- **`vtpgz_core`** — direct port-driven core. No AXI slave; drive the `cfg_*`
+  fields from your own RTL (or tie them to constants for a fully static
+  build). The smallest, most portable form.
+- **`vtpgz_axilite_top`** — thin wrapper that adds an AXI4-Lite slave so a
+  CPU/host can configure the core at runtime. This is what the Arty A7-100T
+  demo uses.
+
+Both have **identical** pattern/output behavior — they only differ in how the
+`cfg_*` fields get set.
+
 
 [↑ back to top](#index)
 
@@ -43,32 +55,34 @@ standard AXI4-Stream with backpressure (`tready`), `tlast` = end of line, and
 - **8 patterns**: SMPTE color bars, horizontal gradient, vertical gradient,
   checkerboard, solid color, crosshatch/grid, color ramp, LFSR
   pseudo-random noise.
-- **Bouncing box overlay**: optional animated box that overlays on top of
-  any pattern. The box color is configurable via `BOX_COLOR`, and it
-  bounces off the frame edges at a configurable speed. To get "box on
-  a solid background", just select the solid-color pattern and set
-  `SOLID_COLOR` to your desired background. Stripped at elaboration
-  when `EN_MOVING_BOX=0`.
-- **3 build-time output modes**: pick exactly one at synthesis time
-  - **RGB** — direct RGB888/RGB101010/RGB121212
-  - **RAW** — single-component: plain monochrome, or any of the 4
-    standard Bayer mosaics (RGGB / BGGR / GRBG / GBRG). Smallest
-    configuration, useful as an image-sensor emulator
+- **Bouncing box overlay**: optional animated box drawn on top of any
+  pattern. Color, size, speed, and border are runtime-configurable; it
+  bounces off the frame edges. Stripped at elaboration when `EN_MOVING_BOX=0`.
+- **3 build-time output modes** (pick one at synthesis):
+  - **RGB** — RGB888 / RGB101010 / RGB121212
+  - **RAW** — single-component: plain monochrome, or any of the 4 standard
+    Bayer mosaics (RGGB / BGGR / GRBG / GBRG). Smallest configuration, useful
+    as an image-sensor emulator.
   - **YUV** — native BT.601-style 4:4:4 or 4:2:2 (patterns produce
-    `{Y,Cb,Cr}` directly)
+    `{Y,Cb,Cr}` directly, no runtime color conversion).
 - **5 bit depths** (build-time): 8 / 10 / 12 / 14 / 16 bits per component.
   Patterns render at 12-bit precision; the pack stage truncates LSBs for
-  `BPC<12` and zero-extends LSBs for `BPC>12`.
+  `BPC<12` and zero-extends for `BPC>12`.
+- **Pixels-per-clock (1/2/4/8)**: pack 1, 2, 4, or 8 horizontally-adjacent
+  pixels into each AXI4-Stream beat for higher line bandwidth. All patterns
+  and output modes are supported; `PIXELS_PER_CLOCK=1` (default) is
+  byte-identical to prior releases.
 - Auto-derived `tdata` width — the smallest multiple-of-8 that fits the
   active components for the chosen mode/bpc. No manual sizing needed.
-- **AXI4-Lite** slave for runtime configuration (18 registers).
+- **AXI4-Lite** slave for runtime configuration (18 writable registers).
 - **AXI4-Stream** master output with full backpressure support.
-- **Frame sync**: internal (clock divider) or external (rising-edge input)
-- Pure **Verilog-2001**, no SystemVerilog, no vendor primitives.
+- **Frame sync**: internal (clock divider) or external (rising-edge input).
 - **Build-time pattern selection**: each pattern is gated by an `EN_*`
   parameter and stripped from the netlist when set to `0`.
+- Pure **Verilog-2001**, no SystemVerilog, no vendor primitives.
 - **100% Verilator code coverage** (line + toggle) under the bundled
-  testbench.
+  testbench, plus a byte-exact RTL↔model gate and on-silicon hardware
+  verification.
 
 
 [↑ back to top](#index)
@@ -103,358 +117,60 @@ standard AXI4-Stream with backpressure (`tready`), `tlast` = end of line, and
 
 AXI4-Lite writes honor `WSTRB` byte lanes. A write with `WSTRB=0`
 acknowledges but leaves the addressed register unchanged, including
-`CONTROL`.
-
-
-[↑ back to top](#index)
-
-## How to test it
-
-### Icarus Verilog (smoke test)
-
-A minimal smoke test that brings the core out of reset, programs a 32×16
-color-bar frame, and checks one frame is emitted:
-
-```sh
-iverilog -g2001 -o tb_vtpgz_axilite_top.vvp -I rtl \
-    rtl/vtpgz_axil_regs.v rtl/vtpgz_core.v rtl/vtpgz_axilite_top.v \
-    tb/tb_vtpgz_axilite_top.v
-vvp tb_vtpgz_axilite_top.vvp
-```
-
-Expected: `RESULT: pixels=2560 lines=80 frames=5 completed=5 errors=0`
-followed by `PASS`.
-
-### Lint
-
-Lint is the first stage of the regression. Run standalone with:
-
-```sh
-python sim/run_sim.py lint
-```
-
-### Verilator (full simulation + 100% coverage)
-
-Requires `verilator` and a host C++ toolchain on `PATH`. The orchestration
-is a single Python script — there is no Makefile.
-
-```sh
-python sim/run_sim.py regression   # = lint + build + run + coverage + model gate
-```
-
-To sweep every `(OUTPUT_MODE × BPC)` build and run the byte-exact
-sim↔model gate on each:
-
-```sh
-python sim/run_sim.py all_modes
-```
-
-The C++ harness runs **7 phases** for full coverage:
-
-1. **Register sweep** — write `0xFFFFFFFF`/`0x00000000`/`0xAAAAAAAA`/`0x55555555`
-   to every register, with rotating `awprot`/`arprot`, then read each back.
-   Includes partial-strobe (`wstrb`) writes and an unmapped-address access.
-2. **Pattern sweep** — 9 patterns × 4 pixel formats × 3 bit depths on a
-   256×128 frame.
-3. **Moving box bounce** — runs long enough for the box to bounce off all
-   four walls, exercising both edge-clamp branches.
-4. **Backpressure** — random `tready` toggling at 7/8 duty to stress the
-   stall path.
-5. **External frame sync** — multiple rising edges on `frame_sync_in`.
-6. **Software frame sync** — `CONTROL[1]` held to force-trigger frames.
-7. **Status read while busy** — final readback of every register.
-
-Expected output:
-
-```
-RESULT: pixels=4609830 lines=17757 frames=146
-PASS
-Total coverage (579/579) 100.00%
-```
-
-A handful of structurally unreachable items are excluded with
-`// verilator coverage_off` and a comment explaining why (BT.601
-saturation arms that are mathematically unreachable from 12-bit unsigned
-RGB; AXI `bresp`/`rresp` always tied to OKAY; padding bits of `tdata`
-that are tied zero by the format-packing spec; upper bits of the
-frame-rate divider/`y`/`frame_num` that would only toggle in
-multi-million-pixel sims).
-
-Outputs land in `sim/logs/`:
-
-- `vtpgz_axilite_top.vcd` — full waveform
-- `coverage.dat` — raw coverage database
-- `coverage_summary.txt` — overall coverage summary
-- `annotated/` — line-annotated source (uncovered lines marked `%00`)
-
-### cocotb
-
-Python-authored spec/property tests live under `sim/cocotb/`. There are two
-runners, split by simulator because of a tool quirk:
-
-```sh
-# Control plane + AXIS handshake (Verilator runner).
-python sim/cocotb/run_cocotb.py
-
-# Pixels-per-clock data path (Icarus runner): programs the core over
-# AXI-Lite, captures every AXIS beat, and checks it beat-exact against the
-# Python reference model across PIXELS_PER_CLOCK 1/2/4/8 × RGB/RAW/YUV,
-# sweeping all 8 synthetic patterns per build (12 suites).
-python sim/cocotb/run_ppc.py
-```
-
-The PPC data-path suite uses Icarus because cocotb 2.0.1 + Verilator returns
-a sampled-once value for the packed `m_axis_tdata`; Icarus reads it
-correctly. The Verilator-backed cocotb suites are therefore scoped to the
-control plane, and the byte-exact C++ gate in `sim/run_sim.py` remains the
-Verilator-backed data-path regression.
-
-### Hardware test on Arty A7-100T
-
-A complete reference design under `hw/arty_a7_100t/` instantiates the VTPGZ
-core, the [fpgacapZero](https://github.com/lcapossio/fpgacapZero)
-JTAG-to-AXI4 bridge, and a small AXI-Stream → BRAM frame-capture sink.
-The host sweeps all 108 (pattern × format × bpp) combinations through the
-FPGA over JTAG, captures each frame, and asserts byte-exact equality
-against a Python reference model that mirrors the RTL pipeline
-register-by-register.
-
-Requirements:
-- Vivado 2025.x (`vivado` and `xsdb` on `PATH`)
-- Xilinx `hw_server` running (`hw_server -d`)
-- Digilent Arty A7-100T connected via USB
-- Submodules initialized: `git submodule update --init --recursive`
-
-Build the bitstream:
-
-```sh
-python hw/arty_a7_100t/scripts/build.py
-```
-
-Run the full sweep (programs the bitstream + 108 captures + byte-exact
-compare):
-
-```sh
-python hw/arty_a7_100t/python/run_hw_test.py
-```
-
-Expected: `Ran 108 combinations, 0 failures` / `HW PASS - byte-exact across all combinations`.
-
-Architecture and address map are documented in
-[hw/arty_a7_100t/README.md](hw/arty_a7_100t/README.md).
-
-**Pixels-per-clock on silicon.** The demo builds at `PIXELS_PER_CLOCK=1`
-by default. To validate packed-pixel output on hardware, set
-`VTPGZ_PIXELS_PER_CLOCK` in [demo_top.v](hw/arty_a7_100t/rtl/demo_top.v)
-(2/4/8), rebuild, and re-run — `frame_capture` serializes each wide beat
-into `ceil(TDATA_WIDTH/32)` little-endian words and `run_hw_test.py`
-reads back the configured PPC and checks byte-exact. PPC>1 builds run the
-demo at a lower clock (`clk_gen`'s `CLKOUT0_DIVIDE`): the per-lane
-counter-chain patterns (checker/grid) do not close 130 MHz, and the demo
-targets correctness rather than throughput. PPC=4 is verified byte-exact
-across all patterns on the board.
+`CONTROL`. The `COLOR_FORMAT` register (0x1C) is **read-only** and reflects
+the build-time configuration so software can probe it.
 
 
 [↑ back to top](#index)
 
 ## How to use it
 
-vtpgZero ships in two flavors. Pick whichever fits how the rest of your
-system is wired:
-
-* **`vtpgz_core`** — direct port-driven core. No AXI slave, no register
-  file. Drive the cfg_* fields from your own RTL (or tie them to
-  constants for a fully static colorbar / sensor-emulator build). This
-  is the smallest, most portable form.
-* **`vtpgz_axilite_top`** — thin wrapper around `vtpgz_core` that adds
-  the `vtpgz_axil_regs` AXI4-Lite slave so a CPU/host can configure the
-  core at runtime over AXI. This is what the Arty A7-100T demo uses.
-
-The two flavors have **identical** pattern/output behavior — they only
-differ in how the cfg_* fields get into the core.
-
 Everything is portable Verilog-2001 with no vendor primitives:
 
 ```
-rtl/vtpgz_defs.vh        — `include this header (or add rtl/ to your include dirs)
-rtl/vtpgz_core.v         — the substance: timing engine, patterns (native
-                           per-mode color space), inline pack stage,
-                           AXIS output. Configuration via cfg_* input
-                           ports. Instantiate this directly if you want
-                           cfg-from-RTL or fully-static builds.
-rtl/vtpgz_axil_regs.v    — AXI4-Lite slave + register file (only needed
-                           with the AXI-Lite wrapper)
-rtl/vtpgz_axilite_top.v  — thin wrapper that adds an AXI4-Lite slave on
-                           top of vtpgz_core for runtime control
+rtl/vtpgz_defs.vh        `include this header (or add rtl/ to your include dirs)
+rtl/vtpgz_core.v         the substance: timing engine, patterns, inline pack
+                         stage, AXIS output. Configured via cfg_* input ports.
+rtl/vtpgz_axil_regs.v    AXI4-Lite slave + register file (only needed with the
+                         AXI-Lite wrapper)
+rtl/vtpgz_axilite_top.v  thin wrapper that adds the AXI4-Lite slave on top of
+                         vtpgz_core for runtime control
 ```
+
+A `vtpgz_core`-only build pulls in just `vtpgz_defs.vh` and `vtpgz_core.v`.
+The AXI-Lite flavor adds the other two files.
 
 ### Build-time parameters
 
 | Parameter | Default | Effect |
 |---|---|---|
-| `C_S_AXI_ADDR_WIDTH` | 8 | AXI4-Lite address width (8 = 256 B = enough for 18 regs) |
+| `C_S_AXI_ADDR_WIDTH` | 8 | AXI4-Lite address width (8 = 256 B, enough for all regs) |
 | `C_S_AXI_DATA_WIDTH` | 32 | AXI4-Lite data width (only 32 supported) |
-| `EN_COLORBAR`   | 1 | Strip the SMPTE colorbar generator if 0 |
-| `EN_HGRAD`      | 1 | Strip horizontal-gradient generator if 0 |
-| `EN_VGRAD`      | 1 | Strip vertical-gradient generator if 0 |
-| `EN_CHECKER`    | 1 | Strip checkerboard generator if 0 |
-| `EN_SOLID`      | 1 | Strip solid-color generator if 0 |
-| `EN_MOVING_BOX` | 1 | Strip the bouncing-box overlay if 0. When 1, the box is drawn on top of any active pattern using `BOX_COLOR` |
-| `EN_GRID`       | 1 | Strip grid/crosshatch generator if 0 |
-| `EN_RAMP`       | 1 | Strip color-ramp generator if 0 |
-| `EN_NOISE`      | 1 | Strip LFSR noise generator if 0 |
-| `EN_IMAGE`      | 0 | Embed a synth-time image as `PATTERN_SEL=9`. Storage is inferred BRAM initialized via `$readmemh`. Stripped at elaboration when 0 — no BRAM cost. |
-| `IMAGE_W`       | 128 | Source image width in BRAM (power of two). |
-| `IMAGE_H`       | 128 | Source image height (power of two). |
-| `IMAGE_OUT_W`   | `IMAGE_W` | Rendered window width on screen. When `IMAGE_OUT_W != IMAGE_W`, a Q16 nearest-neighbour accumulator scales the source per output pixel. Centred with black padding. Any positive integer. |
-| `IMAGE_OUT_H`   | `IMAGE_H` | Rendered window height. Same scaling behaviour. Aspect is not preserved unless `IMAGE_OUT_W:IMAGE_OUT_H == IMAGE_W:IMAGE_H`. |
-| `IMAGE_HEX_FILE`| `tests/images/mandrill_128x128.mem` | Path to a 24-bit RGB888 hex file, one pixel per line. Generate with `python scripts/image_to_hex.py <png> --width W --height H --out path.mem`. |
-| `EN_BOX_IMAGE`  | 0 | Embed a synth-time image *inside* the moving box overlay. Source rectangle = the box. Same scaler family as `EN_IMAGE`, but the per-pixel step is a runtime register so the host can resize the box without re-synth. Requires `EN_MOVING_BOX=1`. Stripped at elaboration when 0. |
-| `BOX_IMAGE_W`   | 32 | Box-image source width in BRAM (power of two). |
-| `BOX_IMAGE_H`   | 32 | Box-image source height (power of two). |
-| `BOX_IMAGE_HEX_FILE` | `tests/images/mandrill_32x32.mem` | Same format as `IMAGE_HEX_FILE`. 32×32 at RGB888 ≈ 24 kbit → 1 BRAM36. |
-| `OUTPUT_MODE`   | 0 (RGB) | **0** = RGB; **1** = RAW; **2** = YUV. Patterns produce native components in the chosen color space; the output stage just bit-shrinks/zero-extends and reorders. |
-| `YUV_SUBSAMPLE` | 0 (444) | Only meaningful when `OUTPUT_MODE=2`. **0** = 4:4:4; **1** = 4:2:2 |
-| `RAW_BAYER`     | 1 (RGGB)| Only meaningful when `OUTPUT_MODE=1`. **0** = plain monochrome (G channel); **1** = RGGB; **2** = BGGR; **3** = GRBG; **4** = GBRG. The four Bayer tiles follow standard naming (row-by-row, left to right, top to bottom) |
-| `RGB_ORDER`     | 0 (Xilinx) | Component order in `tdata`. **0** = `{pad, B, G, R}` Xilinx PG044; **1** = `{R, G, B, pad}` legacy MSB-first |
-| `BPC`           | 8 | Bits per component. Allowed: 8, 10, 12, 14, 16. Patterns render at 12-bit; pack stage truncates LSBs (`BPC<12`), passes through (`BPC=12`), or zero-extends LSBs (`BPC>12`) |
-| `PIXELS_PER_CLOCK` | 1 | Pixels emitted per AXI-Stream beat. **1** (default) = classic one-pixel-per-beat, netlist identical to prior releases. **2 / 4 / 8** pack that many horizontally-adjacent pixels into one wider beat (lane 0 = leftmost pixel in the `tdata` LSBs), multiplying line bandwidth. `IMG_WIDTH` is clamped **down** to a multiple of `PIXELS_PER_CLOCK`. See the note below for the pattern-support caveat. |
-| `PIX_TDATA_WIDTH` | (auto) | **Derived**: per-*pixel* packed width — smallest multiple-of-8 that holds the active components. Don't override. |
-| `C_AXIS_TDATA_WIDTH` | (auto) | **Derived**: full beat width = `PIXELS_PER_CLOCK × PIX_TDATA_WIDTH`. Don't override unless you really know what you're doing |
+| `EN_COLORBAR` … `EN_NOISE` | 1 | Per-pattern enables. Set to 0 to strip that generator from the netlist. At least one must remain enabled. |
+| `EN_MOVING_BOX` | 1 | Bouncing-box overlay. When 1, the box is drawn on top of any active pattern. |
+| `EN_IMAGE` | 0 | Embed a synth-time image as `PATTERN_SEL=9` (inferred BRAM). Stripped when 0. See [Image patterns](#image-patterns). |
+| `EN_BOX_IMAGE` | 0 | Paint an embedded image inside the moving box. Requires `EN_MOVING_BOX=1`. See [Image patterns](#image-patterns). |
+| `IMAGE_W` / `IMAGE_H` | 128 | Source image size in BRAM (powers of two). Plus `IMAGE_OUT_W/H`, `IMAGE_HEX_FILE` — see [Image patterns](#image-patterns). |
+| `BOX_IMAGE_W` / `BOX_IMAGE_H` | 32 | Box-image source size. Plus `BOX_IMAGE_HEX_FILE`. |
+| `OUTPUT_MODE` | 0 (RGB) | **0** = RGB; **1** = RAW; **2** = YUV. See [Output modes](#output-modes). |
+| `YUV_SUBSAMPLE` | 0 (444) | Only for `OUTPUT_MODE=2`. **0** = 4:4:4; **1** = 4:2:2. |
+| `RAW_BAYER` | 1 (RGGB) | Only for `OUTPUT_MODE=1`. **0** = plain monochrome; **1** = RGGB; **2** = BGGR; **3** = GRBG; **4** = GBRG. |
+| `RGB_ORDER` | 0 (Xilinx) | Component order in `tdata`. **0** = `{pad,B,G,R}` (Xilinx PG044); **1** = `{R,G,B,pad}` legacy MSB-first. |
+| `BPC` | 8 | Bits per component: 8, 10, 12, 14, or 16. |
+| `PIXELS_PER_CLOCK` | 1 | Pixels per AXI-Stream beat (1/2/4/8). See [Multi-pixel-per-clock](#multi-pixel-per-clock). |
+| `PIX_TDATA_WIDTH` / `C_AXIS_TDATA_WIDTH` | (auto) | **Derived** — don't override. Per-pixel and full-beat `tdata` widths. |
 
-**Multi-pixel-per-clock (`PIXELS_PER_CLOCK` > 1)**:
-At `PIXELS_PER_CLOCK` of 2/4/8, **every** pattern produces beat-exact output
-— SOLID, GRID, CHECKER, COLORBAR, HGRAD, VGRAD, RAMP, NOISE, IMAGE — plus the
-moving-box overlay (fill, border, and box-image). All output modes (RGB /
-RAW-Bayer / YUV 4:4:4 / YUV 4:2:2) and all bit depths are supported at every
-PPC. `IMG_WIDTH` is clamped down to a multiple of `PIXELS_PER_CLOCK`. Only an
-illegal `PIXELS_PER_CLOCK` (not 1/2/4/8) fails elaboration. The value is
-mirrored read-only at register offset `0x30` so software can discover it.
+### Using `vtpgz_core` (port-driven)
 
-Implementation notes:
-- The `PIXELS_PER_CLOCK=1` build is byte-identical to prior releases (the
-  per-lane logic is generate-gated behind `PPC>1`).
-- NOISE uses a leap-ahead LFSR (the feedback is unrolled `PIXELS_PER_CLOCK`
-  times so each lane gets consecutive states and the base register jumps
-  ahead one beat).
-- IMAGE / BOX_IMAGE replicate their source memory once per lane and read it
-  combinationally, so keep `IMAGE_W`/`IMAGE_H` (and `BOX_IMAGE_W/H`) modest at
-  high PPC — total image storage scales with `PIXELS_PER_CLOCK`. The `PPC>1`
-  image read is shift-free (matches the reference model); the `PPC=1` path
-  keeps its registered BRAM read and the pre-existing uniform 1-px shift.
+`vtpgz_core` exposes the configuration fields as plain input ports — the
+`cfg_*` ports mirror the writable AXI-Lite register fields (`cfg_enable`,
+`cfg_img_width`, `cfg_img_height`, `cfg_pattern`, `cfg_solid_color`,
+`cfg_box_*`, `cfg_grid_*`, `cfg_checker_size`, `cfg_frame_rate_div`,
+`cfg_bar_width`, `cfg_hg_step`, `cfg_vg_step`, …). Status outputs `sts_busy`
+and `sts_frame_count[7:0]` are also exposed.
 
-**Output mode notes**:
-- `OUTPUT_MODE=0` (RGB) outputs 3-component RGB packed as
-  `{ pad, B, G, R }` (or `{R, G, B, pad}` with `RGB_ORDER=1`).
-- `OUTPUT_MODE=1` (RAW) outputs 1 component per pixel:
-  - `RAW_BAYER=0` → plain monochrome (G channel from each rendered pixel)
-  - `RAW_BAYER=1` → **RGGB** Bayer mosaic — `row0:[R,G] row1:[G,B]`
-  - `RAW_BAYER=2` → **BGGR** Bayer mosaic — `row0:[B,G] row1:[G,R]`
-  - `RAW_BAYER=3` → **GRBG** Bayer mosaic — `row0:[G,R] row1:[B,G]`
-  - `RAW_BAYER=4` → **GBRG** Bayer mosaic — `row0:[G,B] row1:[R,G]`
-  - All five RAW variants are useful as image-sensor emulators; pick
-    whichever Bayer tile matches the sensor you're emulating. **This
-    is the smallest configuration**: ~50 LUT smaller than RGB.
-- `OUTPUT_MODE=2` (YUV) emits BT.601-style YCbCr **directly** from the
-  pattern generators — no runtime color-space conversion of any kind.
-  Each pattern has a native YUV variant: the colorbar uses a
-  precomputed BT.601 YUV palette, and grayscale-style patterns
-  (gradients/ramp/noise/checker/grid) put their value in the Y component
-  and hold Cb=Cr=0x800 (neutral chroma). Solid/box/grid color
-  *registers* are interpreted by the host as `{Y,Cb,Cr}` triples in YUV
-  builds.
-  - `YUV_SUBSAMPLE=0` → 4:4:4 (3 components per beat: `{V, U, Y}`)
-  - `YUV_SUBSAMPLE=1` → 4:2:2 (2 components per beat: `{C, Y}`, `C`
-    alternates Cb on even-x pixels and Cr on odd-x)
-
-A pattern that is stripped at build time still has its `PATTERN_SEL`
-slot in the runtime register, but selecting it at runtime produces a
-black frame. **At least one pattern** must remain enabled or the design
-has no valid pattern source. The `COLOR_FORMAT` register at offset 0x18
-is **read-only** and reflects the build-time configuration so software
-can probe it.
-
-### Embedded image (`EN_IMAGE`, `PATTERN_SEL=9`)
-
-Bakes a 24-bit RGB888 image into inferred block RAM at synthesis time
-and draws it **once per frame, centred in the active region** with
-black padding around it. `IMAGE_W` / `IMAGE_H` must be powers of two so
-the BRAM index field is a low-bit slice of the source coordinates.
-`IMAGE_OUT_W` / `IMAGE_OUT_H` can be any positive integer; when they
-differ from `IMAGE_W` / `IMAGE_H`, a per-axis Q16 accumulator does
-**nearest-neighbour scaling** between source and output (no multiplier
-runtime, no divider — the step is computed at elaboration and added
-each pixel). Storage scales as `IMAGE_W × IMAGE_H × 24 bits`: 128×128
-≈ 393 kbit ≈ a dozen BRAM36 tiles (post-pack); 64×64 fits comfortably
-in 3–4 tiles. Scaling adds two ~20-bit accumulators + adders (~80 LUTs
-/ 50 FFs) and no extra BRAM. The 8-bit-per-component source is
-upsampled to the 12-bit internal pipeline by MSB replication
-(`0xFF → 0xFFF`, `0x00 → 0x000`).
-
-Convert any PNG / JPG into a `$readmemh`-compatible hex file with the
-bundled script:
-
-```sh
-# Bring in the canonical 512×512 mandrill ("baboon.png"), downscale to
-# 128×128, and write the .mem the RTL expects by default.
-python scripts/image_to_hex.py --fetch-mandrill --width 128 --height 128 \
-    --out tests/images/mandrill_128x128.mem
-
-# Or convert a local image
-python scripts/image_to_hex.py myphoto.png --width 64 --height 64 \
-    --out tests/images/myphoto_64x64.mem
-```
-
-### Image-in-box overlay (`EN_BOX_IMAGE=1`)
-
-A second BRAM holds a small image that's painted inside the bouncing
-box instead of `cfg_box_color`. The scaler is the same Q16
-nearest-neighbour accumulator as the IMAGE pattern, but the source
-rectangle is the box, so the host has to update two runtime registers
-(`BOX_IMG_X_STEP`, `BOX_IMG_Y_STEP`) whenever it changes `BOX_SIZE` —
-same flow it already uses for `HG_STEP`, `VG_STEP`, `BAR_WIDTH`.
-Default `BOX_IMAGE_W` / `BOX_IMAGE_H` = 32 picks up ~1 BRAM36 with the
-24-bit-in-36-bit-tile packing; bump to 64×32 (~1 BRAM36 still) or
-64×64 (~3 BRAM36) if you want more detail. The border ring still draws
-on top, so a small `BOX_BORDER` value frames the embedded image.
-
-To enable in a build, pass `EN_IMAGE=1` (and override
-`IMAGE_W`/`IMAGE_H`/`IMAGE_HEX_FILE` if not using the defaults):
-
-```verilog
-vtpgz_axilite_top #(
-    .EN_IMAGE      (1),
-    .IMAGE_W       (128),
-    .IMAGE_H       (128),
-    .IMAGE_HEX_FILE("tests/images/mandrill_128x128.mem"),
-    /* … other params … */
-) u_vtpgz ( /* … */ );
-```
-
-At runtime, write `PATTERN_SEL = 9` to display it. If `EN_IMAGE=0` the
-generator is stripped at elaboration; selecting pattern 9 at runtime
-then produces a black frame (same convention as every other stripped
-pattern).
-
-### Using `vtpgz_core` (port-driven, no AXI slave)
-
-`vtpgz_core` exposes the configuration fields as plain input ports — one
-per AXI-Lite register field. There is no register file inside the
-core, so a `vtpgz_core`-only build pulls in `rtl/vtpgz_defs.vh` and
-`rtl/vtpgz_core.v` and nothing else.
-
-The 18 cfg_* ports are the same fields that `vtpgz_axil_regs` would
-drive: `cfg_enable`, `cfg_sw_fsync`, `cfg_ext_sync`, `cfg_img_width`,
-`cfg_img_height`, `cfg_pattern`, `cfg_solid_color`, `cfg_box_color`,
-`cfg_box_width`, `cfg_box_height`, `cfg_box_dx`, `cfg_box_dy`,
-`cfg_grid_spacing`, `cfg_grid_color`, `cfg_checker_size`,
-`cfg_frame_rate_div`, `cfg_bar_width`, `cfg_hg_step`, `cfg_vg_step`.
-Status outputs `sts_busy` (1 bit) and `sts_frame_count[7:0]` are also
-exposed.
-
-A typical fully-static instantiation — a 1920×1080 SMPTE colorbar
-generator with no CPU in sight, free-running at 60 fps from a
-130 MHz clock — looks like this:
+A typical fully-static instantiation — a 1920×1080 SMPTE colorbar generator
+with no CPU in sight, free-running at 60 fps from a 130 MHz clock:
 
 ```verilog
 vtpgz_core #(
@@ -471,18 +187,17 @@ vtpgz_core #(
     .aresetn       (aresetn),
 
     // Static configuration -- tie everything to its compile-time value.
-    // The synth tool constant-folds disabled patterns, comparators, and
-    // unused color slots out of the netlist.
+    // The synth tool constant-folds disabled patterns and unused slots out.
     .cfg_enable        (1'b1),                  // run forever
     .cfg_sw_fsync      (1'b0),
     .cfg_ext_sync      (1'b0),                  // use internal frame sync
     .cfg_img_width     (16'd1920),
     .cfg_img_height    (16'd1080),
     .cfg_pattern       (4'd0),                  // colorbar
-    .cfg_solid_color   (24'h000000),            // unused
-    .cfg_box_color     (24'h000000),            // unused
-    .cfg_box_width     (16'd0),                 // unused
-    .cfg_box_height    (16'd0),                 // unused
+    .cfg_solid_color   (24'h000000),
+    .cfg_box_color     (24'h000000),
+    .cfg_box_width     (16'd0),
+    .cfg_box_height    (16'd0),
     .cfg_box_dx        (16'd0),
     .cfg_box_dy        (16'd0),
     .cfg_grid_spacing  (16'd0),
@@ -509,133 +224,66 @@ vtpgz_core #(
 );
 ```
 
-If you'd rather drive cfg_* from your own RTL (e.g., from a small FSM
-that swaps patterns once per second, or from a sideband bus that isn't
-AXI-Lite), just connect those signals to your own logic instead of
-constants. Behavior is identical to a register write to the AXI-Lite
-flavor.
+To drive `cfg_*` from your own RTL instead (an FSM that swaps patterns, a
+sideband bus, etc.), just connect those signals to your logic instead of
+constants — behavior is identical to a register write on the AXI-Lite flavor.
+For the host-precomputed step values, use the same numbers as the
+[Programming sequence](#programming-sequence) below.
 
-For host-precomputed register values that the AXI-Lite flavor
-initialises automatically, see the **Programming sequence** section
-below — those are the same numbers you tie to the cfg_* ports.
+#### Driving the AXI-Stream output
 
-#### Driving `vtpgz_core` (waveform)
-
-The core is **synchronous** to a single clock `aclk`, uses synchronous
-reset on `aresetn` (active-low), and emits video on a standard AXI4-
-Stream master with `tvalid` / `tready` / `tlast` (end-of-line) /
-`tuser` (start-of-frame). Required signal handling:
-
-1. Hold `aresetn` low for **≥ 1 `aclk` cycle**, then release.
-2. Drive `cfg_*` to stable values (or wire them to constants for a
-   static build). Most importantly `cfg_img_width`, `cfg_img_height`,
-   `cfg_pattern`, the host-precomputed step values
-   (`cfg_bar_width`, `cfg_hg_step`, `cfg_vg_step` — see the
-   **Programming sequence** section below for the formulas), and
-   `cfg_frame_rate_div`.
-3. Assert `cfg_enable = 1`. Until `cfg_enable` goes high the timing
-   engine is idle and the AXI-Stream output stays at `tvalid = 0`.
-4. Pick a frame-sync source:
-    - **Internal sync** (default): leave `cfg_ext_sync = 0`. The core
-      asserts an internal one-cycle pulse every `cfg_frame_rate_div`
-      clocks while `cfg_enable` is high; each pulse starts a new
-      frame.
-    - **External sync**: set `cfg_ext_sync = 1` and drive
-      `frame_sync_in` from any vsync-style signal. The core does
-      **rising-edge detection** on `frame_sync_in`.
-    - **Software one-shot**: pulse `cfg_sw_fsync = 1` for one cycle
-      to force a single frame start.
-5. Pull `m_axis_tready` high to consume the stream. If your sink is
-   not always ready, just toggle `tready` whenever you can accept a
-   beat — the core will stall the pipeline cleanly and resume
-   without losing or duplicating any pixel.
-
-The handshake is plain AXI-Stream: a beat completes only when
-`tvalid && tready` are both high on a rising edge of `aclk`. `tuser`
-(SOF) is asserted only on the first beat of each frame; `tlast`
-(EOL) is asserted on the last beat of every line.
+The core is **synchronous** to a single clock `aclk` with synchronous
+active-low reset `aresetn`, and emits video on a standard AXI4-Stream master
+(`tvalid` / `tready` / `tlast` = end-of-line / `tuser` = start-of-frame). To
+bring it up: hold `aresetn` low ≥1 cycle then release, drive `cfg_*` to
+stable values, assert `cfg_enable`, pick a frame-sync source (see
+[External frame sync](#external-frame-sync)), and pull `m_axis_tready` high to
+consume the stream.
 
 ![vtpgz_core AXI-Stream output: reset -> first frame, with backpressure stall](docs/img/tdata_stream.svg)
 
-Source: [docs/wavedrom/tdata_stream.json5](docs/wavedrom/tdata_stream.json5).
-Regenerate after editing with `python scripts/regen_wavedrom.py`
-(requires `wavedrom-cli` on PATH: `npm i -g wavedrom-cli`).
+Source: [docs/wavedrom/tdata_stream.json5](docs/wavedrom/tdata_stream.json5)
+(regenerate with `python scripts/regen_wavedrom.py`). `Pxy` = pixel at column
+x, row y; `PNL` = last beat of the line (`tlast=1`). In the window above
+P00..P30 are consumed cleanly, then the sink drops `tready` for two clocks
+while the core holds `tvalid=1` and the same `P30` on `tdata`; the next beat
+advances as soon as `tready` rises again.
 
-Legend: `Pxy` = pixel at column x, row y. `PNL` = last beat of the
-line (`tlast=1`). `frame_start*` is an internal node, shown for
-illustration only — it's the OR of `cfg_sw_fsync`, the internal-sync
-pulse, and the rising-edge of `frame_sync_in` (gated by
-`cfg_ext_sync`). You don't need to drive or observe it.
+Key behaviors:
 
-A beat **completes** only on a rising edge of `aclk` where both
-`tvalid && tready` are high. In the window above, P00..P30 are
-consumed cleanly (cycles 16..19), then the sink drops `tready` for
-two clocks while the core holds `tvalid=1` and the same `P30` value
-on `tdata`. As soon as `tready` rises again, the next beat (`P40`)
-advances on the very next edge.
-
-Notes:
-
-- **Latency from sync to first beat is 2 clocks**: when `frame_start`
-  asserts, the timing engine moves to ACTIVE on the next edge, then
-  the pre-mux and post-mux pixel pipeline stages advance together
-  before the AXI output register presents the first beat. `tuser`,
-  `tlast`, and `tdata` are delayed together, so the stream-visible
-  frame contents are unchanged.
-- **No blanking intervals**: the core streams the active picture only.
-  `tuser` is asserted on the first beat of each frame, `tlast` on the
-  last beat of each line, and everything in between flows back-to-back.
-  Inter-line and inter-frame timing should be handled by a downstream
-  video-timing block (or a simple throttle FSM) by holding `tready` low
-  for the right number of clocks during HBLANK / VBLANK.
-- **Backpressure** is honoured cycle-by-cycle. When `tvalid && !tready`
-  on any beat, all internal pipeline stages stall in place; nothing
-  is dropped or repeated.
-- **Ignored mid-frame syncs**: a `frame_start` pulse that arrives
-  while a frame is still in flight (`active = 1`) is **dropped**, not
-  queued. This is the right behavior for a free-running vsync — if
-  the sink is too slow to consume the current frame, the next vsync
-  is skipped instead of frames piling up.
-- **Reset clears state**: `aresetn = 0` clears the timing engine,
-  the AXI output register, and all pattern state. After release,
-  the first frame after `cfg_enable` rises uses fresh
-  pattern-counter state (this is the BUG-07 fix in [no_commit/BUGS.md] —
-  see the multi-capture sequential gate `python sim/run_sim.py
-  check_seq` for how it's tested).
+- **Latency from sync to first beat is 2 clocks.** `tuser`, `tlast`, and
+  `tdata` are delayed together, so stream-visible frame contents are unchanged.
+- **No blanking intervals** — the core streams the active picture only.
+  Handle HBLANK/VBLANK downstream by holding `tready` low, or with a
+  video-timing block.
+- **Backpressure is honoured cycle-by-cycle.** On `tvalid && !tready` all
+  pipeline stages stall in place; nothing is dropped or repeated.
+- **Mid-frame syncs are dropped, not queued** — a `frame_start` while a frame
+  is in flight is ignored (correct for a free-running vsync).
+- **Reset clears all state**, so the first frame after `cfg_enable` rises uses
+  fresh pattern-counter state.
 
 ### Using `vtpgz_axilite_top` (AXI4-Lite controlled)
 
-`vtpgz_axilite_top` is a thin wrapper that instantiates
-`vtpgz_axil_regs` and a `vtpgz_core` instance back-to-back. Its public
-interface is an AXI4-Lite slave for control plus the same AXI4-Stream
-master for video out. Drop it in, wire your AXI4-Lite master, and use
-the **Programming sequence** below to configure it from software.
+`vtpgz_axilite_top` instantiates `vtpgz_axil_regs` and a `vtpgz_core`
+back-to-back. Its public interface is an AXI4-Lite slave for control plus the
+same AXI4-Stream master for video. Wire your AXI4-Lite master and use the
+[Programming sequence](#programming-sequence) to configure it.
 
 ```verilog
 vtpgz_axilite_top #(
     .C_S_AXI_ADDR_WIDTH (8),
     .C_S_AXI_DATA_WIDTH (32),
-    // Strip unused patterns to save area
-    .EN_COLORBAR   (1),
-    .EN_HGRAD      (1),
-    .EN_VGRAD      (1),
-    .EN_CHECKER    (1),
-    .EN_SOLID      (1),
-    .EN_MOVING_BOX (1),
-    .EN_GRID       (1),
-    .EN_RAMP       (1),
-    .EN_NOISE      (1),
-    // Output mode (build-time)
+    // Per-pattern EN_* default to 1; strip unused ones to save area
     .OUTPUT_MODE   (0),  // 0=RGB 1=RAW 2=YUV
     .YUV_SUBSAMPLE (0),  // 0=444 1=422 (only for OUTPUT_MODE=2)
     .RAW_BAYER     (1),  // 0=PLAIN 1=RGGB 2=BGGR 3=GRBG 4=GBRG (only for OUTPUT_MODE=1)
     .RGB_ORDER     (0),  // 0=Xilinx 1=legacy
-    .BPC           (8)   // 8, 10, 12, 14, or 16
+    .BPC           (8)   // 8/10/12/14/16
     // C_AXIS_TDATA_WIDTH is auto-derived; don't override
 ) u_vtpgz (
-    .aclk          (aclk),
-    .aresetn       (aresetn),
-    // AXI4-Lite slave (control)
+    .aclk (aclk), .aresetn (aresetn),
+    // AXI4-Lite slave (control) — standard channels: aw/w/b/ar/r
     .s_axi_awaddr (axi_awaddr), .s_axi_awprot (axi_awprot),
     .s_axi_awvalid(axi_awvalid),.s_axi_awready(axi_awready),
     .s_axi_wdata  (axi_wdata),  .s_axi_wstrb (axi_wstrb),
@@ -646,28 +294,20 @@ vtpgz_axilite_top #(
     .s_axi_arvalid(axi_arvalid),.s_axi_arready(axi_arready),
     .s_axi_rdata  (axi_rdata),  .s_axi_rresp (axi_rresp),
     .s_axi_rvalid (axi_rvalid), .s_axi_rready(axi_rready),
-    // AXI4-Stream master (video). The width is auto-derived from
-    // OUTPUT_MODE/BPC. Use vtpgz_axilite_top's C_AXIS_TDATA_WIDTH parameter to
-    // size the connecting net (or read VTPGZ_REG_COLOR_FORMAT[31:16]
-    // from software at runtime).
-    .m_axis_tdata  (vid_tdata),
-    .m_axis_tvalid (vid_tvalid),
-    .m_axis_tready (vid_tready),
-    .m_axis_tlast  (vid_tlast),    // end-of-line
-    .m_axis_tuser  (vid_tsof),     // start-of-frame (1 bit)
+    // AXI4-Stream master (video). Width auto-derived from OUTPUT_MODE/BPC;
+    // read it at runtime from COLOR_FORMAT[31:16] if needed.
+    .m_axis_tdata (vid_tdata),  .m_axis_tvalid(vid_tvalid),
+    .m_axis_tready(vid_tready), .m_axis_tlast (vid_tlast),  // end-of-line
+    .m_axis_tuser (vid_tsof),                               // start-of-frame (1 bit)
     // External frame sync (used when CONTROL[2]=1)
     .frame_sync_in (ext_fsync)
 );
 ```
 
-The core has **one** clock domain (`aclk`). All AXI, all pattern logic
-and the video output are clocked by it. If your video sink runs on a
-different clock you must put an asynchronous AXI4-Stream FIFO on the
-output (any standard CDC FIFO will do).
-
-`m_axis_tuser` is **1 bit wide**: it asserts on the first beat of each
-frame. This matches the Xilinx convention used by `axis_subset_converter`,
-`v_axi4s_remap`, `v_tc`, etc.
+The core has **one** clock domain (`aclk`) — AXI, pattern logic, and video
+output are all clocked by it. If your video sink runs on a different clock,
+put an asynchronous AXI4-Stream FIFO on the output. `m_axis_tuser` is 1 bit
+(asserts on the first beat of each frame), matching the Xilinx convention.
 
 ### Programming sequence
 
@@ -675,177 +315,124 @@ frame. This matches the Xilinx convention used by `axis_subset_converter`,
 2. Write `IMG_WIDTH`, `IMG_HEIGHT` to the desired resolution.
 3. Write the host-precomputed step values (these replace per-pixel dividers
    with cheap accumulators in hardware):
-   - `BAR_WIDTH   = IMG_WIDTH / 8`              (colorbar bar width)
-   - `HG_STEP     = 0xFFF / (IMG_WIDTH  - 1)`   (horizontal gradient step)
-   - `VG_STEP     = 0xFFF / (IMG_HEIGHT - 1)`   (vertical gradient step)
+   - `BAR_WIDTH = IMG_WIDTH / 8`              (colorbar bar width)
+   - `HG_STEP   = 0xFFF / (IMG_WIDTH  - 1)`   (horizontal gradient step)
+   - `VG_STEP   = 0xFFF / (IMG_HEIGHT - 1)`   (vertical gradient step)
 4. Write `PATTERN_SEL` (0=colorbar, 1..4=gradients/checker/solid, 6=grid,
-   7=ramp, 8=noise). The bouncing box overlays on top of whatever pattern
-   is selected — configure it with `BOX_COLOR`, `BOX_SIZE`, `BOX_SPEED`.
-   Write `COLOR_FORMAT`
-   (`{bpp[3:0], fmt[3:0]}`).
+   7=ramp, 8=noise, 9=image). The bouncing box overlays whatever pattern is
+   selected.
 5. Optional pattern parameters: `SOLID_COLOR`, `BOX_COLOR`/`BOX_SIZE`/
-   `BOX_SPEED`, `GRID_SPACING`/`GRID_COLOR`, `CHECKER_SIZE`.
-6. For internal sync mode (`CONTROL[2]=0`): write `FRAME_RATE_DIV` to set
-   the clock-divider for the frame rate (one frame every N `aclk`s).
+   `BOX_SPEED`/`BOX_BORDER`, `GRID_SPACING`/`GRID_COLOR`, `CHECKER_SIZE`.
+6. For internal sync mode (`CONTROL[2]=0`): write `FRAME_RATE_DIV` (one frame
+   every N `aclk`s).
 7. Write `CONTROL = 0x1` (enable). The core starts streaming.
 
 To change configuration, write `CONTROL = 0` first, wait for the in-flight
-frame to drain, then reprogram and re-enable.
+frame to drain, then reprogram and re-enable. (`COLOR_FORMAT` is read-only —
+it mirrors the build-time configuration; you never write it.)
 
 ### External frame sync
 
-Drive `frame_sync_in` with any pulse-style signal that marks the start of
-a frame and set `CONTROL[2] = 1` (`ext_sync` mode). The core does
-**rising-edge detection** internally so it accepts:
+Drive `frame_sync_in` with any pulse-style signal that marks the start of a
+frame and set `CONTROL[2] = 1` (`ext_sync` mode). The core does
+**rising-edge detection** internally, so it accepts 1-clock pulses,
+multi-clock pulses (including signals held high — only the edge counts), and
+free-running periodic vsync at any rate slower than the frame emission time.
+This is **directly compatible with Xilinx VTC's `vsync_out`**.
 
-- 1-clock pulses
-- Multi-clock pulses (including signals held high indefinitely — only the
-  rising edge counts)
-- Free-running periodic vsync at any rate slower than the frame emission
-  time
+A rising edge that arrives while a frame is still in flight is **dropped**
+(not queued) — correct for a free-running vsync. For latched-pending
+behavior, add your own pending-bit FF before `frame_sync_in`.
 
-This is **directly compatible with Xilinx VTC's `vsync_out`** (and any
-other timing generator that produces a vsync pulse): just wire it in. The
-test in `sim/sim_main.cpp` Phase 5 verifies all four cases (1-cycle pulse,
-wide pulse, mid-frame pulse correctly ignored, periodic vsync).
+### Multi-pixel-per-clock
 
-If a `frame_sync_in` rising edge arrives **while a frame is still in
-flight**, it is **dropped** (not queued). This is the desired behavior for
-a free-running vsync — if the downstream sink is too slow to consume the
-current frame, the next vsync gets dropped instead of letting frames pile
-up. If you need a different behavior (e.g., latched pending), instantiate
-your own pending-bit FF before `frame_sync_in`.
+At `PIXELS_PER_CLOCK` of 2/4/8, that many horizontally-adjacent pixels are
+packed into one wider beat (lane 0 = leftmost pixel in the `tdata` LSBs),
+multiplying line bandwidth. **Every** pattern and the moving-box overlay
+(fill, border, box-image) produce beat-exact output, across all output modes
+(RGB / RAW-Bayer / YUV 4:4:4 / YUV 4:2:2) and all bit depths. `IMG_WIDTH` is
+clamped **down** to a multiple of `PIXELS_PER_CLOCK`. Only an illegal value
+(not 1/2/4/8) fails elaboration; the active value is mirrored read-only at
+register `0x30` so software can discover it.
+
+The `PIXELS_PER_CLOCK=1` build is byte-identical to prior releases (the
+per-lane logic is generate-gated behind `PPC>1`). NOISE uses a leap-ahead
+LFSR so each lane gets consecutive states. IMAGE / BOX_IMAGE replicate their
+source memory per lane — see [Image patterns](#image-patterns).
+
+### Output modes
+
+- **RGB** (`OUTPUT_MODE=0`) — 3-component RGB packed as `{pad,B,G,R}` (or
+  `{R,G,B,pad}` with `RGB_ORDER=1`).
+- **RAW** (`OUTPUT_MODE=1`) — 1 component per pixel. `RAW_BAYER=0` is plain
+  monochrome (G channel); `1..4` are the RGGB / BGGR / GRBG / GBRG Bayer
+  mosaics (standard row-major naming). The smallest configuration (~50 LUT
+  smaller than RGB), useful as an image-sensor emulator.
+- **YUV** (`OUTPUT_MODE=2`) — BT.601-style YCbCr emitted **directly** from the
+  pattern generators, no runtime color-space conversion. The colorbar uses a
+  precomputed BT.601 palette; grayscale-style patterns put their value in Y
+  and hold Cb=Cr=0x800 (neutral chroma). Color *registers* are interpreted as
+  `{Y,Cb,Cr}` triples in YUV builds. `YUV_SUBSAMPLE=0` → 4:4:4 (`{V,U,Y}`);
+  `=1` → 4:2:2 (`{C,Y}`, C alternates Cb on even-x and Cr on odd-x).
+
+A pattern stripped at build time still has its `PATTERN_SEL` slot, but
+selecting it at runtime produces a black frame. At least one pattern must
+remain enabled.
+
+### Image patterns
+
+`EN_IMAGE` bakes a 24-bit RGB888 image into inferred BRAM and draws it as
+`PATTERN_SEL=9`, centred with black padding and hardware nearest-neighbour
+scaling. `EN_BOX_IMAGE` paints a second embedded image inside the moving box.
+Both are stripped (no BRAM cost) when disabled. Full details — parameters,
+scaler internals, BRAM sizing, and the PNG/JPG → `.mem` conversion script —
+are in **[docs/images.md](docs/images.md)**.
+
+
+[↑ back to top](#index)
+
+## How to test it
+
+All simulation is driven by one Python script (no Makefile):
+
+```sh
+python sim/run_sim.py regression   # lint + build + run + 100% coverage + model gate
+python sim/run_sim.py all_modes    # byte-exact sim↔model gate across every mode/BPC
+python sim/cocotb/run_ppc.py       # beat-exact pixels-per-clock data path (1/2/4/8)
+```
+
+There is also an Icarus smoke test, a cocotb control-plane suite, and a full
+hardware regression on the Arty A7-100T (108 pattern×format×bpp combinations,
+byte-exact vs the Python model, verified on silicon). Setup, expected output,
+the 7-phase coverage harness, and the hardware flow are documented in
+**[docs/testing.md](docs/testing.md)**.
 
 
 [↑ back to top](#index)
 
 ## FPGA resource usage and frequency
 
-### Measured on Arty A7-100T
+Measured on the full Arty A7-100T demo (Vivado 2025.2, default strategies):
 
 | Metric | Value |
 |---|---|
 | Target | Digilent Arty A7-100T (XC7A100TCSG324-1, speed grade -1) |
-| Tool | Vivado 2025.2, default synth + impl strategies |
-| Clock | 130 MHz (sourced from on-board 100 MHz osc via MMCM, mult 13/2 div 5) |
+| Clock | 130 MHz (on-board 100 MHz osc via MMCM) |
 | WNS | +0.333 ns (timing met, 0 failing endpoints) |
 | LUTs | 2070 / 63400 = 3.26% |
 | FFs | 2457 / 126800 = 1.94% |
-| BRAM36 | 6 / 135 = 4.44% (8 KB capture buffer; fcapz async FIFOs in LUTRAM) |
-| Hardware test | **108/108 byte-exact** vs Python model (`hw/arty_a7_100t/python/run_hw_test.py`) |
+| BRAM36 | 6 / 135 = 4.44% |
+| Hardware test | **108/108 byte-exact** vs Python model |
 
-The numbers above include the full demo wrapper: `vtpgz_axilite_top` +
-`frame_capture` + the fpgacapZero `fcapz_ejtagaxi_xilinx7` JTAG-to-AXI
-bridge + a 32 KB on-chip BRAM frame buffer + clk_gen MMCM. The vtpgZero
-core itself (`rtl/vtpgz_core.v` + AXI-Lite wrapper) is the largest single
-block; see the standalone out-of-context synth numbers in the resource
-matrix below (note those are OOC synth, whereas this row is full-design
-post-implementation, so the two aren't directly comparable).
+That row includes the whole demo (core + `frame_capture` + fpgacapZero
+JTAG-AXI bridge + BRAM frame buffer + MMCM). Standalone, the all-patterns
+`vtpgz_axilite_top` is ~**1270 LUT / 1212 FF** (RGB-8b, OOC synth, no BRAM),
+and pixels-per-clock scales strongly sub-linearly — 8× throughput for only
+**+56% LUT / +36% FF**. The smallest build (1 pattern, RAW-8b) is ~534 LUT.
 
-### Resource matrix per build-time configuration
-
-Standalone `vtpgz_axilite_top` (no demo wrapper, no frame_capture, no JTAG-AXI
-bridge, no MMCM), synthesized out-of-context against `xc7a100tcsg324-1`
-with Vivado 2025.2's default `synth_design` flow. Reproducible with
-`python synth/run_matrix.py`.
-
-#### All-patterns build, sweep over output mode and BPC
-
-| Config | LUT | FF | BRAM36 |
-|---|---:|---:|---:|
-| `full_rgb_8b`     | 1270 | 1212 | 0 |
-| `full_rgb_10b`    | 1270 | 1218 | 0 |
-| `full_rgb_12b`    | 1270 | 1224 | 0 |
-| `full_rgb_14b`    | 1270 | 1224 | 0 |
-| `full_rgb_16b`    | 1270 | 1224 | 0 |
-| `full_raw_8b`     | 1278 | 1200 | 0 |
-| `full_raw_10b`    | 1280 | 1202 | 0 |
-| `full_raw_12b`    | 1282 | 1204 | 0 |
-| `full_raw_14b`    | 1282 | 1204 | 0 |
-| `full_raw_16b`    | 1282 | 1204 | 0 |
-| `full_yuv_8b`     | 1232 | 1210 | 0 |
-| `full_yuv_10b`    | 1236 | 1216 | 0 |
-| `full_yuv_12b`    | 1236 | 1222 | 0 |
-| `full_yuv_14b`    | 1236 | 1222 | 0 |
-| `full_yuv_16b`    | 1232 | 1222 | 0 |
-| `full_yuv422_16b` | 1245 | 1212 | 0 |
-
-The YUV path produces `{Y,Cb,Cr}` directly from the pattern generators
-(precomputed BT.601 palette for the colorbar, neutral chroma for
-grayscale-style patterns), so the output stage is just bit-shrink +
-reorder in every mode. YUV 444 is roughly the same size as RGB at the
-same BPC; the old RAW Bayer mux savings are offset by the extra
-YUV logic added in recent revisions.
-
-#### Pattern deltas (`OUTPUT_MODE=YUV` baseline)
-
-| Config | LUT | FF |
-|---|---:|---:|
-| `baseline_solid_yuv`  |  526 |  926 |
-| `only_colorbar_yuv`   |  549 |  955 |
-| `only_hgrad_yuv`      |  548 |  951 |
-| `only_vgrad_yuv`      |  558 |  951 |
-| `only_checker_yuv`    |  564 |  962 |
-| `only_moving_box_yuv` | 1054 | 1059 |
-| `only_grid_yuv`       |  569 |  959 |
-| `only_ramp_yuv`       |  548 |  951 |
-| `only_noise_yuv`      |  531 |  947 |
-
-Per-feature deltas relative to `baseline_solid_yuv` (526 LUT / 926 FF):
-
-| Feature | ΔLUT | ΔFF |
-|---|---:|---:|
-| `EN_COLORBAR`   |  +23 | +29 |
-| `EN_HGRAD`      |  +22 | +25 |
-| `EN_VGRAD`      |  +32 | +25 |
-| `EN_CHECKER`    |  +38 | +36 |
-| `EN_MOVING_BOX` | **+528** | +133 |
-| `EN_GRID`       |  +43 | +33 |
-| `EN_RAMP`       |  +22 | +25 |
-| `EN_NOISE`      |   +5 | +21 |
-
-`EN_MOVING_BOX` is by far the most expensive feature (the bouncing
-position arithmetic and per-pixel range comparators for the overlay). `EN_NOISE` is
-the cheapest. There are no multiplies anywhere in the design.
-
-#### Tiniest possible build
-
-| Config | LUT | FF |
-|---|---:|---:|
-| `tiny_raw_8b` (only EN_SOLID, OUTPUT_MODE=RAW, BPC=8) | **534** | 914 |
-
-This is the absolute minimum: 1 pattern, RAW Bayer 8 bpc.
-~534 LUTs total. Useful as an image-sensor-emulator for camera/ISP
-bring-up where you only need a controllable raw stream.
-
-#### Pixels-per-clock sweep
-
-All-patterns RGB-8b build swept over `PIXELS_PER_CLOCK` (the `ppc1` row is
-the same build as `full_rgb_8b` above). Mode/BPC/patterns are held fixed so
-the numbers isolate the cost of widening the per-lane datapath from 1 to N
-pixels per beat. Reproducible with `python synth/run_matrix.py ppc`.
-
-| Config | LUT | FF | beat width | vs `ppc1` |
-|---|---:|---:|---:|---|
-| `ppc1_full_rgb_8b` | 1270 | 1212 |  24b | — |
-| `ppc2_full_rgb_8b` | 1338 | 1288 |  48b | +5% LUT / +6% FF |
-| `ppc4_full_rgb_8b` | 1554 | 1406 |  96b | +22% LUT / +16% FF |
-| `ppc8_full_rgb_8b` | 1980 | 1644 | 192b | +56% LUT / +36% FF |
-
-Scaling is strongly sub-linear: 8× the per-clock pixel throughput costs only
-**+56% LUT / +36% FF**. The per-pixel packers and the single-step
-counter/accumulator chains replicate per lane, but the shared timing FSM,
-moving-box position arithmetic, and config registers do not. `PIXELS_PER_CLOCK=1`
-is the default and its netlist is unchanged from releases before the feature
-existed (verified: the pre-feature commit synthesizes to the identical
-1270 LUT / 1212 FF). There is no BRAM or DSP cost at any PPC in this build;
-the `EN_IMAGE` patterns would add BRAM that scales with PPC via replication.
-
-**Test conditions for the matrix above**: Vivado 2025.2, target
-`xc7a100tcsg324-1` -1 speed grade, `synth_design` default strategy,
-out-of-context mode. No timing constraints applied (so the synth tool
-is conservative). Place-and-route results are typically ~5% smaller
-after phys-opt and packing.
+The full per-configuration matrix — every mode/BPC, per-feature deltas, the
+PPC sweep, and the tiniest build — is in **[docs/resources.md](docs/resources.md)**.
+Reproduce with `python synth/run_matrix.py`.
 
 
 [↑ back to top](#index)
@@ -856,36 +443,23 @@ after phys-opt and packing.
 rtl/
   vtpgz_defs.vh         constants, register addresses, pattern/format codes
   vtpgz_axil_regs.v     AXI4-Lite slave + register file
-  vtpgz_core.v          port-driven core: timing engine, pattern generators
-                        (native per-mode color space), inline pack stage,
-                        AXIS output -- instantiate this directly if you
-                        want to drive cfg_* from your own RTL or hold them
-                        at constants
-  vtpgz_axilite_top.v   thin wrapper that ties vtpgz_axil_regs to
-                        vtpgz_core, exposing an AXI4-Lite slave for
-                        runtime control
-tb/
-  tb_vtpgz_axilite_top.v   Icarus Verilog smoke testbench
-sim/
-  sim_main.cpp       Verilator C++ testbench (7-phase, 100% coverage)
-  sim_capture.cpp    sim ↔ Python-model byte-exact gate
-  sim_capture_seq.cpp  multi-capture (sequential) sim ↔ model gate
-  sim_top.v          tpg + frame_capture wrapper for the seq harness
-  run_sim.py         Verilator orchestration (lint/build/run/cov/all_modes)
-  check_ppc_vs_model.py  iverilog ↔ model beat-exact PPC gate (all patterns)
-  tb_ppc_capture.v   iverilog PPC capture harness (port-driven core)
-  cocotb/            cocotb suites (run_cocotb.py control plane;
-                     run_ppc.py PPC data path vs model)
-synth/
-  synth_matrix.tcl   Vivado synth-only TCL for one config
-  run_matrix.py      driver: synth N parameter configs, build matrix CSV
-fcapz/               git submodule: upstream fpgacapZero RTL + host tools
+  vtpgz_core.v          port-driven core: timing engine, pattern generators,
+                        inline pack stage, AXIS output
+  vtpgz_axilite_top.v   thin wrapper: vtpgz_axil_regs + vtpgz_core
+tb/                     Icarus Verilog smoke testbench
+sim/                    Verilator/iverilog/cocotb harnesses + run_sim.py
+                        (see docs/testing.md)
+synth/                  Vivado OOC resource-matrix driver (run_matrix.py)
+docs/
+  testing.md            simulation + hardware regression detail
+  images.md             EN_IMAGE / EN_BOX_IMAGE detail
+  resources.md          full FPGA resource matrix
+  img/, wavedrom/       figures and their sources
+fcapz/                  git submodule: upstream fpgacapZero RTL + host tools
 hw/
-  arty_a7_100t/      Arty A7-100T reference design (vtpgz_axilite_top + frame_capture
-                     + fpgacapZero JTAG-AXI bridge + 130 MHz MMCM + Python host)
-  kv260/             KV260 DisplayPort reference design (vtpgZero -> DDR writer
-                     -> DPDMA graphics -> PS DisplayPort TX)
-LICENSE              Apache-2.0
+  arty_a7_100t/         Arty A7-100T reference design + Python host
+  kv260/                KV260 DisplayPort reference design
+LICENSE                 Apache-2.0
 ```
 
 
