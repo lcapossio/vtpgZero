@@ -4,6 +4,8 @@ A synthesizable Verilog-2001 video test pattern generator IP core. Outputs
 pixels over an AXI4-Stream master interface and is configured at runtime via
 an AXI4-Lite slave register interface.
 
+![vtpgZero output streamed live over Ethernet as MJPEG](docs/img/mjpeg_eth_demo.gif)
+
 ## Index
 
 - [What this project does](#what-this-project-does)
