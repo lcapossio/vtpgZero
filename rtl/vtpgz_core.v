@@ -606,41 +606,69 @@ module vtpgz_core #(
     // each time they reach cfg_checker_size. No divider, no modulo.
     generate if (EN_CHECKER) begin : g_checker
         wire [15:0] chk_size_eff = (cfg_checker_size == 16'h0) ? 16'h1 : cfg_checker_size;
-        reg [15:0] chk_x_cnt, chk_y_cnt;   // base = lane 0 state at pixel x
-        reg        chk_sel_x, chk_sel_y;
-        // Per-lane x-axis chain: lane 0 = base regs, lane l = one per-pixel
-        // "single-step" of lane l-1. cxc[NPPC]/cxs[NPPC] is the state after
-        // all NPPC lanes = the base for the next beat. At NPPC==1 this is a
-        // single step and collapses to the original recurrence exactly.
-        wire [15:0] cxc [0:NPPC] /* verilator split_var */;
-        wire        cxs [0:NPPC] /* verilator split_var */;
-        assign cxc[0] = chk_x_cnt;
-        assign cxs[0] = chk_sel_x;
+        // Down-counter + parallel thresholds (see g_colorbar): chk_left is
+        // the count of pixels left in the current cell including lane 0's
+        // pixel; lane l's select is the base select XORed with the parity of
+        // thresholds chk_left + m*size <= l. One adder from the state
+        // register per threshold, no per-lane chain.
+        reg  [15:0] chk_left;
+        reg         chk_sel_x, chk_sel_y;
+        reg  [15:0] chk_y_cnt;
+
+        wire [19:0] cwmul [0:NPPC] /* verilator split_var */;
+        assign cwmul[0] = 20'h0;
+        genvar km;
+        for (km = 1; km <= NPPC; km = km + 1) begin : g_chk_wmul
+            assign cwmul[km] = cwmul[km-1] + {4'h0, chk_size_eff};
+        end
+        wire [19:0] cthr [0:NPPC-1] /* verilator split_var */;
+        genvar kt;
+        for (kt = 0; kt < NPPC; kt = kt + 1) begin : g_chk_thr
+            assign cthr[kt] = {4'h0, chk_left} + cwmul[kt];
+        end
+        wire [NPPC-1:0] cwr_hit;
+        genvar kw;
+        for (kw = 0; kw < NPPC; kw = kw + 1) begin : g_chk_wrap
+            assign cwr_hit[kw] =
+                (cthr[kw][19:4] == 16'h0) && (cthr[kw][3:0] <= NPPC[3:0]);
+        end
+        integer kc;
+        reg [3:0] cwraps;
+        always @* begin
+            cwraps = 4'h0;
+            for (kc = 0; kc < NPPC; kc = kc + 1)
+                cwraps = cwraps + {3'h0, cwr_hit[kc]};
+        end
+
         genvar gl;
         for (gl = 0; gl < NPPC; gl = gl + 1) begin : g_chk_chain
-            wire wrap_l = (cxc[gl] + 16'h1 >= chk_size_eff);
-            assign cxc[gl+1] = wrap_l ? 16'h0        : (cxc[gl] + 16'h1);
-            assign cxs[gl+1] = wrap_l ? ~cxs[gl]     : cxs[gl];
-            // lane gl value uses cxs[gl] (state for pixel x+gl)
+            wire [NPPC-1:0] q_hit;
+            genvar kq;
+            for (kq = 0; kq < NPPC; kq = kq + 1) begin : g_chk_q
+                assign q_hit[kq] =
+                    (cthr[kq][19:3] == 17'h0) && (cthr[kq][2:0] <= gl[2:0]);
+            end
+            wire sel_l = chk_sel_x ^ (^q_hit);
             assign chk_v_bus[12*gl +: 12] =
-                (cxs[gl] ^ chk_sel_y) ? 12'hFFF : 12'h000;
+                (sel_l ^ chk_sel_y) ? 12'hFFF : 12'h000;
         end
+
+        wire [19:0] cwrap_add = cwmul[cwraps > NPPC[3:0] ? NPPC[3:0] : cwraps];
         always @(posedge aclk) begin
             if (!aresetn || frame_init) begin
-                chk_x_cnt <= 16'h0;
+                chk_left  <= chk_size_eff;
                 chk_y_cnt <= 16'h0;
                 chk_sel_x <= 1'b0;
                 chk_sel_y <= 1'b0;
             end else if (source_advance) begin
                 // X axis -- anchor reset on last_x of the previous line
-                // (same reasoning as colorbar / hgrad). Otherwise advance the
-                // base by NPPC pixels via the chain's final state.
+                // (same reasoning as colorbar / hgrad).
                 if (last_x) begin
-                    chk_x_cnt <= 16'h0;
+                    chk_left  <= chk_size_eff;
                     chk_sel_x <= 1'b0;
                 end else begin
-                    chk_x_cnt <= cxc[NPPC];
-                    chk_sel_x <= cxs[NPPC];
+                    chk_left  <= chk_left + cwrap_add[15:0] - NPPC[15:0];
+                    chk_sel_x <= chk_sel_x ^ (^cwr_hit);
                 end
                 // Y axis (per-line) -- unchanged by NPPC.
                 if (pix_sof) begin
@@ -774,22 +802,59 @@ module vtpgz_core #(
     // Wrap-counters per axis, "on grid" when counter is at zero.
     generate if (EN_GRID) begin : g_grid
         wire [15:0] grid_eff = (cfg_grid_spacing == 16'h0) ? 16'h1 : cfg_grid_spacing;
-        reg [15:0] gx_cnt, gy_cnt;      // base = lane 0 x-counter at pixel x
-        // Per-lane x-axis chain (see checker for the recurrence rationale).
-        wire [15:0] gxc [0:NPPC] /* verilator split_var */;
-        assign gxc[0] = gx_cnt;
+        // g_nc = lanes until the next on-column pixel (0 = lane 0 is on a
+        // column). Lane l is on a column iff some threshold g_nc + m*spacing
+        // equals l -- parallel equality tests one adder from the state
+        // register, replacing the per-lane chained wrap recurrence.
+        reg  [15:0] g_nc;
+        reg  [15:0] gy_cnt;
+
+        wire [19:0] gwmul [0:NPPC] /* verilator split_var */;
+        assign gwmul[0] = 20'h0;
+        genvar gm;
+        for (gm = 1; gm <= NPPC; gm = gm + 1) begin : g_grid_wmul
+            assign gwmul[gm] = gwmul[gm-1] + {4'h0, grid_eff};
+        end
+        wire [19:0] gthr [0:NPPC-1] /* verilator split_var */;
+        genvar gt;
+        for (gt = 0; gt < NPPC; gt = gt + 1) begin : g_grid_thr
+            assign gthr[gt] = {4'h0, g_nc} + gwmul[gt];
+        end
+        // Columns consumed this beat: thresholds < NPPC.
+        wire [NPPC-1:0] gwr_hit;
+        genvar gw;
+        for (gw = 0; gw < NPPC; gw = gw + 1) begin : g_grid_wrap
+            assign gwr_hit[gw] =
+                (gthr[gw][19:4] == 16'h0) && (gthr[gw][3:0] < NPPC[3:0]);
+        end
+        integer gc;
+        reg [3:0] gwraps;
+        always @* begin
+            gwraps = 4'h0;
+            for (gc = 0; gc < NPPC; gc = gc + 1)
+                gwraps = gwraps + {3'h0, gwr_hit[gc]};
+        end
+        // Per-lane on-column: some threshold equals the lane index.
+        wire [NPPC-1:0] g_on_col;
         genvar gl;
         for (gl = 0; gl < NPPC; gl = gl + 1) begin : g_grid_chain
-            assign gxc[gl+1] = (gxc[gl] + 16'h1 >= grid_eff) ? 16'h0
-                                                             : (gxc[gl] + 16'h1);
+            wire [NPPC-1:0] eq_hit;
+            genvar gq;
+            for (gq = 0; gq < NPPC; gq = gq + 1) begin : g_grid_q
+                assign eq_hit[gq] =
+                    (gthr[gq][19:3] == 17'h0) && (gthr[gq][2:0] == gl[2:0]);
+            end
+            assign g_on_col[gl] = |eq_hit;
         end
+
+        wire [19:0] gwrap_add = gwmul[gwraps > NPPC[3:0] ? NPPC[3:0] : gwraps];
         always @(posedge aclk) begin
             if (!aresetn || frame_init) begin
-                gx_cnt <= 16'h0;
+                g_nc   <= 16'h0;
                 gy_cnt <= 16'h0;
             end else if (source_advance) begin
-                if (last_x)                                  gx_cnt <= 16'h0;
-                else                                          gx_cnt <= gxc[NPPC];
+                if (last_x) g_nc <= 16'h0;
+                else        g_nc <= g_nc + gwrap_add[15:0] - NPPC[15:0];
 
                 if (pix_sof)                                  gy_cnt <= 16'h0;
                 else if (last_x) begin
@@ -805,7 +870,7 @@ module vtpgz_core #(
         wire [11:0] bg_c1 = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
         wire [11:0] bg_c2 = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
         for (gl = 0; gl < NPPC; gl = gl + 1) begin : g_grid_lane
-            wire on_grid_l = (gxc[gl] == 16'h0) || (gy_cnt == 16'h0);
+            wire on_grid_l = g_on_col[gl] || (gy_cnt == 16'h0);
             assign grid_r_bus[12*gl +: 12] = on_grid_l ? {cfg_grid_color[23:16],4'h0} : 12'h000;
             assign grid_g_bus[12*gl +: 12] = on_grid_l ? {cfg_grid_color[15:8], 4'h0} : bg_c1;
             assign grid_b_bus[12*gl +: 12] = on_grid_l ? {cfg_grid_color[7:0],  4'h0} : bg_c2;
