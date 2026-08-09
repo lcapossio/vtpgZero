@@ -445,30 +445,74 @@ module vtpgz_core #(
     // verilator coverage_on
 
     generate if (EN_COLORBAR) begin : g_colorbar
-        reg [15:0] bar_pix_cnt;
-        reg [2:0]  bar_idx;
-        // Per-lane (bar_pix_cnt, bar_idx) chain: same single-step recurrence
-        // as the base counter, one step per lane. bix_l[gl] is lane gl's bar
-        // index; the base advances by NPPC steps per beat. At NPPC==1 this is
-        // one step and reproduces the original recurrence exactly.
-        wire [15:0] bpc_l [0:NPPC] /* verilator split_var */;
-        wire [2:0]  bix_l [0:NPPC] /* verilator split_var */;
-        assign bpc_l[0] = bar_pix_cnt;
-        assign bix_l[0] = bar_idx;
+        // Down-counter + parallel-threshold recurrence. bar_left is the count
+        // of pixels remaining in the current bar including lane 0's pixel
+        // (range [1, bar_width_eff]). Lane k sits q_k bars ahead of bar_idx,
+        // where q_k counts the thresholds bar_left + m*bar_width_eff that are
+        // <= k -- all NPPC compares evaluate in parallel one adder from the
+        // state register, replacing the per-lane chained 16-bit recurrence
+        // whose depth grew with NPPC and set the fmax of multi-pixel builds.
+        // Exact for any bar width >= 1, including multiple bars per beat.
+        reg  [15:0] bar_left;
+        reg  [2:0]  bar_idx;
+
+        // Quasi-static multiples of the bar width (m = 0..NPPC).
+        wire [19:0] wmul [0:NPPC] /* verilator split_var */;
+        assign wmul[0] = 20'h0;
+        genvar cbm;
+        for (cbm = 1; cbm <= NPPC; cbm = cbm + 1) begin : g_cb_wmul
+            assign wmul[cbm] = wmul[cbm-1] + {4'h0, bar_width_eff};
+        end
+
+        // Thresholds: one adder each from the registered state.
+        wire [19:0] thr [0:NPPC-1] /* verilator split_var */;
+        genvar cbt;
+        for (cbt = 0; cbt < NPPC; cbt = cbt + 1) begin : g_cb_thr
+            assign thr[cbt] = {4'h0, bar_left} + wmul[cbt];
+        end
+
+        // Beat-level wrap count: thresholds <= NPPC (NPPC <= 8, 4 bits).
+        wire [NPPC-1:0] wr_hit;
+        genvar cbw;
+        for (cbw = 0; cbw < NPPC; cbw = cbw + 1) begin : g_cb_wrap
+            assign wr_hit[cbw] =
+                (thr[cbw][19:4] == 16'h0) && (thr[cbw][3:0] <= NPPC[3:0]);
+        end
+        integer cw;
+        reg [3:0] wraps;
+        always @* begin
+            wraps = 4'h0;
+            for (cw = 0; cw < NPPC; cw = cw + 1)
+                wraps = wraps + {3'h0, wr_hit[cw]};
+        end
+
         genvar cbl;
         for (cbl = 0; cbl < NPPC; cbl = cbl + 1) begin : g_cb_chain
-            wire wrap_l = (bpc_l[cbl] + 16'h1 >= bar_width_eff);
-            assign bpc_l[cbl+1] = wrap_l ? 16'h0          : (bpc_l[cbl] + 16'h1);
-            assign bix_l[cbl+1] = wrap_l ? (bix_l[cbl] + 3'h1) : bix_l[cbl];
-            wire [35:0] pal_l = bar_palette(bix_l[cbl]);
+            // q_k: thresholds <= k (k <= 7, 3 bits).
+            wire [NPPC-1:0] q_hit;
+            genvar cbq;
+            for (cbq = 0; cbq < NPPC; cbq = cbq + 1) begin : g_cb_q
+                assign q_hit[cbq] =
+                    (thr[cbq][19:3] == 17'h0) && (thr[cbq][2:0] <= cbl[2:0]);
+            end
+            integer cq;
+            reg [2:0] q_k;
+            always @* begin
+                q_k = 3'h0;
+                for (cq = 0; cq < NPPC; cq = cq + 1)
+                    q_k = q_k + {2'h0, q_hit[cq]};
+            end
+            wire [35:0] pal_l = bar_palette(bar_idx + q_k);
             assign cb_r_bus[12*cbl +: 12] = pal_l[35:24];
             assign cb_g_bus[12*cbl +: 12] = pal_l[23:12];
             assign cb_b_bus[12*cbl +: 12] = pal_l[11:0];
         end
+
+        wire [19:0] wrap_add = wmul[wraps > NPPC[3:0] ? NPPC[3:0] : wraps];
         always @(posedge aclk) begin
             if (!aresetn || frame_init) begin
-                bar_pix_cnt <= 16'h0;
-                bar_idx     <= 3'h0;
+                bar_left <= bar_width_eff;
+                bar_idx  <= 3'h0;
             end else if (source_advance) begin
                 // Force the bar walk back to bar 0 at the END of each line so
                 // the next line's pixel 0 reads bar 0 combinationally (do not
@@ -476,11 +520,11 @@ module vtpgz_core #(
                 // active pixel; resetting at x=0 would shift every transition
                 // one pixel late). Otherwise advance the base by NPPC pixels.
                 if (last_x) begin
-                    bar_pix_cnt <= 16'h0;
-                    bar_idx     <= 3'h0;
+                    bar_left <= bar_width_eff;
+                    bar_idx  <= 3'h0;
                 end else begin
-                    bar_pix_cnt <= bpc_l[NPPC];
-                    bar_idx     <= bix_l[NPPC];
+                    bar_left <= bar_left + wrap_add[15:0] - NPPC[15:0];
+                    bar_idx  <= bar_idx + wraps[2:0];
                 end
             end
         end
