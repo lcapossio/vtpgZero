@@ -66,6 +66,9 @@ jobs:
       - name: Run stateful-pattern alignment regression
         run: python sim/run_iverilog_state_align.py
 
+      - name: Multi-pixel sweep (RTL vs model beat-exact, PPC 1/2/4/8)
+        run: python sim/check_ppc_vs_model.py
+
   sim:
     name: Verilator simulation
     runs-on: ubuntu-24.04
