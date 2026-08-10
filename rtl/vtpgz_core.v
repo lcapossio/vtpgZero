@@ -508,7 +508,15 @@ module vtpgz_core #(
             assign cb_b_bus[12*cbl +: 12] = pal_l[11:0];
         end
 
-        wire [19:0] wrap_add = wmul[wraps > NPPC[3:0] ? NPPC[3:0] : wraps];
+        // Flat packed mirror of wmul for the dynamically-indexed read below
+        // (split_var arrays may only be indexed by elaboration constants).
+        wire [20*(NPPC+1)-1:0] wmul_flat;
+        genvar cbf;
+        for (cbf = 0; cbf <= NPPC; cbf = cbf + 1) begin : g_cb_flat
+            assign wmul_flat[20*cbf +: 20] = wmul[cbf];
+        end
+        wire [3:0]  wsel     = (wraps > NPPC[3:0]) ? NPPC[3:0] : wraps;
+        wire [19:0] wrap_add = wmul_flat[20*wsel +: 20];
         always @(posedge aclk) begin
             if (!aresetn || frame_init) begin
                 bar_left <= bar_width_eff;
@@ -653,7 +661,15 @@ module vtpgz_core #(
                 (sel_l ^ chk_sel_y) ? 12'hFFF : 12'h000;
         end
 
-        wire [19:0] cwrap_add = cwmul[cwraps > NPPC[3:0] ? NPPC[3:0] : cwraps];
+        // Flat packed mirror of cwmul for the dynamically-indexed read below
+        // (split_var arrays may only be indexed by elaboration constants).
+        wire [20*(NPPC+1)-1:0] cwmul_flat;
+        genvar kf;
+        for (kf = 0; kf <= NPPC; kf = kf + 1) begin : g_chk_flat
+            assign cwmul_flat[20*kf +: 20] = cwmul[kf];
+        end
+        wire [3:0]  csel      = (cwraps > NPPC[3:0]) ? NPPC[3:0] : cwraps;
+        wire [19:0] cwrap_add = cwmul_flat[20*csel +: 20];
         always @(posedge aclk) begin
             if (!aresetn || frame_init) begin
                 chk_left  <= chk_size_eff;
@@ -847,7 +863,15 @@ module vtpgz_core #(
             assign g_on_col[gl] = |eq_hit;
         end
 
-        wire [19:0] gwrap_add = gwmul[gwraps > NPPC[3:0] ? NPPC[3:0] : gwraps];
+        // Flat packed mirror of gwmul for the dynamically-indexed read below
+        // (split_var arrays may only be indexed by elaboration constants).
+        wire [20*(NPPC+1)-1:0] gwmul_flat;
+        genvar gf;
+        for (gf = 0; gf <= NPPC; gf = gf + 1) begin : g_grid_flat
+            assign gwmul_flat[20*gf +: 20] = gwmul[gf];
+        end
+        wire [3:0]  gsel      = (gwraps > NPPC[3:0]) ? NPPC[3:0] : gwraps;
+        wire [19:0] gwrap_add = gwmul_flat[20*gsel +: 20];
         always @(posedge aclk) begin
             if (!aresetn || frame_init) begin
                 g_nc   <= 16'h0;
