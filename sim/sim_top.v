@@ -14,13 +14,16 @@ module sim_top #(
     parameter RAW_BAYER     = 1,
     parameter RGB_ORDER     = 0,
     parameter BPC           = 8,
+    parameter integer PIXELS_PER_CLOCK = 1,
     parameter LINE_GAP_CYCLES = 1,
-    // Derived TDATA_WIDTH (must match vtpgz_axilite_top's localparam)
-    parameter TDATA_WIDTH =
+    // Derived per-pixel width, then packed by PIXELS_PER_CLOCK (must match
+    // vtpgz_axilite_top's C_AXIS_TDATA_WIDTH).
+    parameter PIX_TDATA_WIDTH =
         (OUTPUT_MODE == 0) ? (((3*BPC + 7) / 8) * 8) :
         (OUTPUT_MODE == 1) ? (((  BPC + 7) / 8) * 8) :
         (YUV_SUBSAMPLE == 0 ? (((3*BPC + 7) / 8) * 8)
-                            : (((2*BPC + 7) / 8) * 8))
+                            : (((2*BPC + 7) / 8) * 8)),
+    parameter TDATA_WIDTH = PIXELS_PER_CLOCK * PIX_TDATA_WIDTH
 )(
     input  wire        aclk,
     input  wire        aresetn,
@@ -88,6 +91,7 @@ module sim_top #(
         .RAW_BAYER    (RAW_BAYER),
         .RGB_ORDER    (RGB_ORDER),
         .BPC          (BPC),
+        .PIXELS_PER_CLOCK(PIXELS_PER_CLOCK),
         .LINE_GAP_CYCLES(LINE_GAP_CYCLES)
     ) u_vtpgz (
         .aclk          (aclk),
