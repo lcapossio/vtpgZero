@@ -45,6 +45,9 @@ module vtpgz_axilite_top #(
     parameter BPC           = 8,
     parameter integer PIXELS_PER_CLOCK = 1,
     parameter integer LINE_GAP_CYCLES = 1,
+    // ----- optional AXI4-Stream routing sidebands (forwarded to core) -----
+    parameter integer TID_WIDTH   = 0,
+    parameter integer TDEST_WIDTH = 0,
     // ----- derived tdata widths (same formulas as in core) -----
     parameter PIX_TDATA_WIDTH =
         (OUTPUT_MODE == `VTPGZ_MODE_RGB) ? (((3*BPC + 7) / 8) * 8) :
@@ -84,6 +87,12 @@ module vtpgz_axilite_top #(
     input  wire                          m_axis_tready,
     output wire                          m_axis_tlast,
     output wire                          m_axis_tuser,
+    // Optional routing sidebands (1-bit tie-off when the width is 0).
+    // coverage_off: constant in the default (stripped) build -> never toggles.
+    /*verilator coverage_off*/
+    output wire [((TID_WIDTH   > 0) ? TID_WIDTH   : 1)-1:0] m_axis_tid,
+    output wire [((TDEST_WIDTH > 0) ? TDEST_WIDTH : 1)-1:0] m_axis_tdest,
+    /*verilator coverage_on*/
 
     // External frame sync
     input  wire                          frame_sync_in
@@ -113,6 +122,8 @@ module vtpgz_axilite_top #(
     wire [7:0]  cfg_box_border_width;
     wire [31:0] cfg_box_img_x_step;
     wire [31:0] cfg_box_img_y_step;
+    wire [15:0] cfg_tid;
+    wire [15:0] cfg_tdest;
 
     wire        sts_busy;
     wire [7:0]  sts_frame_count;
@@ -172,7 +183,9 @@ module vtpgz_axilite_top #(
         .cfg_box_border_color(cfg_box_border_color),
         .cfg_box_border_width(cfg_box_border_width),
         .cfg_box_img_x_step  (cfg_box_img_x_step),
-        .cfg_box_img_y_step  (cfg_box_img_y_step)
+        .cfg_box_img_y_step  (cfg_box_img_y_step),
+        .cfg_tid             (cfg_tid),
+        .cfg_tdest           (cfg_tdest)
     );
 
     // ---------------- pattern generator core ----------------
@@ -203,6 +216,8 @@ module vtpgz_axilite_top #(
         .BPC          (BPC),
         .PIXELS_PER_CLOCK(PIXELS_PER_CLOCK),
         .LINE_GAP_CYCLES(LINE_GAP_CYCLES),
+        .TID_WIDTH   (TID_WIDTH),
+        .TDEST_WIDTH (TDEST_WIDTH),
         .PIX_TDATA_WIDTH(PIX_TDATA_WIDTH),
         .C_AXIS_TDATA_WIDTH(C_AXIS_TDATA_WIDTH)
     ) u_core (
@@ -231,6 +246,8 @@ module vtpgz_axilite_top #(
         .cfg_box_border_width(cfg_box_border_width),
         .cfg_box_img_x_step  (cfg_box_img_x_step),
         .cfg_box_img_y_step  (cfg_box_img_y_step),
+        .cfg_tid             (cfg_tid),
+        .cfg_tdest           (cfg_tdest),
         .sts_busy         (sts_busy),
         .sts_frame_count  (sts_frame_count),
         .m_axis_tdata     (m_axis_tdata),
@@ -238,6 +255,8 @@ module vtpgz_axilite_top #(
         .m_axis_tready    (m_axis_tready),
         .m_axis_tlast     (m_axis_tlast),
         .m_axis_tuser     (m_axis_tuser),
+        .m_axis_tid       (m_axis_tid),
+        .m_axis_tdest     (m_axis_tdest),
         .frame_sync_in    (frame_sync_in)
     );
 

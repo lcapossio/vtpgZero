@@ -74,7 +74,9 @@ module vtpgz_axil_regs #(
     output wire [23:0] cfg_box_border_color,
     output wire [7:0]  cfg_box_border_width,
     output wire [31:0] cfg_box_img_x_step,
-    output wire [31:0] cfg_box_img_y_step
+    output wire [31:0] cfg_box_img_y_step,
+    output wire [15:0] cfg_tid,
+    output wire [15:0] cfg_tdest
 );
 
     // ---------------- registers ----------------
@@ -96,6 +98,7 @@ module vtpgz_axil_regs #(
     reg [31:0] reg_box_border;
     reg [31:0] reg_box_img_x_step;
     reg [31:0] reg_box_img_y_step;
+    reg [31:0] reg_stream_route;   // {tdest[31:16], tid[15:0]}
 
     // ---------------- write FSM ----------------
     reg [7:0]  awaddr_q;
@@ -154,6 +157,7 @@ module vtpgz_axil_regs #(
             // changes to keep the nearest-neighbour scaler accurate.
             reg_box_img_x_step <= 32'd32768;
             reg_box_img_y_step <= 32'd32768;
+            reg_stream_route   <= 32'h0;   // tid=0, tdest=0
         end else begin
             // address handshake
             if (!aw_captured && s_axi_awvalid) begin
@@ -196,6 +200,7 @@ module vtpgz_axil_regs #(
                     `VTPGZ_REG_BOX_BORDER   : reg_box_border   <= apply_wstrb(reg_box_border,   wdata_q, wstrb_q);
                     `VTPGZ_REG_BOX_IMG_X_STEP : reg_box_img_x_step <= apply_wstrb(reg_box_img_x_step, wdata_q, wstrb_q);
                     `VTPGZ_REG_BOX_IMG_Y_STEP : reg_box_img_y_step <= apply_wstrb(reg_box_img_y_step, wdata_q, wstrb_q);
+                    `VTPGZ_REG_STREAM_ROUTE : reg_stream_route <= apply_wstrb(reg_stream_route, wdata_q, wstrb_q);
                     default               : ;
                 endcase
                 s_axi_bvalid <= 1'b1;
@@ -257,6 +262,7 @@ module vtpgz_axil_regs #(
                     `VTPGZ_REG_BOX_BORDER   : s_axi_rdata <= reg_box_border;
                     `VTPGZ_REG_BOX_IMG_X_STEP : s_axi_rdata <= reg_box_img_x_step;
                     `VTPGZ_REG_BOX_IMG_Y_STEP : s_axi_rdata <= reg_box_img_y_step;
+                    `VTPGZ_REG_STREAM_ROUTE : s_axi_rdata <= reg_stream_route;
                     default               : s_axi_rdata <= 32'h0;
                 endcase
             end else begin
@@ -291,5 +297,7 @@ module vtpgz_axil_regs #(
     assign cfg_box_border_width = reg_box_border[31:24];
     assign cfg_box_img_x_step   = reg_box_img_x_step;
     assign cfg_box_img_y_step   = reg_box_img_y_step;
+    assign cfg_tid              = reg_stream_route[15:0];
+    assign cfg_tdest            = reg_stream_route[31:16];
 
 endmodule

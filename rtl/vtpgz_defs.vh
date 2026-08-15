@@ -22,7 +22,7 @@
 //   0.1.0: box overlay + configurable border, no CSC, BPC 8-16,
 //           4 Bayer tiles, CORE_ID at 0x00, vtpgz_core split
 `define VTPGZ_VERSION_MAJOR  8'd0
-`define VTPGZ_VERSION_MINOR  8'd4
+`define VTPGZ_VERSION_MINOR  8'd5
 `define VTPGZ_VERSION_PATCH 16'd0
 
 // Register byte offsets (AXI4-Lite, 32-bit data)
@@ -58,6 +58,7 @@
 // HG_STEP / VG_STEP / BAR_WIDTH.
 `define VTPGZ_REG_BOX_IMG_X_STEP 8'h54
 `define VTPGZ_REG_BOX_IMG_Y_STEP 8'h58
+`define VTPGZ_REG_STREAM_ROUTE  8'h5C  // {tdest[31:16], tid[15:0]} for m_axis_tid/tdest
 
 // Magic value returned by VTPGZ_REG_CORE_ID. Little-endian "VTPG":
 //   byte 0 = 'V' (0x56)

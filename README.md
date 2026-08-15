@@ -467,7 +467,7 @@ LICENSE                 Apache-2.0
 
 ## Author and license
 
-- **Author**: Leonardo Capossio — bard0 design — hello@bard0.com — [bard0](www.bard0.com)
+- **Author**: Leonardo Capossio — bard0 design — hello@bard0.com — [bard0](https://www.bard0.com)
 - **License**: Apache License 2.0 — see [LICENSE](LICENSE)
 
 [↑ back to top](#index)

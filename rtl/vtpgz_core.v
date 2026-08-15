@@ -101,6 +101,14 @@ module vtpgz_core #(
     // emitting the next line. Values below 1 are clamped to the mandatory
     // one-cycle minimum gap.
     parameter integer LINE_GAP_CYCLES = 1,
+    // ----- optional AXI4-Stream routing sidebands (m_axis_tid / m_axis_tdest).
+    // Width 0 (default) strips the sideband: the port is tied to a 1-bit zero
+    // and no logic is generated, so the netlist is unchanged from builds
+    // without the feature. Set to the number of ID/DEST bits you need; the
+    // value is driven from cfg_tid / cfg_tdest (a runtime register on the
+    // AXI-Lite wrapper), held constant across every beat. -----
+    parameter integer TID_WIDTH   = 0,
+    parameter integer TDEST_WIDTH = 0,
     // ----- derived per-PIXEL tdata width: the smallest multiple-of-8 that
     // holds the active components for the chosen mode/bpc (do NOT override) --
     parameter PIX_TDATA_WIDTH =
@@ -142,6 +150,9 @@ module vtpgz_core #(
     input  wire [7:0]  cfg_box_border_width,
     input  wire [31:0] cfg_box_img_x_step,
     input  wire [31:0] cfg_box_img_y_step,
+    // Stream-routing sideband values (used only when TID_WIDTH/TDEST_WIDTH>0).
+    input  wire [15:0] cfg_tid,
+    input  wire [15:0] cfg_tdest,
 
     // ----- status outputs -----
     output reg         sts_busy,
@@ -153,10 +164,23 @@ module vtpgz_core #(
     input  wire                          m_axis_tready,
     output wire                          m_axis_tlast,   // end of line
     output wire                          m_axis_tuser,   // SOF (first pixel of frame)
+    // Optional routing sidebands (see TID_WIDTH/TDEST_WIDTH). At width 0 the
+    // port is a 1-bit constant zero. Inline width expr because Verilog-2001
+    // localparams are not visible in the ANSI port list. coverage_off: the
+    // default (stripped) build ties these to a constant, so they never toggle.
+    /*verilator coverage_off*/
+    output wire [((TID_WIDTH   > 0) ? TID_WIDTH   : 1)-1:0] m_axis_tid,
+    output wire [((TDEST_WIDTH > 0) ? TDEST_WIDTH : 1)-1:0] m_axis_tdest,
+    /*verilator coverage_on*/
 
     // External frame sync
     input  wire                          frame_sync_in
 );
+
+    // Clamp to >=1 so a stripped sideband is a 1-bit tie-off (Verilog-2001
+    // has no zero-width nets).
+    localparam integer TID_W   = (TID_WIDTH   > 0) ? TID_WIDTH   : 1;
+    localparam integer TDEST_W = (TDEST_WIDTH > 0) ? TDEST_WIDTH : 1;
 
     // ---------------- pixels-per-clock shorthands ----------------
     localparam integer NPPC = PIXELS_PER_CLOCK;
@@ -1696,5 +1720,10 @@ module vtpgz_core #(
     assign m_axis_tvalid = tvalid_r;
     assign m_axis_tlast  = tlast_r;
     assign m_axis_tuser  = tuser_r;
+
+    // Routing sidebands: constant per stream (from cfg_tid/cfg_tdest, held
+    // stable across every beat). Stripped to a constant 0 when the width is 0.
+    assign m_axis_tid   = (TID_WIDTH   > 0) ? cfg_tid[TID_W-1:0]     : {TID_W{1'b0}};
+    assign m_axis_tdest = (TDEST_WIDTH > 0) ? cfg_tdest[TDEST_W-1:0] : {TDEST_W{1'b0}};
 
 endmodule

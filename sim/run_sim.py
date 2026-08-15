@@ -98,7 +98,9 @@ def generics(args: argparse.Namespace) -> list[str]:
         f"-GYUV_SUBSAMPLE={args.yuv_sub}",
         f"-GRAW_BAYER={args.raw_bayer}",
         f"-GRGB_ORDER={args.rgb_order}",
-        f"-GPIXELS_PER_CLOCK={args.ppc}",
+        # all_modes / check_seq_modes build per-config Namespaces that don't
+        # carry ppc (those sweeps are always PPC=1); default via getattr.
+        f"-GPIXELS_PER_CLOCK={getattr(args, 'ppc', 1)}",
     ]
 
 

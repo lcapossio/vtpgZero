@@ -126,6 +126,8 @@ module tb_ppc_capture;
         .cfg_box_border_width(8'd2),
         .cfg_box_img_x_step(BOX_IMG_X_STEP),
         .cfg_box_img_y_step(BOX_IMG_Y_STEP),
+        .cfg_tid(16'h0),
+        .cfg_tdest(16'h0),
         .sts_busy(),
         .sts_frame_count(),
         .m_axis_tdata(m_tdata),
@@ -133,6 +135,8 @@ module tb_ppc_capture;
         .m_axis_tready(m_tready),
         .m_axis_tlast(m_tlast),
         .m_axis_tuser(m_tuser),
+        .m_axis_tid(),
+        .m_axis_tdest(),
         .frame_sync_in(1'b0)
     );
 

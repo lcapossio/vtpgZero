@@ -72,6 +72,8 @@ module tb_state_align;
         .cfg_box_border_width(8'h00),
         .cfg_box_img_x_step(32'h00000000),
         .cfg_box_img_y_step(32'h00000000),
+        .cfg_tid(16'h0),
+        .cfg_tdest(16'h0),
         .sts_busy(sts_busy),
         .sts_frame_count(sts_frame_count),
         .m_axis_tdata(m_axis_tdata),
@@ -79,6 +81,8 @@ module tb_state_align;
         .m_axis_tready(m_axis_tready),
         .m_axis_tlast(m_axis_tlast),
         .m_axis_tuser(m_axis_tuser),
+        .m_axis_tid(),
+        .m_axis_tdest(),
         .frame_sync_in(1'b0)
     );
 
