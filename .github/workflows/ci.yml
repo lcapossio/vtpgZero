@@ -84,6 +84,9 @@ jobs:
       - name: Lint
         run: python sim/run_sim.py lint
 
+      - name: Lint multi-pixel (Verilator, PPC 2/4/8)
+        run: for p in 2 4 8; do python sim/run_sim.py lint --ppc $p; done
+
       - name: Regression (coverage + model gate, RGB 8bpc)
         run: python sim/run_sim.py regression
 

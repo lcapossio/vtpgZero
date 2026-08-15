@@ -492,8 +492,13 @@ module vtpgz_core #(
             wire [NPPC-1:0] q_hit;
             genvar cbq;
             for (cbq = 0; cbq < NPPC; cbq = cbq + 1) begin : g_cb_q
+                // At NPPC==8 the top lane's cbl[2:0]==7 makes thr[2:0]<=7 a
+                // tautology (CMPCONST); that is the intended "lane 7 may be up
+                // to 7 bars ahead" case, so silence the constant-compare note.
+                /* verilator lint_off CMPCONST */
                 assign q_hit[cbq] =
                     (thr[cbq][19:3] == 17'h0) && (thr[cbq][2:0] <= cbl[2:0]);
+                /* verilator lint_on CMPCONST */
             end
             integer cq;
             reg [2:0] q_k;
@@ -653,8 +658,12 @@ module vtpgz_core #(
             wire [NPPC-1:0] q_hit;
             genvar kq;
             for (kq = 0; kq < NPPC; kq = kq + 1) begin : g_chk_q
+                // At NPPC==8 the top lane's gl[2:0]==7 makes cthr[2:0]<=7 a
+                // tautology (CMPCONST); intended (lane 7 may be 7 cells ahead).
+                /* verilator lint_off CMPCONST */
                 assign q_hit[kq] =
                     (cthr[kq][19:3] == 17'h0) && (cthr[kq][2:0] <= gl[2:0]);
+                /* verilator lint_on CMPCONST */
             end
             wire sel_l = chk_sel_x ^ (^q_hit);
             assign chk_v_bus[12*gl +: 12] =

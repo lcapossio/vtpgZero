@@ -98,6 +98,7 @@ def generics(args: argparse.Namespace) -> list[str]:
         f"-GYUV_SUBSAMPLE={args.yuv_sub}",
         f"-GRAW_BAYER={args.raw_bayer}",
         f"-GRGB_ORDER={args.rgb_order}",
+        f"-GPIXELS_PER_CLOCK={args.ppc}",
     ]
 
 
@@ -398,6 +399,9 @@ def main() -> int:
                     help="0=PLAIN 1=RGGB 2=BGGR 3=GRBG 4=GBRG (default 1)")
     ap.add_argument("--rgb-order", dest="rgb_order", type=int, default=0,
                     choices=[0, 1], help="0=Xilinx, 1=legacy (default 0)")
+    ap.add_argument("--ppc", dest="ppc", type=int, default=1,
+                    choices=[1, 2, 4, 8],
+                    help="PIXELS_PER_CLOCK (default 1)")
     ap.add_argument("subcommand", choices=[
         "lint", "build", "run", "cov", "regression",
         "capture_build", "check_model",
