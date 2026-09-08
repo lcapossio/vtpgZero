@@ -114,6 +114,7 @@ Both have **identical** pattern/output behavior — they only differ in how the
 | 0x50   | BOX_BORDER     | `{border_width[8], border_color[24]}`. Border is drawn inside the box; `border_width=0` means no border. |
 | 0x54   | BOX_IMG_X_STEP | Q16 nearest-neighbour step for the box-image overlay. Host writes `(BOX_IMAGE_W << 16) / BOX_SIZE.width` whenever `BOX_SIZE` changes. Only meaningful when `EN_BOX_IMAGE=1`. |
 | 0x58   | BOX_IMG_Y_STEP | Q16 step for the box-image overlay y-axis. Host writes `(BOX_IMAGE_H << 16) / BOX_SIZE.height`. |
+| 0x5C   | STREAM_ROUTE   | `{tdest[15:0], tid[15:0]}` driven onto `m_axis_tdest` / `m_axis_tid`, constant across every beat. Only meaningful when `TID_WIDTH`/`TDEST_WIDTH > 0`; otherwise the sidebands are absent and this register is inert. |
 
 AXI4-Lite writes honor `WSTRB` byte lanes. A write with `WSTRB=0`
 acknowledges but leaves the addressed register unchanged, including
@@ -158,6 +159,7 @@ The AXI-Lite flavor adds the other two files.
 | `RGB_ORDER` | 0 (Xilinx) | Component order in `tdata`. **0** = `{pad,B,G,R}` (Xilinx PG044); **1** = `{R,G,B,pad}` legacy MSB-first. |
 | `BPC` | 8 | Bits per component: 8, 10, 12, 14, or 16. |
 | `PIXELS_PER_CLOCK` | 1 | Pixels per AXI-Stream beat (1/2/4/8). See [Multi-pixel-per-clock](#multi-pixel-per-clock). |
+| `TID_WIDTH` / `TDEST_WIDTH` | 0 | Add optional AXI4-Stream routing sidebands `m_axis_tid` / `m_axis_tdest`. `0` (default) strips them to a 1-bit tie-off, leaving the netlist unchanged. Set >0 and drive the value from the `STREAM_ROUTE` register (0x5C); it stays constant across every beat. |
 | `PIX_TDATA_WIDTH` / `C_AXIS_TDATA_WIDTH` | (auto) | **Derived** — don't override. Per-pixel and full-beat `tdata` widths. |
 
 ### Using `vtpgz_core` (port-driven)
