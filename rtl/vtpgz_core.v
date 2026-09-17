@@ -111,9 +111,9 @@ module vtpgz_core #(
     parameter integer TDEST_WIDTH = 0,
     // ----- interlaced-video support (AMD/Xilinx AXI4-Stream video
     // convention, see v_tpg PG103 / UG934). 0 (default) strips every field
-    // register and ties fid / sts_field_id to zero, so the netlist is
-    // identical to builds without the feature. At 1, cfg_interlace selects
-    // interlaced operation at runtime. -----
+    // register and ties fid / sts_field_id to zero, so no interlace state
+    // logic is generated (the ports stay, as constants). At 1, cfg_interlace
+    // selects interlaced operation at runtime. -----
     parameter integer EN_INTERLACE = 0,
     // ----- derived per-PIXEL tdata width: the smallest multiple-of-8 that
     // holds the active components for the chosen mode/bpc (do NOT override) --
@@ -1781,9 +1781,21 @@ module vtpgz_core #(
             // on the next field, not on the one already streaming.
             else if (!active && (!cfg_enable || !cfg_interlace))
                 fid_src <= 1'b0;
-            else if (cfg_ext_sync) begin
-                if (!active && frame_start) fid_src <= fid_in;
-            end else if (source_advance && end_of_frame)
+            // External sync: the source owns the parity, so load fid_in on
+            // the sync edge that starts the field. This takes priority over
+            // the end-of-field toggle below (the two can never collide --
+            // the load needs !active, the toggle needs active).
+            else if (cfg_ext_sync && !active && frame_start)
+                fid_src <= fid_in;
+            // Alternate at the end of every field, in BOTH sync modes, so
+            // fid_src always holds the ID the NEXT field will use. In
+            // external mode the next frame_start overwrites it with fid_in,
+            // so this is invisible there -- except when software switches
+            // ext->internal between fields, where it is exactly what keeps
+            // the sequence alternating instead of repeating the last
+            // externally-driven parity. Gated on cfg_interlace so a
+            // progressive field never disturbs the constant-0 fid.
+            else if (cfg_interlace && source_advance && end_of_frame)
                 fid_src <= ~fid_src;
         end
 

@@ -168,6 +168,21 @@ module tb_interlace;
             in_field <= 1'b0;
             beats     = 0;
         end else if (m_tvalid && m_tready) begin
+            // Index-based oracle, independent of the DUT's own sidebands:
+            // beat N of the stream must be SOF exactly when it opens a field
+            // and TLAST exactly when it closes a line. This applies in every
+            // mode, so a uniform one-beat shift of {tuser,tlast,fid} cannot
+            // hide behind a self-consistent tuser.
+            if (m_tuser !== ((total_beats % FIELD_BEATS) == 0)) begin
+                errors = errors + 1;
+                $display("ERROR: beat %0d tuser=%0b expected %0b",
+                         total_beats, m_tuser, (total_beats % FIELD_BEATS) == 0);
+            end
+            if (m_tlast !== ((total_beats % IMG_W) == IMG_W - 1)) begin
+                errors = errors + 1;
+                $display("ERROR: beat %0d tlast=%0b expected %0b",
+                         total_beats, m_tlast, (total_beats % IMG_W) == IMG_W - 1);
+            end
             total_beats = total_beats + 1;
             if (m_tuser) begin
                 // Start of a new field: the previous one must have been
@@ -220,18 +235,88 @@ module tb_interlace;
     reg     g_fid_held = 1'b0;
     integer g_lfsr     = 1;
 
+    // Pseudo-random backpressure, including multi-cycle stalls. The coverage
+    // counters below then PROVE that stalls actually landed on the SOF and
+    // EOL beats -- the places a sideband-stability bug would hide -- instead
+    // of leaving it to chance.
+    integer g_cov_stall_sof = 0;
+    integer g_cov_stall_eol = 0;
     always @(posedge aclk) begin
         if (!aresetn) begin
             g_tready <= 1'b1;
             g_lfsr    = 1;
         end else begin
-            // cheap pseudo-random backpressure, including multi-cycle stalls
             g_lfsr   = {g_lfsr[30:0], g_lfsr[30] ^ g_lfsr[27]};
             g_tready <= (g_lfsr[2:0] != 3'b000);
         end
+        if (g_check_en && g_tvalid && !g_tready) begin
+            if (g_tuser) g_cov_stall_sof = g_cov_stall_sof + 1;
+            if (g_tlast) g_cov_stall_eol = g_cov_stall_eol + 1;
+        end
     end
 
+    // AXI4-Stream stability: while a beat is offered and not accepted, none
+    // of tdata/tuser/tlast/fid may change. This is what actually proves fid
+    // is constant through the field rather than only on accepted beats.
+    reg              g_stab_arm = 1'b0;
+    reg [4*24-1:0]   g_stab_data;
+    reg              g_stab_user, g_stab_last, g_stab_fid;
     always @(posedge aclk) begin
+        if (!aresetn) begin
+            g_stab_arm <= 1'b0;
+        end else begin
+            if (g_stab_arm && g_tvalid) begin
+                if (g_tdata !== g_stab_data || g_tuser !== g_stab_user ||
+                    g_tlast !== g_stab_last || g_fid   !== g_stab_fid) begin
+                    errors = errors + 1;
+                    $display("ERROR: ppc4 sideband changed while stalled (beat %0d)", g_idx);
+                end
+            end
+            if (g_tvalid && !g_tready) begin
+                g_stab_arm  <= 1'b1;
+                g_stab_data <= g_tdata;
+                g_stab_user <= g_tuser;
+                g_stab_last <= g_tlast;
+                g_stab_fid  <= g_fid;
+            end else begin
+                g_stab_arm  <= 1'b0;
+            end
+            // TVALID may not be deasserted before the beat is accepted.
+            if (g_stab_arm && !g_tvalid) begin
+                errors = errors + 1;
+                $display("ERROR: ppc4 tvalid dropped before handshake (beat %0d)", g_idx);
+            end
+        end
+    end
+
+    integer g_gap_cnt = 0;
+    reg     g_gap_arm = 1'b0;
+
+    always @(posedge aclk) begin
+        // Inter-line gap: after a non-final TLAST handshake the core must
+        // insert exactly LINE_GAP_CYCLES TVALID-low cycles before the next
+        // line. Checked in THIS block so it shares g_idx with the scoreboard
+        // and cannot race it.
+        if (!g_check_en) begin
+            g_gap_arm <= 1'b0;
+            g_gap_cnt  = 0;
+        end else if (g_gap_arm) begin
+            if (g_tvalid) begin
+                if (g_gap_cnt != G_LINE_GAP) begin
+                    errors = errors + 1;
+                    $display("ERROR: ppc4 inter-line gap was %0d cycles, expected %0d (before beat %0d)",
+                             g_gap_cnt, G_LINE_GAP, g_idx);
+                end
+                g_gap_arm <= 1'b0;
+            end else begin
+                g_gap_cnt = g_gap_cnt + 1;
+            end
+        end else if (g_tvalid && g_tready && g_tlast &&
+                     ((g_idx % G_FIELD_BEATS) != G_FIELD_BEATS - 1)) begin
+            g_gap_arm <= 1'b1;
+            g_gap_cnt  = 0;
+        end
+
         if (g_check_en && g_tvalid && g_tready) begin
             if (g_fid !== (g_hold_fid ? g_fid_held
                                       : ((g_idx / G_FIELD_BEATS) % 2) != 0)) begin
@@ -256,9 +341,60 @@ module tb_interlace;
         end
     end
 
+    // Checker-control handoffs happen on the NEGEDGE so they can never race
+    // the scoreboard, which samples on the posedge.
+    task g_start;
+        begin
+            @(negedge aclk);
+            g_idx      = 0;
+            g_hold_fid = 1'b0;
+            g_cov_stall_sof = 0;
+            g_cov_stall_eol = 0;
+            g_check_en = 1'b1;
+        end
+    endtask
+
+    task g_stop;
+        begin
+            @(negedge aclk);
+            g_check_en = 1'b0;
+            g_hold_fid = 1'b0;
+        end
+    endtask
+
+    task g_hold_at;
+        input f;
+        begin
+            @(negedge aclk);
+            g_fid_held = f;
+            g_hold_fid = 1'b1;
+        end
+    endtask
+
+    // Wait until the PPC4 instance has been quiet for 64 straight cycles,
+    // instead of assuming a fixed delay is enough to drain it.
+    task g_wait_idle;
+        integer quiet;
+        begin
+            quiet = 0;
+            guard = 0;
+            while (quiet < 64 && guard < 400000) begin
+                @(posedge aclk);
+                guard = guard + 1;
+                if (g_tvalid) quiet = 0;
+                else          quiet = quiet + 1;
+            end
+            if (quiet < 64) begin
+                errors = errors + 1;
+                $display("ERROR: ppc4 instance never went idle");
+            end
+        end
+    endtask
+
     // ---------------- stimulus ----------------
     integer rb;
     integer guard;
+    integer drain_idx;
 
     task program_geometry;
         begin
@@ -302,6 +438,11 @@ module tb_interlace;
             frame_sync <= 1'b1;
             @(posedge aclk);
             frame_sync <= 1'b0;
+            // Flip fid_in straight after the accepted edge: the field must
+            // keep the parity sampled AT the edge, proving the core latched
+            // it there rather than tracking the pin.
+            @(posedge aclk);
+            fid_drive <= ~f;
             guard = 0;
             while (total_beats < want && guard < 400000) begin
                 @(posedge aclk);
@@ -373,9 +514,7 @@ module tb_interlace;
 
         // ---- Case 4: PPC=4 + LINE_GAP_CYCLES=3 + random backpressure ----
         // Checked against the independent beat-index oracle above.
-        g_idx      = 0;
-        g_hold_fid = 1'b0;
-        g_check_en = 1'b1;
+        g_start;
         axi_write(`VTPGZ_REG_CONTROL, 32'h9);         // enable | interlace
         guard = 0;
         while (g_idx < 3 * G_FIELD_BEATS && guard < 400000) begin
@@ -387,17 +526,25 @@ module tb_interlace;
             $display("ERROR: ppc4 only %0d/%0d beats seen (timeout)",
                      g_idx, 3 * G_FIELD_BEATS);
         end
+        // The stability monitor above is only meaningful if stalls actually
+        // landed on the SOF and EOL beats -- require that they did.
+        if (g_cov_stall_sof == 0) begin
+            errors = errors + 1;
+            $display("ERROR: no stall ever landed on a SOF beat (stability check was vacuous)");
+        end
+        if (g_cov_stall_eol == 0) begin
+            errors = errors + 1;
+            $display("ERROR: no stall ever landed on an EOL beat (stability check was vacuous)");
+        end
         axi_write(`VTPGZ_REG_CONTROL, 32'h0);
-        g_check_en = 1'b0;
-        repeat (40) @(posedge aclk);
+        g_stop;
+        g_wait_idle;
 
         // ---- Case 5: disable mid-field -> the draining field keeps its fid --
         // The timing engine runs an in-flight field to completion after
         // CONTROL is cleared (the documented reprogramming sequence). Every
         // beat of that tail must still carry the field's own fid.
-        g_idx      = 0;
-        g_hold_fid = 1'b0;
-        g_check_en = 1'b1;
+        g_start;
         axi_write(`VTPGZ_REG_CONTROL, 32'h9);         // enable | interlace
         // Run into the middle of field 1 (the ODD field, fid=1).
         guard = 0;
@@ -411,8 +558,7 @@ module tb_interlace;
         end
         // From here on every accepted beat must carry fid=1 until the field
         // drains -- including the beats emitted after the disable.
-        g_fid_held = 1'b1;
-        g_hold_fid = 1'b1;
+        g_hold_at(1'b1);
         axi_write(`VTPGZ_REG_CONTROL, 32'h0);         // disable MID-FIELD
         guard = 0;
         while (g_idx < 2 * G_FIELD_BEATS && guard < 400000) begin
@@ -424,8 +570,33 @@ module tb_interlace;
             $display("ERROR: field draining after mid-field disable stopped at beat %0d/%0d",
                      g_idx, 2 * G_FIELD_BEATS);
         end
-        g_check_en = 1'b0;
-        g_hold_fid = 1'b0;
+        // ...and then generation must actually STOP: no further beat for
+        // well over a frame-sync divider period (FRAME_RATE_DIV = 80).
+        drain_idx = g_idx;
+        repeat (1000) @(posedge aclk);
+        if (g_idx != drain_idx) begin
+            errors = errors + 1;
+            $display("ERROR: %0d beat(s) emitted after the field drained (disable ignored)",
+                     g_idx - drain_idx);
+        end
+        g_stop;
+
+        // ---- Case 6: re-enable after a full stop restarts at the EVEN field --
+        // cfg_enable went low across an idle edge, so the field parity is
+        // reset; the first field of a fresh enable is field 0 (fid=0).
+        g_start;
+        axi_write(`VTPGZ_REG_CONTROL, 32'h9);
+        guard = 0;
+        while (g_idx < G_FIELD_BEATS && guard < 400000) begin
+            @(posedge aclk);
+            guard = guard + 1;
+        end
+        if (g_idx < G_FIELD_BEATS) begin
+            errors = errors + 1;
+            $display("ERROR: no field after re-enable (%0d beats)", g_idx);
+        end
+        axi_write(`VTPGZ_REG_CONTROL, 32'h0);
+        g_stop;
 
         if (errors == 0)
             $display("PASS: tb_interlace field ID (fid)");

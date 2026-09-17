@@ -381,16 +381,30 @@ straight into a Xilinx video pipeline:
   frame rate (59.94 Hz for 1080i29.97). `STATUS[15:8]` counts fields.
 - **Internal sync** alternates `fid` itself (0, 1, 0, 1, …). **External sync**
   samples the **`fid_in`** port on the sync edge instead, so the core stays
-  locked to the field parity of the upstream source — the same role `fid_in`
-  plays on v_tpg. Repeat a field by repeating the `fid_in` value.
+  locked to the field parity of the upstream source; repeat a field by
+  repeating the `fid_in` value. The port carries the same field information
+  v_tpg's `fid_in` does, but the sync-edge sampling is vtpgZero's own design
+  — PG103 describes its `fid_in` as a pass-through input, not a generator
+  parity input. Switching external → internal between fields continues the
+  alternation from the last emitted field rather than repeating it.
+- A fresh enable restarts at the even field: dropping `CONTROL[0]` (or
+  `CONTROL[3]`) across an idle cycle clears the parity, so the next field is
+  field 0. A field already in flight always keeps its own `fid` to the last
+  beat — clearing CONTROL mid-field does not retag the tail.
 - `STATUS[1]` reads back the field the timing engine is currently producing
   (source side, so it runs slightly ahead of `fid`).
 
 Because each field is rendered in field coordinates, a feature N lines tall
 spans roughly 2N scanlines once the two fields are woven — v_tpg documents
 the same effect for its box ("NxN for progressive video and Nx2N for
-interlaced"). So program `BOX_SIZE` (and `VG_STEP`) for **half** the height
-you want on the frame: an N-tall box on screen means programming N/2.
+interlaced"). So program `BOX_SIZE` height for **half** what you want on the
+woven frame: an N-tall box on screen means programming N/2.
+
+`VG_STEP` is a step, not a height, so it follows the usual formula against
+the programmed (field) height — `VG_STEP = 0xFFF / (field_height - 1)`,
+i.e. roughly twice the progressive step for the same frame. Each field then
+sweeps the full gradient on its own, as v_tpg's field-coordinate rendering
+does.
 
 Two integration notes for real AMD pipelines:
 
