@@ -163,7 +163,7 @@ The AXI-Lite flavor adds the other two files.
 | `RGB_ORDER` | 0 (Xilinx) | Component order in `tdata`. **0** = `{pad,B,G,R}` (Xilinx PG044); **1** = `{R,G,B,pad}` legacy MSB-first. |
 | `BPC` | 8 | Bits per component: 8, 10, 12, 14, or 16. |
 | `PIXELS_PER_CLOCK` | 1 | Pixels per AXI-Stream beat (1/2/4/8). See [Multi-pixel-per-clock](#multi-pixel-per-clock). |
-| `EN_INTERLACE` | 0 | Add interlaced-video support (`fid` / `fid_in`, `CONTROL[3]`). `0` (default) strips every field register and ties `fid` to 0, leaving the netlist unchanged. See [Interlaced video](#interlaced-video). |
+| `EN_INTERLACE` | 0 | Add interlaced-video support (`fid` / `fid_in`, `CONTROL[3]`). `0` (default) strips every field register and ties `fid` / `STATUS[1]` to 0, so no interlace logic is generated (the ports remain, as constants). See [Interlaced video](#interlaced-video). |
 | `TID_WIDTH` / `TDEST_WIDTH` | 0 | Add optional AXI4-Stream routing sidebands `m_axis_tid` / `m_axis_tdest`. `0` (default) strips them to a 1-bit tie-off, leaving the netlist unchanged. Set >0 and drive the value from the `STREAM_ROUTE` register (0x5C); it stays constant across every beat. |
 | `PIX_TDATA_WIDTH` / `C_AXIS_TDATA_WIDTH` | (auto) | **Derived** — don't override. Per-pixel and full-beat `tdata` widths. |
 
@@ -198,6 +198,7 @@ vtpgz_core #(
     .cfg_enable        (1'b1),                  // run forever
     .cfg_sw_fsync      (1'b0),
     .cfg_ext_sync      (1'b0),                  // use internal frame sync
+    .cfg_interlace     (1'b0),                  // progressive (EN_INTERLACE=1 only)
     .cfg_img_width     (16'd1920),
     .cfg_img_height    (16'd1080),
     .cfg_pattern       (4'd0),                  // colorbar
@@ -385,9 +386,26 @@ straight into a Xilinx video pipeline:
 - `STATUS[1]` reads back the field the timing engine is currently producing
   (source side, so it runs slightly ahead of `fid`).
 
-Because each field is rendered in field coordinates, vertical features are
-half as tall on the woven frame — to get an NxN box on screen, program
-`BOX_SIZE` as Nx2N. This matches v_tpg, which documents the same Nx2N rule.
+Because each field is rendered in field coordinates, a feature N lines tall
+spans roughly 2N scanlines once the two fields are woven — v_tpg documents
+the same effect for its box ("NxN for progressive video and Nx2N for
+interlaced"). So program `BOX_SIZE` (and `VG_STEP`) for **half** the height
+you want on the frame: an N-tall box on screen means programming N/2.
+
+Two integration notes for real AMD pipelines:
+
+- `fid` is deliberately **not** part of the inferred `m_axis` interface, so a
+  block design that connects `m_axis` does not carry it along — wire `fid` to
+  the consumer's field input yourself (and configure that core for
+  interlace). AXI4-Stream to Video Out samples it with SOF, as UG934 states.
+- Polarity matches v_tpg (`0` = even, `1` = odd), but the Video Processing
+  Subsystem deinterlacer's `deint_field_id` uses the **opposite** polarity
+  (PG231) — invert `fid` when driving that core.
+
+`frame_sync_in` and `fid_in` are sampled directly by `aclk` with no
+synchronizer: both must be synchronous to `aclk`, and `fid_in` must be stable
+around the sync edge that starts the field. Cross a clock domain yourself
+before these pins.
 
 ### Multi-pixel-per-clock
 

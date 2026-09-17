@@ -87,6 +87,40 @@ module tb_interlace;
         .frame_sync_in(frame_sync), .fid_in(fid_drive)
     );
 
+    // Third instance: PIXELS_PER_CLOCK=4 + LINE_GAP_CYCLES=3, driven with a
+    // randomized tready. Its checker is an INDEPENDENT oracle -- it derives
+    // where SOF/EOL/fid must land from the count of accepted beats alone,
+    // never from the DUT's own tuser, so a uniform one-beat shift of the
+    // whole sideband group cannot hide.
+    localparam integer G_PPC        = 4;
+    localparam integer G_LINE_GAP   = 3;
+    localparam integer G_BEATS_LINE = IMG_W / G_PPC;
+    localparam integer G_FIELD_BEATS = G_BEATS_LINE * FIELD_H;
+
+    wire [4*24-1:0] g_tdata;
+    wire            g_tvalid;
+    reg             g_tready;
+    wire            g_tlast, g_tuser, g_fid;
+
+    vtpgz_axilite_top #(
+        .C_S_AXI_ADDR_WIDTH(8),
+        .C_S_AXI_DATA_WIDTH(32),
+        .EN_INTERLACE(1),
+        .PIXELS_PER_CLOCK(G_PPC),
+        .LINE_GAP_CYCLES(G_LINE_GAP)
+    ) dutg (
+        .aclk(aclk), .aresetn(aresetn),
+        .s_axi_awaddr(awaddr), .s_axi_awprot(3'b000), .s_axi_awvalid(awvalid), .s_axi_awready(),
+        .s_axi_wdata(wdata), .s_axi_wstrb(wstrb), .s_axi_wvalid(wvalid), .s_axi_wready(),
+        .s_axi_bresp(), .s_axi_bvalid(), .s_axi_bready(bready),
+        .s_axi_araddr(8'h0), .s_axi_arprot(3'b000), .s_axi_arvalid(1'b0), .s_axi_arready(),
+        .s_axi_rdata(), .s_axi_rresp(), .s_axi_rvalid(), .s_axi_rready(1'b0),
+        .m_axis_tdata(g_tdata), .m_axis_tvalid(g_tvalid), .m_axis_tready(g_tready),
+        .m_axis_tlast(g_tlast), .m_axis_tuser(g_tuser),
+        .m_axis_tid(), .m_axis_tdest(), .fid(g_fid),
+        .frame_sync_in(frame_sync), .fid_in(fid_drive)
+    );
+
     // ---------------- AXI-Lite tasks ----------------
     task axi_write;
         input [7:0]  addr;
@@ -172,6 +206,53 @@ module tb_interlace;
         if (check_en && m_tvalid0 && m_tready && m_fid0 !== 1'b0) begin
             errors = errors + 1;
             $display("ERROR: EN_INTERLACE=0 instance drove fid=%0b", m_fid0);
+        end
+    end
+
+    // ---------- independent scoreboard for the PPC=4 instance ----------
+    // Every accepted beat index tells us, by itself, which field it belongs
+    // to and where in that field it sits. fid must be the field parity,
+    // tuser must be set exactly on the field's first beat, tlast exactly on
+    // each line's last beat. Nothing here is derived from the DUT sidebands.
+    integer g_idx      = 0;     // accepted beats since g_check_en rose
+    reg     g_check_en = 1'b0;
+    reg     g_hold_fid = 1'b0;  // 1 = expect a fixed fid (mid-field disable)
+    reg     g_fid_held = 1'b0;
+    integer g_lfsr     = 1;
+
+    always @(posedge aclk) begin
+        if (!aresetn) begin
+            g_tready <= 1'b1;
+            g_lfsr    = 1;
+        end else begin
+            // cheap pseudo-random backpressure, including multi-cycle stalls
+            g_lfsr   = {g_lfsr[30:0], g_lfsr[30] ^ g_lfsr[27]};
+            g_tready <= (g_lfsr[2:0] != 3'b000);
+        end
+    end
+
+    always @(posedge aclk) begin
+        if (g_check_en && g_tvalid && g_tready) begin
+            if (g_fid !== (g_hold_fid ? g_fid_held
+                                      : ((g_idx / G_FIELD_BEATS) % 2) != 0)) begin
+                errors = errors + 1;
+                $display("ERROR: ppc4 beat %0d fid=%0b expected %0b",
+                         g_idx, g_fid,
+                         g_hold_fid ? g_fid_held
+                                    : (((g_idx / G_FIELD_BEATS) % 2) != 0));
+            end
+            if (g_tuser !== ((g_idx % G_FIELD_BEATS) == 0)) begin
+                errors = errors + 1;
+                $display("ERROR: ppc4 beat %0d tuser=%0b expected %0b",
+                         g_idx, g_tuser, (g_idx % G_FIELD_BEATS) == 0);
+            end
+            if (g_tlast !== ((g_idx % G_BEATS_LINE) == G_BEATS_LINE - 1)) begin
+                errors = errors + 1;
+                $display("ERROR: ppc4 beat %0d tlast=%0b expected %0b",
+                         g_idx, g_tlast,
+                         (g_idx % G_BEATS_LINE) == G_BEATS_LINE - 1);
+            end
+            g_idx = g_idx + 1;
         end
     end
 
@@ -287,6 +368,64 @@ module tb_interlace;
         ext_field(1'b0);
         check_en = 1'b0;
         axi_write(`VTPGZ_REG_CONTROL, 32'h0);
+
+        repeat (20) @(posedge aclk);
+
+        // ---- Case 4: PPC=4 + LINE_GAP_CYCLES=3 + random backpressure ----
+        // Checked against the independent beat-index oracle above.
+        g_idx      = 0;
+        g_hold_fid = 1'b0;
+        g_check_en = 1'b1;
+        axi_write(`VTPGZ_REG_CONTROL, 32'h9);         // enable | interlace
+        guard = 0;
+        while (g_idx < 3 * G_FIELD_BEATS && guard < 400000) begin
+            @(posedge aclk);
+            guard = guard + 1;
+        end
+        if (g_idx < 3 * G_FIELD_BEATS) begin
+            errors = errors + 1;
+            $display("ERROR: ppc4 only %0d/%0d beats seen (timeout)",
+                     g_idx, 3 * G_FIELD_BEATS);
+        end
+        axi_write(`VTPGZ_REG_CONTROL, 32'h0);
+        g_check_en = 1'b0;
+        repeat (40) @(posedge aclk);
+
+        // ---- Case 5: disable mid-field -> the draining field keeps its fid --
+        // The timing engine runs an in-flight field to completion after
+        // CONTROL is cleared (the documented reprogramming sequence). Every
+        // beat of that tail must still carry the field's own fid.
+        g_idx      = 0;
+        g_hold_fid = 1'b0;
+        g_check_en = 1'b1;
+        axi_write(`VTPGZ_REG_CONTROL, 32'h9);         // enable | interlace
+        // Run into the middle of field 1 (the ODD field, fid=1).
+        guard = 0;
+        while (g_idx < G_FIELD_BEATS + (G_FIELD_BEATS / 2) && guard < 400000) begin
+            @(posedge aclk);
+            guard = guard + 1;
+        end
+        if (guard >= 400000) begin
+            errors = errors + 1;
+            $display("ERROR: ppc4 could not reach the middle of field 1");
+        end
+        // From here on every accepted beat must carry fid=1 until the field
+        // drains -- including the beats emitted after the disable.
+        g_fid_held = 1'b1;
+        g_hold_fid = 1'b1;
+        axi_write(`VTPGZ_REG_CONTROL, 32'h0);         // disable MID-FIELD
+        guard = 0;
+        while (g_idx < 2 * G_FIELD_BEATS && guard < 400000) begin
+            @(posedge aclk);
+            guard = guard + 1;
+        end
+        if (g_idx < 2 * G_FIELD_BEATS) begin
+            errors = errors + 1;
+            $display("ERROR: field draining after mid-field disable stopped at beat %0d/%0d",
+                     g_idx, 2 * G_FIELD_BEATS);
+        end
+        g_check_en = 1'b0;
+        g_hold_fid = 1'b0;
 
         if (errors == 0)
             $display("PASS: tb_interlace field ID (fid)");

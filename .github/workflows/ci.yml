@@ -69,7 +69,7 @@ jobs:
       - name: AXIS routing sideband (TID/TDEST) regression
         run: python sim/run_iverilog_stream_route.py
 
-      - name: Interlaced field ID (m_axis_fid) regression
+      - name: Interlaced field ID (fid) regression
         run: python sim/run_iverilog_interlace.py
 
       - name: Multi-pixel sweep (RTL vs model beat-exact, PPC 1/2/4/8)

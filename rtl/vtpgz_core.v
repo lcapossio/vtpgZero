@@ -1753,9 +1753,11 @@ module vtpgz_core #(
     //   * a FIELD is what the timing engine already calls a frame. Program
     //     IMG_HEIGHT with the FIELD height, i.e. frame_height/2 (PG103:
     //     "while configuring the interlaced resolution, the active_height
-    //     should be configured as half"). Vertical features are therefore
-    //     half as tall per field -- to get an NxN box on screen, program
-    //     BOX_SIZE as Nx2N, exactly as v_tpg documents.
+    //     should be configured as half"). Patterns are rendered in FIELD
+    //     coordinates, so a feature N lines tall spans ~2N scanlines once
+    //     the two fields are woven -- PG103 documents the same effect for
+    //     its box ("NxN for progressive video and Nx2N for interlaced").
+    //     Program BOX_SIZE with HALF the wanted frame height.
     //   * TUSER (SOF) asserts on the first beat of EVERY field; TLAST stays
     //     end-of-line.
     //   * fid is sampled coincident with SOF and holds for the whole field:
@@ -1769,7 +1771,15 @@ module vtpgz_core #(
         always @(posedge aclk) begin
             if (!aresetn)
                 fid_src <= 1'b0;
-            else if (!cfg_enable || !cfg_interlace)
+            // A field owns its field ID for its whole lifetime. The timing
+            // engine deliberately runs an in-flight field to completion after
+            // cfg_enable drops (that IS the documented reconfiguration
+            // sequence: clear CONTROL, let the field drain, reprogram), so the
+            // clear is gated on !active -- otherwise the tail of a draining
+            // odd field would emit valid beats carrying fid=0. Clearing
+            // cfg_interlace mid-field is handled the same way: it takes effect
+            // on the next field, not on the one already streaming.
+            else if (!active && (!cfg_enable || !cfg_interlace))
                 fid_src <= 1'b0;
             else if (cfg_ext_sync) begin
                 if (!active && frame_start) fid_src <= fid_in;

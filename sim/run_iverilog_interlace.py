@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the interlaced-video field ID (m_axis_fid) regression with Icarus."""
+"""Run the interlaced-video field ID (fid) regression with Icarus."""
 
 from __future__ import annotations
 
