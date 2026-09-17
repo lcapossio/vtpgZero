@@ -113,6 +113,21 @@ and modes, PPC 1/2/4/8) is also available:
 python sim/check_ppc_vs_model.py
 ```
 
+## Interlaced field ID (fid)
+
+`tb/tb_interlace.v` drives an `EN_INTERLACE=1` build alongside a stripped
+(`EN_INTERLACE=0`) instance and checks the AMD/Xilinx field convention:
+one field per sync pulse with SOF on its first beat, `fid` stable for every
+beat of a field, alternating 0/1 under internal sync, following `fid_in`
+under external sync, and constant 0 for a progressive stream or a stripped
+build.
+
+```sh
+python sim/run_iverilog_interlace.py
+```
+
+Expected: `PASS: tb_interlace field ID (fid)`.
+
 ## Hardware test on Arty A7-100T
 
 A complete reference design under `hw/arty_a7_100t/` instantiates the VTPGZ

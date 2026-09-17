@@ -50,11 +50,14 @@ module vtpgz_axil_regs #(
     // Status inputs from datapath
     input  wire        sts_busy,
     input  wire [7:0]  sts_frame_count,
+    // coverage_off: constant 0 in an EN_INTERLACE=0 build -> never toggles.
+    /*verilator coverage_off*/ input wire sts_field_id, /*verilator coverage_on*/
 
     // Configuration outputs to datapath
     output wire        cfg_enable,
     output wire        cfg_sw_fsync,
     output wire        cfg_ext_sync,
+    output wire        cfg_interlace,
     output wire [15:0] cfg_img_width,
     output wire [15:0] cfg_img_height,
     output wire [3:0]  cfg_pattern,
@@ -229,7 +232,8 @@ module vtpgz_axil_regs #(
                     `VTPGZ_REG_CORE_ID      : s_axi_rdata <= `VTPGZ_CORE_ID_MAGIC;
                     `VTPGZ_REG_VERSION      : s_axi_rdata <= {`VTPGZ_VERSION_MAJOR, `VTPGZ_VERSION_MINOR, `VTPGZ_VERSION_PATCH};
                     `VTPGZ_REG_CONTROL      : s_axi_rdata <= reg_control;
-                    `VTPGZ_REG_STATUS       : s_axi_rdata <= {16'h0, sts_frame_count, 7'h0, sts_busy};
+                    `VTPGZ_REG_STATUS       : s_axi_rdata <= {16'h0, sts_frame_count,
+                                                    6'h0, sts_field_id, sts_busy};
                     `VTPGZ_REG_IMG_WIDTH    : s_axi_rdata <= reg_img_width;
                     `VTPGZ_REG_IMG_HEIGHT   : s_axi_rdata <= reg_img_height;
                     `VTPGZ_REG_PATTERN_SEL  : s_axi_rdata <= reg_pattern_sel;
@@ -277,6 +281,7 @@ module vtpgz_axil_regs #(
     assign cfg_enable        = reg_control[0];
     assign cfg_sw_fsync      = reg_control[1];
     assign cfg_ext_sync      = reg_control[2];
+    assign cfg_interlace     = reg_control[3];
     assign cfg_img_width     = reg_img_width[15:0];
     assign cfg_img_height    = reg_img_height[15:0];
     assign cfg_pattern       = reg_pattern_sel[3:0];

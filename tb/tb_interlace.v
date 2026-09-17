@@ -1,0 +1,303 @@
+//-----------------------------------------------------------------------------
+// tb_interlace.v - interlaced-video field ID (fid) regression
+//
+// Drives vtpgz_axilite_top with EN_INTERLACE=1 and checks the AMD/Xilinx
+// AXI4-Stream video field convention (v_tpg PG103 / UG934):
+//   * IMG_HEIGHT holds the FIELD height, so each sync pulse emits one field
+//     of IMG_W*IMG_H beats with TUSER (SOF) on its first beat;
+//   * fid is stable for every beat of a field and changes only at SOF;
+//   * with internal sync the core alternates fid 0,1,0,1... (0 = even/top);
+//   * with external sync fid follows fid_in, sampled on the sync edge;
+//   * with CONTROL.interlace clear the stream is progressive and fid is 0;
+//   * an EN_INTERLACE=0 build ties fid to 0 no matter what is programmed.
+//
+// SPDX-FileCopyrightText: 2026 Leonardo Capossio - bard0 design - hello@bard0.com
+// SPDX-License-Identifier: Apache-2.0
+//-----------------------------------------------------------------------------
+`timescale 1ns/1ps
+`include "vtpgz_defs.vh"
+
+module tb_interlace;
+    localparam integer IMG_W       = 16;
+    localparam integer FIELD_H     = 8;    // lines per FIELD (frame height/2)
+    localparam integer FIELD_BEATS = IMG_W * FIELD_H;
+
+    // checker modes
+    localparam integer CHK_PROG  = 0;   // fid must be 0 on every beat
+    localparam integer CHK_ALT   = 1;   // fid alternates, first field = 0
+    localparam integer CHK_EXT   = 2;   // fid must match exp_fid at each SOF
+
+    reg aclk = 1'b0;
+    always #5 aclk = ~aclk;
+    reg aresetn = 1'b0;
+
+    // AXI-Lite
+    reg  [7:0]  awaddr;   reg awvalid;  wire awready;
+    reg  [31:0] wdata;    reg [3:0] wstrb; reg wvalid; wire wready;
+    wire [1:0]  bresp;    wire bvalid;  reg bready;
+    reg  [7:0]  araddr;   reg arvalid;  wire arready;
+    wire [31:0] rdata;    wire [1:0] rresp; wire rvalid; reg rready;
+
+    // external sync stimulus
+    reg frame_sync = 1'b0;
+    reg fid_drive  = 1'b0;
+
+    // AXI-Stream (interlace-capable instance)
+    wire [23:0] m_tdata;
+    wire        m_tvalid;
+    reg         m_tready;
+    wire        m_tlast, m_tuser, m_fid;
+
+    vtpgz_axilite_top #(
+        .C_S_AXI_ADDR_WIDTH(8),
+        .C_S_AXI_DATA_WIDTH(32),
+        .EN_INTERLACE(1)
+    ) dut (
+        .aclk(aclk), .aresetn(aresetn),
+        .s_axi_awaddr(awaddr), .s_axi_awprot(3'b000), .s_axi_awvalid(awvalid), .s_axi_awready(awready),
+        .s_axi_wdata(wdata), .s_axi_wstrb(wstrb), .s_axi_wvalid(wvalid), .s_axi_wready(wready),
+        .s_axi_bresp(bresp), .s_axi_bvalid(bvalid), .s_axi_bready(bready),
+        .s_axi_araddr(araddr), .s_axi_arprot(3'b000), .s_axi_arvalid(arvalid), .s_axi_arready(arready),
+        .s_axi_rdata(rdata), .s_axi_rresp(rresp), .s_axi_rvalid(rvalid), .s_axi_rready(rready),
+        .m_axis_tdata(m_tdata), .m_axis_tvalid(m_tvalid), .m_axis_tready(m_tready),
+        .m_axis_tlast(m_tlast), .m_axis_tuser(m_tuser),
+        .m_axis_tid(), .m_axis_tdest(), .fid(m_fid),
+        .frame_sync_in(frame_sync), .fid_in(fid_drive)
+    );
+
+    // Parallel stripped instance (EN_INTERLACE=0) sharing the same writes:
+    // its fid must stay tied to 0 even with CONTROL.interlace set.
+    wire [23:0] m_tdata0;
+    wire        m_tvalid0, m_tlast0, m_tuser0, m_fid0;
+
+    vtpgz_axilite_top #(
+        .C_S_AXI_ADDR_WIDTH(8),
+        .C_S_AXI_DATA_WIDTH(32)
+        // EN_INTERLACE defaults to 0 -> feature stripped
+    ) dut0 (
+        .aclk(aclk), .aresetn(aresetn),
+        .s_axi_awaddr(awaddr), .s_axi_awprot(3'b000), .s_axi_awvalid(awvalid), .s_axi_awready(),
+        .s_axi_wdata(wdata), .s_axi_wstrb(wstrb), .s_axi_wvalid(wvalid), .s_axi_wready(),
+        .s_axi_bresp(), .s_axi_bvalid(), .s_axi_bready(bready),
+        .s_axi_araddr(8'h0), .s_axi_arprot(3'b000), .s_axi_arvalid(1'b0), .s_axi_arready(),
+        .s_axi_rdata(), .s_axi_rresp(), .s_axi_rvalid(), .s_axi_rready(1'b0),
+        .m_axis_tdata(m_tdata0), .m_axis_tvalid(m_tvalid0), .m_axis_tready(m_tready),
+        .m_axis_tlast(m_tlast0), .m_axis_tuser(m_tuser0),
+        .m_axis_tid(), .m_axis_tdest(), .fid(m_fid0),
+        .frame_sync_in(frame_sync), .fid_in(fid_drive)
+    );
+
+    // ---------------- AXI-Lite tasks ----------------
+    task axi_write;
+        input [7:0]  addr;
+        input [31:0] data;
+        begin
+            @(posedge aclk);
+            awaddr <= addr; awvalid <= 1'b1;
+            wdata  <= data; wstrb <= 4'hF; wvalid <= 1'b1;
+            bready <= 1'b1;
+            wait (awready && wready);
+            @(posedge aclk);
+            awvalid <= 1'b0; wvalid <= 1'b0;
+            wait (bvalid);
+            @(posedge aclk);
+            bready <= 1'b0;
+        end
+    endtask
+
+    task axi_read;
+        input  [7:0]  addr;
+        output [31:0] data;
+        begin
+            @(posedge aclk);
+            araddr <= addr; arvalid <= 1'b1; rready <= 1'b1;
+            wait (arready && rvalid);
+            data = rdata;
+            @(posedge aclk);
+            arvalid <= 1'b0; rready <= 1'b0;
+        end
+    endtask
+
+    // ---------------- field checker ----------------
+    integer errors       = 0;
+    integer beats        = 0;   // beats seen so far in the current field
+    integer fields       = 0;   // fields completed since check_en rose
+    integer total_beats  = 0;
+    reg     check_en     = 1'b0;
+    integer chk_mode     = CHK_PROG;
+    reg     exp_fid      = 1'b0;   // expected fid of the NEXT field to start
+    reg     cur_fid      = 1'b0;   // fid latched at the SOF of this field
+    reg     in_field     = 1'b0;
+
+    always @(posedge aclk) begin
+        if (!check_en) begin
+            in_field <= 1'b0;
+            beats     = 0;
+        end else if (m_tvalid && m_tready) begin
+            total_beats = total_beats + 1;
+            if (m_tuser) begin
+                // Start of a new field: the previous one must have been
+                // exactly FIELD_BEATS long.
+                if (in_field && beats != FIELD_BEATS) begin
+                    errors = errors + 1;
+                    $display("ERROR: field %0d had %0d beats, expected %0d",
+                             fields, beats, FIELD_BEATS);
+                end
+                if (in_field) fields = fields + 1;
+                if (m_fid !== exp_fid) begin
+                    errors = errors + 1;
+                    $display("ERROR: field %0d SOF fid=%0b expected %0b",
+                             fields, m_fid, exp_fid);
+                end
+                cur_fid  <= m_fid;
+                in_field <= 1'b1;
+                beats     = 1;
+                // Internal sync alternates; external sync follows fid_in
+                // (the stimulus sets exp_fid before each pulse).
+                if (chk_mode == CHK_ALT) exp_fid <= ~m_fid;
+            end else begin
+                beats = beats + 1;
+                if (m_fid !== cur_fid) begin
+                    errors = errors + 1;
+                    $display("ERROR: fid changed mid-field (beat %0d, field %0d): %0b != %0b",
+                             beats, fields, m_fid, cur_fid);
+                end
+            end
+            if (chk_mode == CHK_PROG && m_fid !== 1'b0) begin
+                errors = errors + 1;
+                $display("ERROR: progressive stream drove fid=%0b", m_fid);
+            end
+        end
+        // The stripped build must never assert fid.
+        if (check_en && m_tvalid0 && m_tready && m_fid0 !== 1'b0) begin
+            errors = errors + 1;
+            $display("ERROR: EN_INTERLACE=0 instance drove fid=%0b", m_fid0);
+        end
+    end
+
+    // ---------------- stimulus ----------------
+    integer rb;
+    integer guard;
+
+    task program_geometry;
+        begin
+            axi_write(`VTPGZ_REG_CONTROL,     32'h0);          // disable
+            axi_write(`VTPGZ_REG_IMG_WIDTH,   IMG_W);
+            axi_write(`VTPGZ_REG_IMG_HEIGHT,  FIELD_H);        // FIELD height
+            axi_write(`VTPGZ_REG_PATTERN_SEL, {28'h0, `VTPGZ_PAT_SOLID});
+            axi_write(`VTPGZ_REG_SOLID_COLOR, 24'h20_40_60);
+            axi_write(`VTPGZ_REG_FRAME_RATE,  32'd80);
+        end
+    endtask
+
+    // Wait until n fields worth of beats have been emitted (or time out).
+    task wait_fields;
+        input integer n;
+        begin
+            guard = 0;
+            while (total_beats < n * FIELD_BEATS && guard < 400000) begin
+                @(posedge aclk);
+                guard = guard + 1;
+            end
+            if (total_beats < n * FIELD_BEATS) begin
+                errors = errors + 1;
+                $display("ERROR: only %0d/%0d beats seen (timeout)",
+                         total_beats, n * FIELD_BEATS);
+            end
+        end
+    endtask
+
+    // One external sync pulse with fid_in = f, then wait for that field.
+    task ext_field;
+        input f;
+        integer want;
+        begin
+            exp_fid   = f;
+            want      = total_beats + FIELD_BEATS;
+            // Drive the sync/fid inputs with non-blocking assignments so the
+            // DUT cannot sample them in the same delta as the clock edge.
+            @(posedge aclk);
+            fid_drive  <= f;
+            frame_sync <= 1'b1;
+            @(posedge aclk);
+            frame_sync <= 1'b0;
+            guard = 0;
+            while (total_beats < want && guard < 400000) begin
+                @(posedge aclk);
+                guard = guard + 1;
+            end
+            if (total_beats < want) begin
+                errors = errors + 1;
+                $display("ERROR: external-sync field (fid=%0b) timed out", f);
+            end
+        end
+    endtask
+
+    initial begin
+        awaddr=0; awvalid=0; wdata=0; wstrb=0; wvalid=0; bready=0;
+        araddr=0; arvalid=0; rready=0;
+        m_tready = 1'b1;
+
+        repeat (10) @(posedge aclk);
+        aresetn = 1'b1;
+        repeat (5) @(posedge aclk);
+
+        program_geometry();
+
+        // ---- Case 1: progressive (CONTROL.interlace = 0) ----
+        chk_mode    = CHK_PROG;
+        exp_fid     = 1'b0;
+        total_beats = 0; fields = 0;
+        check_en    = 1'b1;
+        axi_write(`VTPGZ_REG_CONTROL, 32'h1);         // enable, internal sync
+        wait_fields(3);
+        check_en = 1'b0;
+        axi_write(`VTPGZ_REG_CONTROL, 32'h0);
+        repeat (20) @(posedge aclk);
+
+        // ---- Case 2: interlaced, internal sync -> fid alternates 0,1,0,1 ----
+        chk_mode    = CHK_ALT;
+        exp_fid     = 1'b0;
+        total_beats = 0; fields = 0;
+        check_en    = 1'b1;
+        axi_write(`VTPGZ_REG_CONTROL, 32'h9);         // enable | interlace
+        wait_fields(4);
+        if (fields < 3) begin
+            errors = errors + 1;
+            $display("ERROR: only %0d complete fields observed", fields);
+        end
+        // STATUS.field_id mirrors the source-side field.
+        axi_read(`VTPGZ_REG_STATUS, rb);
+        if (rb[1] !== 1'b0 && rb[1] !== 1'b1) begin
+            errors = errors + 1;
+            $display("ERROR: STATUS.field_id is not a valid bit (0x%08h)", rb);
+        end
+        check_en = 1'b0;
+        axi_write(`VTPGZ_REG_CONTROL, 32'h0);
+        repeat (20) @(posedge aclk);
+
+        // ---- Case 3: interlaced, external sync -> fid follows fid_in ----
+        chk_mode    = CHK_EXT;
+        total_beats = 0; fields = 0;
+        check_en    = 1'b1;
+        axi_write(`VTPGZ_REG_CONTROL, 32'hD);         // enable | ext_sync | interlace
+        ext_field(1'b0);
+        ext_field(1'b1);
+        ext_field(1'b1);   // a repeated field must NOT be auto-toggled
+        ext_field(1'b0);
+        check_en = 1'b0;
+        axi_write(`VTPGZ_REG_CONTROL, 32'h0);
+
+        if (errors == 0)
+            $display("PASS: tb_interlace field ID (fid)");
+        else
+            $display("FAIL: tb_interlace saw %0d errors", errors);
+        $finish;
+    end
+
+    initial begin
+        #10_000_000;
+        $display("FAIL: tb_interlace TIMEOUT");
+        $finish;
+    end
+endmodule
