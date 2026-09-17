@@ -45,7 +45,7 @@ test pattern generator on the Digilent Arty A7-100T.
 |---|---|
 | `0x0000_0000`–`0x0000_00FF` | VTPGZ AXI4-Lite registers (see top-level README) |
 | `0x0001_0000` | `CAPTURE_CTRL`  W: `[0]`=arm `[1]`=clear |
-| `0x0001_0004` | `CAPTURE_STATUS` R: `[0]`=done, `[29:16]`=word_count |
+| `0x0001_0004` | `CAPTURE_STATUS` R: `[0]`=done, `[1]`=field_id of the captured frame (vtpgZero `fid`, latched at its SOF beat; only meaningful when `CONTROL[3]` interlace is set), `[29:16]`=word_count |
 | `0x0001_8000`–`0x0001_FFFF` | `FRAME_BRAM` (read-only window, 32 KB) |
 
 ## Build

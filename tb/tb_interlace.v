@@ -97,9 +97,11 @@ module tb_interlace;
     localparam integer G_BEATS_LINE = IMG_W / G_PPC;
     localparam integer G_FIELD_BEATS = G_BEATS_LINE * FIELD_H;
 
+    reg             g_stall_hold = 1'b0;
     wire [4*24-1:0] g_tdata;
     wire            g_tvalid;
-    reg             g_tready;
+    reg             g_tready_r;
+    wire            g_tready = g_tready_r && !g_stall_hold;
     wire            g_tlast, g_tuser, g_fid;
 
     vtpgz_axilite_top #(
@@ -239,19 +241,17 @@ module tb_interlace;
     // counters below then PROVE that stalls actually landed on the SOF and
     // EOL beats -- the places a sideband-stability bug would hide -- instead
     // of leaving it to chance.
-    integer g_cov_stall_sof = 0;
-    integer g_cov_stall_eol = 0;
+    // g_stall_hold is driven by the scoreboard block (which owns g_idx) to
+    // FORCE a stall on the beats that matter -- SOF, EOL and the field's
+    // final beat -- so the stability monitor is never left to chance. It is
+    // a registered signal, so reading it here is ordering-safe.
     always @(posedge aclk) begin
         if (!aresetn) begin
-            g_tready <= 1'b1;
-            g_lfsr    = 1;
+            g_tready_r <= 1'b1;
+            g_lfsr      = 1;
         end else begin
-            g_lfsr   = {g_lfsr[30:0], g_lfsr[30] ^ g_lfsr[27]};
-            g_tready <= (g_lfsr[2:0] != 3'b000);
-        end
-        if (g_check_en && g_tvalid && !g_tready) begin
-            if (g_tuser) g_cov_stall_sof = g_cov_stall_sof + 1;
-            if (g_tlast) g_cov_stall_eol = g_cov_stall_eol + 1;
+            g_lfsr     = {g_lfsr[30:0], g_lfsr[30] ^ g_lfsr[27]};
+            g_tready_r <= (g_lfsr[2:0] != 3'b000);
         end
     end
 
@@ -292,7 +292,24 @@ module tb_interlace;
     integer g_gap_cnt = 0;
     reg     g_gap_arm = 1'b0;
 
+    // Forced-stall state and the coverage it produces. Everything here lives
+    // in the scoreboard block so it can use g_idx without racing it.
+    integer g_stall_seen    = 0;   // cycles this target beat has been stalled
+    integer g_cov_stall_sof = 0;
+    integer g_cov_stall_eol = 0;
+    integer g_cov_stall_eof = 0;
+
     always @(posedge aclk) begin
+        // ---- coverage: did a stall actually land on those beats? ----
+        if (g_check_en && g_tvalid && !g_tready) begin
+            if ((g_idx % G_FIELD_BEATS) == 0)
+                g_cov_stall_sof = g_cov_stall_sof + 1;
+            if ((g_idx % G_BEATS_LINE) == G_BEATS_LINE - 1)
+                g_cov_stall_eol = g_cov_stall_eol + 1;
+            if ((g_idx % G_FIELD_BEATS) == G_FIELD_BEATS - 1)
+                g_cov_stall_eof = g_cov_stall_eof + 1;
+        end
+
         // Inter-line gap: after a non-final TLAST handshake the core must
         // insert exactly LINE_GAP_CYCLES TVALID-low cycles before the next
         // line. Checked in THIS block so it shares g_idx with the scoreboard
@@ -338,6 +355,28 @@ module tb_interlace;
                          (g_idx % G_BEATS_LINE) == G_BEATS_LINE - 1);
             end
             g_idx = g_idx + 1;
+            g_stall_seen = 0;      // re-arm the forced stall for the new index
+        end
+
+        // ---- forced stall, evaluated AFTER the index update so the hold is
+        // ---- already asserted in the cycle the target beat is presented ----
+        if (!g_check_en) begin
+            g_stall_hold <= 1'b0;
+            g_stall_seen  = 0;
+        end else if (((g_idx % G_FIELD_BEATS) == 0) ||
+                     ((g_idx % G_BEATS_LINE)  == G_BEATS_LINE - 1) ||
+                     ((g_idx % G_FIELD_BEATS) == G_FIELD_BEATS - 1)) begin
+            // Hold until the beat has actually been offered for a few cycles
+            // (it may still be behind a line gap), then let it through.
+            if (g_stall_seen < 4) begin
+                g_stall_hold <= 1'b1;
+                if (g_tvalid) g_stall_seen = g_stall_seen + 1;
+            end else begin
+                g_stall_hold <= 1'b0;
+            end
+        end else begin
+            g_stall_hold <= 1'b0;
+            g_stall_seen  = 0;
         end
     end
 
@@ -350,6 +389,7 @@ module tb_interlace;
             g_hold_fid = 1'b0;
             g_cov_stall_sof = 0;
             g_cov_stall_eol = 0;
+            g_cov_stall_eof = 0;
             g_check_en = 1'b1;
         end
     endtask
@@ -535,6 +575,10 @@ module tb_interlace;
         if (g_cov_stall_eol == 0) begin
             errors = errors + 1;
             $display("ERROR: no stall ever landed on an EOL beat (stability check was vacuous)");
+        end
+        if (g_cov_stall_eof == 0) begin
+            errors = errors + 1;
+            $display("ERROR: no stall ever landed on a field's final beat (stability check was vacuous)");
         end
         axi_write(`VTPGZ_REG_CONTROL, 32'h0);
         g_stop;

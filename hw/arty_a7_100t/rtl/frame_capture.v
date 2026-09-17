@@ -10,7 +10,10 @@
 // CSR window (offset 0x0000, single-beat AXI4 writes/reads):
 //   0x00 CAPTURE_CTRL  W : [0]=arm (one-shot, self-clearing on capture done)
 //                        : [1]=clear (resets done + word_count)
-//   0x04 CAPTURE_STATUS R : [0]=done, [31:16]=word_count
+//   0x04 CAPTURE_STATUS R : [0]=done, [1]=field_id of the captured frame
+//                        :   (vtpgZero `fid`, latched at its SOF beat -- only
+//                        :   meaningful for an interlaced stream),
+//                        : [31:16]=word_count
 //   0x08 CAPTURE_LEN  RW : number of beats to capture (default = full BRAM)
 //
 // BRAM window (offset 0x1000+, AXI4 read bursts supported):
@@ -38,6 +41,10 @@ module frame_capture #(
     output wire                  s_axis_tready,
     input  wire                  s_axis_tlast,
     input  wire                  s_axis_tuser,
+    // Interlaced field ID accompanying the stream (constant 0 for a
+    // progressive source). Latched at the SOF beat of the captured frame so
+    // the host can tell which field it just pulled out of the BRAM.
+    input  wire                  s_axis_fid,
 
     // AXI4 slave (single-beat writes; burst-capable reads)
     input  wire [ADDR_W-1:0]     s_axi_awaddr,
@@ -95,6 +102,7 @@ module frame_capture #(
     reg                  arm;
     reg                  done;
     reg [DEPTH_LOG2:0]   wr_idx;     // one extra bit for full detection
+    reg                  captured_fid;
     reg                  capturing;
     reg                  saw_sof;
     wire                 csr_arm_pulse;
@@ -153,6 +161,7 @@ module frame_capture #(
             wr_idx     <= {(DEPTH_LOG2+1){1'b0}};
             serializing <= 1'b0;
             sub_cnt     <= 16'h0;
+            captured_fid <= 1'b0;
         end else if (csr_clear_pulse) begin
             // CSR clear has the HIGHEST priority and overrides everything
             // else this cycle. Without this priority, a simultaneous
@@ -164,6 +173,7 @@ module frame_capture #(
             wr_idx    <= {(DEPTH_LOG2+1){1'b0}};
             serializing <= 1'b0;
             sub_cnt     <= 16'h0;
+            captured_fid <= 1'b0;
         end else begin
             // CSR arm latches the request
             if (csr_arm_pulse) begin
@@ -196,9 +206,12 @@ module frame_capture #(
             //     the SECOND tuser (exclusive).
             if (stream_beat) begin
                 if (s_axis_tuser && !saw_sof) begin
-                    // First tuser: latch and write THIS beat
-                    saw_sof <= 1'b1;
-                    wr_idx  <= wr_idx + 1'b1;
+                    // First tuser: latch and write THIS beat. fid is sampled
+                    // coincident with SOF (UG934), so this is the field ID of
+                    // everything that follows into the BRAM.
+                    saw_sof      <= 1'b1;
+                    captured_fid <= s_axis_fid;
+                    wr_idx       <= wr_idx + 1'b1;
                 end else if (s_axis_tuser && saw_sof) begin
                     // Second tuser: stop marker, do not write/increment
                 end else if (saw_sof) begin
@@ -375,7 +388,8 @@ module frame_capture #(
                             // CSR single read (1-cycle)
                             case (s_axi_araddr[7:0])
                                 8'h00: s_axi_rdata <= 32'h0;
-                                8'h04: s_axi_rdata <= {2'h0, wr_idx, 15'h0, done};
+                                8'h04: s_axi_rdata <= {2'h0, wr_idx, 14'h0,
+                                                       captured_fid, done};
                                 default: s_axi_rdata <= 32'h0;
                             endcase
                             s_axi_rresp  <= ((s_axi_arlen == 8'h00) &&
