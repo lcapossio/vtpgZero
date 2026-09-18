@@ -480,17 +480,46 @@ ACTIVE = (IMG_WIDTH / PPC) * IMG_HEIGHT + LINE_GAP_CYCLES * (IMG_HEIGHT - 1)
 ```
 
 So to hit a required blanking spec, pick `LINE_GAP_CYCLES` for the line break
-and then `FRAME_RATE_DIV = ACTIVE + wanted vertical blanking`. `FRAME_RATE_DIV`
-must exceed `ACTIVE` or frames overrun each other and no vertical blanking is
-left at all.
+and then `FRAME_RATE_DIV = ACTIVE + wanted vertical blanking`.
+
+`FRAME_RATE_DIV` must be **strictly greater** than `ACTIVE`. Frames do not
+overrun each other if it is not — the timing engine only accepts a sync tick
+while it is idle, so ticks landing inside an active frame are simply dropped
+(including one coincident with the final active cycle). The frame period
+becomes
+
+```
+PERIOD = FRAME_RATE_DIV * (floor(ACTIVE / FRAME_RATE_DIV) + 1)
+VBLANK = PERIOD - ACTIVE
+```
+
+so the frame rate silently drops to a submultiple rather than the blanking
+going negative. Measured on the RTL with `ACTIVE = 131`: `FRAME_RATE_DIV` of
+132 gives 1 cycle of blanking, 133 gives 2, 400 gives 269 — but 131 gives a
+262-cycle period with 131 cycles of blanking (half the requested rate), and
+100 gives a 200-cycle period with 69. Under **external** frame sync,
+`FRAME_RATE_DIV` does not determine vertical blanking at all; the sync source
+does.
 
 `FVAL_LEAD` and `FVAL_TRAIL` carve the FVAL porches out of that vertical
 blanking, so they are only realisable while
 `FVAL_LEAD + FVAL_TRAIL < FRAME_RATE_DIV - ACTIVE`. The front porch is
 implemented by delaying the pixel path, so it costs `FVAL_LEAD` cycles of
-latency and `FVAL_LEAD * (TDATA_WIDTH+3)` flops; the back porch is just a
-counter and costs nothing. At `FVAL_LEAD = 0` no delay line is generated and
+latency and `FVAL_LEAD * (TDATA_WIDTH+3)` registers — which Vivado largely
+maps to SRLs, so the real cost is lower than that count suggests. The back
+porch is just a counter. At `FVAL_LEAD = 0` no delay line is generated and
 `FVAL` rises together with the first `LVAL`.
+
+Out-of-context synthesis on `xc7a100tcsg324-1` at `TDATA_WIDTH=24`:
+`FVAL_LEAD=0, FVAL_TRAIL=0` costs 9 LUT / 5 FF; `FVAL_LEAD=4, FVAL_TRAIL=6`
+costs 41 LUT / 65 FF.
+
+If the porches do overrun the vertical blanking, the adapter does not fail
+silently: a new frame's SOF arriving while the previous frame is still
+draining the delay line latches `TIMING_ERR`, which also covers mid-line
+bubbles. Consecutive frames genuinely overlap inside the delay line there, so
+no correct `FVAL` exists to emit — the condition is reported rather than
+papered over.
 
 A classic parallel interface is one pixel per clock, so use
 `PIXELS_PER_CLOCK=1`. At `PPC=N` the adapter passes `TDATA_WIDTH` straight

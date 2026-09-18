@@ -135,6 +135,8 @@ module tb_flvdval;
 
     integer vb_len = 0;     // cycles FVAL has been low
     integer vb_seen = 0;
+    reg [31:0] fid_at_rise = 32'h0;
+    integer    fid_rises = 0;
 
     // Blocking assignments in an explicit order: the end-of-line increment
     // must be visible to the end-of-frame check in the SAME cycle, because
@@ -145,6 +147,9 @@ module tb_flvdval;
             run_len = 0; gap_len = 0; lines = 0; dvals = 0; vb_len = 0;
         end else begin
             // ---- illegal combinations --------------------------------
+            // dval && !lval is structurally impossible at LEAD=0 (lval is
+            // lval_r || dly_valid); kept as a cheap guard against future
+            // refactors of the LVAL expression.
             if (dval && !lval)
                 fail("DVAL asserted while LVAL low");
             if (lval && !fval)
@@ -179,7 +184,12 @@ module tb_flvdval;
                 dvals   = 0;
             end
 
-            // ---- start of a frame: vertical blanking just ended -------
+            // ---- start of a frame: sample FIELD_ID the way a receiver
+            //      that latches on the FVAL edge would see it -------------
+            if (!fval_q && fval) begin
+                fid_at_rise = {fid_at_rise[30:0], field_id};
+                fid_rises   = fid_rises + 1;
+            end
             if (!fval_q && fval && (frames > 0)) begin
                 if (vb_len !== VBLANK)
                     fail("vertical blanking is not FRAME_RATE_DIV - active");
@@ -211,6 +221,14 @@ module tb_flvdval;
 
     // Pixel passthrough: on every DVAL the adapter must present exactly the
     // beat the stream carried, and never invent or drop one.
+    //
+    // Be honest about what this proves: at FVAL_LEAD=0 pix_data is a direct
+    // combinational assignment and dval is m_tvalid, so these two checks are
+    // structural tautologies -- they are wiring regressions, not proof that
+    // data cannot be lost or duplicated. The checks that DO bite are the
+    // per-frame DVAL count against W*H (derived from the geometry, below)
+    // and, on u_flvp, the comparison against an independent testbench-side
+    // delay line where the adapter really can get it wrong.
     integer axis_beats = 0;
     integer dval_beats = 0;
     always @(posedge aclk) begin
@@ -350,6 +368,24 @@ module tb_flvdval;
         end
     endtask
 
+    // A fourth adapter on the hand-built stream, this one with a front porch,
+    // to exercise the porch-envelope violation: with FVAL_LEAD=4 a frame's
+    // EOF lands 4 cycles after its last beat, so blanking shorter than that
+    // makes the next SOF arrive while the previous frame is still in flight.
+    reg  b_clr2 = 1'b0;
+    wire e_timing_err;
+
+    vtpgz_axis_to_flvdval #(
+        .TDATA_WIDTH(TDW), .FVAL_LEAD(4), .FVAL_TRAIL(0)
+    ) u_flve (
+        .aclk(aclk), .aresetn(aresetn),
+        .s_axis_tdata(b_tdata), .s_axis_tvalid(b_tvalid),
+        .s_axis_tready(), .s_axis_tlast(b_tlast),
+        .s_axis_tuser(b_tuser), .s_axis_eof(b_eof), .s_axis_fid(1'b0),
+        .pix_data(), .fval(), .lval(), .dval(), .field_id(),
+        .timing_err(e_timing_err), .timing_err_clr(b_clr2)
+    );
+
     // ---------------- AXI-Lite write ----------------
     task axi_write;
         input [7:0]  addr;
@@ -407,7 +443,14 @@ module tb_flvdval;
         for (f = 0; f < N_FRAMES; f = f + 1) begin
             if (fid_seq[N_FRAMES-1-f] !== (f % 2))
                 fail("FIELD_ID did not alternate across fields");
+            // FVAL rises combinationally on SOF, so FIELD_ID must be right
+            // ON that cycle -- a receiver latching it there must not see the
+            // previous field's parity.
+            if (fid_at_rise[N_FRAMES-1-f] !== (f % 2))
+                fail("FIELD_ID wrong at the FVAL rising edge");
         end
+        if (fid_rises < N_FRAMES)
+            fail("FVAL rising edges were not observed for every field");
 
         // ---- case 2: TIMING_ERR stays clear on a gap-free hand stream ----
         b_line(8, 0, 1'b1, 1'b0);
@@ -430,6 +473,36 @@ module tb_flvdval;
         repeat (2) @(posedge aclk);
         if (b_timing_err !== 1'b0)
             fail("TIMING_ERR did not clear on timing_err_clr");
+
+        // ---- case 5: porch envelope violated -> TIMING_ERR --------------
+        // Case 3's bubble line deliberately carries no EOF, so it left a
+        // frame open in every adapter watching this stream. Close it before
+        // clearing, or the first SOF below is itself a genuine violation.
+        b_line(8, 0, 1'b0, 1'b1);
+        repeat (12) @(posedge aclk);
+        // Clear the porch instance: it has been watching the same hand-built
+        // stream, including case 3's deliberate bubble.
+        @(negedge aclk); b_clr2 <= 1'b1;
+        @(posedge aclk);
+        @(negedge aclk); b_clr2 <= 1'b0;
+        repeat (2) @(posedge aclk);
+
+        // Generous blanking (> FVAL_LEAD): must stay clean.
+        b_line(8, 0, 1'b1, 1'b1);
+        repeat (12) @(posedge aclk);
+        b_line(8, 0, 1'b1, 1'b1);
+        repeat (12) @(posedge aclk);
+        if (e_timing_err !== 1'b0)
+            fail("envelope TIMING_ERR latched with blanking wider than the porch");
+
+        // Blanking shorter than FVAL_LEAD: the next SOF arrives while the
+        // previous frame is still draining the delay line.
+        b_line(8, 0, 1'b1, 1'b1);
+        repeat (2) @(posedge aclk);
+        b_line(8, 0, 1'b1, 1'b1);
+        repeat (12) @(posedge aclk);
+        if (e_timing_err !== 1'b1)
+            fail("TIMING_ERR did NOT latch when the porch overran the blanking");
 
         if (errors == 0)
             $display("PASS: tb_flvdval FVAL/LVAL/DVAL adapter");

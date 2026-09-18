@@ -133,9 +133,25 @@ A second adapter instance on the same stream uses `FVAL_LEAD=4`,
 `FVAL_TRAIL=6` and measures both porches, plus a testbench-side copy of the
 delay line proving the pixel path really is delayed by `FVAL_LEAD`.
 
+`FIELD_ID` is sampled at the **FVAL rising edge**, not just at its fall: FVAL
+rises combinationally on SOF, so a receiver latching the field ID on that edge
+must not see the previous field's parity.
+
 A third instance is fed a hand-built stream so the failure case is deliberate:
 `TIMING_ERR` must stay clear on a gap-free stream, must latch when a mid-line
-bubble is injected, and must clear on `timing_err_clr`.
+bubble is injected, and must clear on `timing_err_clr`. A fourth, with
+`FVAL_LEAD=4`, checks the porch-envelope violation: clean with blanking wider
+than the porch, `TIMING_ERR` latched when the next SOF arrives while the
+previous frame is still draining the delay line.
+
+`tb/tb_gapfree.v` pins down the assumption the adapter has no FIFO to survive
+without. The runner sweeps 11 configurations — `PIXELS_PER_CLOCK` 1/2/4/8,
+NOISE (leap-ahead LFSR), the BRAM-backed IMAGE build at PPC 1 and 4, a width
+that is not a multiple of PPC, a single-line frame, minimum (1-cycle) vertical
+blanking, and a frame rate below the active time — and each run asserts that
+every `LVAL` pulse is exactly `IMG_WIDTH/PPC` cycles (min == max), that
+`TIMING_ERR` never latches, and that vertical blanking equals the documented
+arithmetic.
 
 ```sh
 python sim/run_iverilog_flvdval.py

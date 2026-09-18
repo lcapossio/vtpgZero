@@ -78,8 +78,10 @@ module vtpgz_axis_to_flvdval #(
     output wire                   field_id,
 
     // ---- diagnostics -------------------------------------------------------
-    // Sticky: the source left a gap INSIDE a line, so the emitted raster is
-    // not the one the sink expects. Cleared by reset or timing_err_clr.
+    // Sticky: the emitted raster is not the one the sink expects -- either
+    // the source left a gap INSIDE a line, or the FVAL porches overran the
+    // vertical blanking so consecutive frames overlap in the delay line.
+    // Cleared by reset or timing_err_clr.
     output wire                   timing_err,
     input  wire                   timing_err_clr
 );
@@ -88,6 +90,23 @@ module vtpgz_axis_to_flvdval #(
     // generate bounds below misbehave.
     localparam integer LEAD  = (FVAL_LEAD  < 0) ? 0 : FVAL_LEAD;
     localparam integer TRAIL = (FVAL_TRAIL < 0) ? 0 : FVAL_TRAIL;
+
+    // Size the back-porch counter from TRAIL itself. A fixed width would wrap
+    // silently: at a width of 16, FVAL_TRAIL=65536 loads zero and FVAL would
+    // never clear after EOF.
+    function integer clogb2;
+        input integer value;
+        integer v;
+        begin
+            v = value;
+            clogb2 = 0;
+            while (v > 0) begin
+                v = v >> 1;
+                clogb2 = clogb2 + 1;
+            end
+        end
+    endfunction
+    localparam integer TRAIL_W = (TRAIL < 2) ? 1 : clogb2(TRAIL);
 
     // No backpressure exists downstream, so never apply any upstream.
     assign s_axis_tready = 1'b1;
@@ -159,28 +178,33 @@ module vtpgz_axis_to_flvdval #(
     // ---------------- FVAL --------------------------------------------------
     // Rises on the undelayed SOF (hence LEAD cycles ahead of LVAL), falls
     // TRAIL cycles after the delayed end-of-frame beat.
-    reg        fval_r;
-    reg [15:0] trail_cnt;
-    wire       eof_beat = dly_valid && dly_eof;
+    reg              fval_r;
+    reg [TRAIL_W-1:0] trail_cnt;
+    wire             eof_beat = dly_valid && dly_eof;
 
     always @(posedge aclk) begin
         if (!aresetn) begin
             fval_r    <= 1'b0;
-            trail_cnt <= 16'h0;
+            trail_cnt <= {TRAIL_W{1'b0}};
         end else if (in_sof) begin
-            // A new frame always wins: re-arm even if the previous frame's
-            // back porch had not expired (it cannot, with any sane blanking,
-            // but this keeps FVAL from being cut short by a stale counter).
+            // A new SOF re-arms FVAL and cancels any back porch still
+            // counting. Note this does NOT rescue the case where the porches
+            // overrun the vertical blanking: EOF is delayed by LEAD but SOF
+            // is not, so a previous frame's delayed EOF can still arrive
+            // AFTER this SOF and clear FVAL under the new frame. That is
+            // unrepresentable rather than fixable -- the two frames overlap
+            // inside the delay line -- so it is detected instead, see
+            // envelope_err below.
             fval_r    <= 1'b1;
-            trail_cnt <= 16'h0;
+            trail_cnt <= {TRAIL_W{1'b0}};
         end else if (eof_beat) begin
             if (TRAIL == 0)
                 fval_r <= 1'b0;         // drop right after the last pixel
             else
-                trail_cnt <= TRAIL[15:0];
-        end else if (trail_cnt != 16'h0) begin
-            trail_cnt <= trail_cnt - 16'd1;
-            if (trail_cnt == 16'd1)
+                trail_cnt <= TRAIL[TRAIL_W-1:0];
+        end else if (trail_cnt != {TRAIL_W{1'b0}}) begin
+            trail_cnt <= trail_cnt - 1'b1;
+            if (trail_cnt == {{(TRAIL_W-1){1'b0}}, 1'b1})
                 fval_r <= 1'b0;
         end
     end
@@ -190,6 +214,13 @@ module vtpgz_axis_to_flvdval #(
     // ---------------- field ID ----------------------------------------------
     // fid is stable for every beat of a field (UG934), so latching it at SOF
     // and holding it presents it to the sink for the whole of FVAL.
+    //
+    // The registered copy alone is NOT enough: FVAL rises combinationally on
+    // the SOF cycle, while field_id_r only updates on the following edge. A
+    // receiver that latches the field ID on the FVAL rising edge -- the
+    // normal thing to do -- would then sample the PREVIOUS field's parity on
+    // every field. So drive the incoming fid directly on the SOF cycle, the
+    // same way fval and lval fold in the current beat.
     reg field_id_r;
     always @(posedge aclk) begin
         if (!aresetn)
@@ -197,20 +228,42 @@ module vtpgz_axis_to_flvdval #(
         else if (in_sof)
             field_id_r <= s_axis_fid;
     end
-    assign field_id = field_id_r;
+    assign field_id = in_sof ? s_axis_fid : field_id_r;
 
     // ---------------- gap-free check ----------------------------------------
     // lval_r is high only strictly between a line's first and last beat, so
     // a cycle with lval_r high and no data is a bubble the parallel sink
     // cannot represent. Latch it rather than corrupting the raster silently.
     wire bubble = lval_r && !dly_valid;
+
+    // ---------------- porch envelope check ----------------------------------
+    // The porches are carved out of the vertical blanking, so they are only
+    // realisable while FVAL_LEAD + FVAL_TRAIL is smaller than it. Past that,
+    // FVAL cannot frame the two frames separately: a new SOF arrives while
+    // the previous frame is still draining the delay line, and the frames
+    // merge or the stale EOF cuts the new FVAL short. Flag it -- otherwise
+    // the only symptom is a subtly wrong FVAL that looks plausible.
+    reg frame_inflight;
+    always @(posedge aclk) begin
+        if (!aresetn)
+            frame_inflight <= 1'b0;
+        else if (in_sof)
+            frame_inflight <= 1'b1;
+        else if (eof_beat)
+            frame_inflight <= 1'b0;
+    end
+    // A SOF while the previous frame has not reached its (delayed) EOF, or an
+    // EOF with no frame open, both mean the envelope was violated.
+    wire envelope_err = (in_sof && frame_inflight && !eof_beat) ||
+                        (eof_beat && !frame_inflight && !in_sof);
+
     reg  timing_err_r;
     always @(posedge aclk) begin
         if (!aresetn)
             timing_err_r <= 1'b0;
         else if (timing_err_clr)
             timing_err_r <= 1'b0;
-        else if (bubble)
+        else if (bubble || envelope_err)
             timing_err_r <= 1'b1;
     end
     assign timing_err = timing_err_r;
