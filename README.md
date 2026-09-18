@@ -105,7 +105,7 @@ Both have **identical** pattern/output behavior — they only differ in how the
 | 0x1C   | COLOR_FORMAT   | **RO** build-time configuration mirror: `[1:0]`=output_mode (0=RGB 1=RAW 2=YUV), `[2]`=yuv_subsample (0=444 1=422), `[5:3]`=raw_bayer (0=PLAIN 1=RGGB 2=BGGR 3=GRBG 4=GBRG), `[6]`=rgb_order (0=Xilinx 1=legacy), `[15:8]`=BPC (8/10/12/14/16), `[31:16]`=TDATA_WIDTH |
 | 0x20   | SOLID_COLOR    | `{8'h0, R[8], G[8], B[8]}`                           |
 | 0x24   | BOX_COLOR      | moving box color                                     |
-| 0x28   | BOX_SIZE       | `{width[16], height[16]}`. Both fields must be **non-zero** — a zero box is not a supported configuration (it is also a divide-by-zero in the `BOX_IMG_*_STEP` host precompute). Use `BOX_COLOR` equal to the background if you want the overlay invisible. |
+| 0x28   | BOX_SIZE       | `{width[16], height[16]}`. Each half is clamped by the core to `1 <= size <= IMG_WIDTH`/`IMG_HEIGHT`, so a zero field renders a 1x1 box rather than disabling the overlay. Zero is not a supported configuration (it is also a divide-by-zero in the `BOX_IMG_*_STEP` host precompute); use `BOX_COLOR` equal to the background to make the overlay invisible. |
 | 0x2C   | BOX_SPEED      | `{dx[16], dy[16]}` pixels per frame                  |
 | 0x30   | PIXELS_PER_CLOCK | **RO** build-time pixels-per-AXI-beat (1/2/4/8)     |
 | 0x34   | GRID_SPACING   | grid line spacing in pixels                          |
