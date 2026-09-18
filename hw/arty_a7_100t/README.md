@@ -45,8 +45,30 @@ test pattern generator on the Digilent Arty A7-100T.
 |---|---|
 | `0x0000_0000`–`0x0000_00FF` | VTPGZ AXI4-Lite registers (see top-level README) |
 | `0x0001_0000` | `CAPTURE_CTRL`  W: `[0]`=arm `[1]`=clear |
-| `0x0001_0004` | `CAPTURE_STATUS` R: `[0]`=done, `[29:16]`=word_count |
+| `0x0001_0004` | `CAPTURE_STATUS` R: `[0]`=done, `[1]`=field_id of the captured frame (vtpgZero `fid`, latched at its SOF beat; only meaningful when `CONTROL[3]` interlace is set), `[29:16]`=word_count |
+| `0x0001_0008` | `FID_HIST` R: field ID of the last 32 SOF beats seen on the stream, bit 0 = most recent |
+| `0x0001_000C` | `SOF_COUNT` R: `[7:0]` number of SOF beats shifted into `FID_HIST` |
 | `0x0001_8000`–`0x0001_FFFF` | `FRAME_BRAM` (read-only window, 32 KB) |
+
+`CAPTURE_CTRL[2]` clears `FID_HIST`/`SOF_COUNT`; it is independent of
+`CAPTURE_CTRL[1]`, so the history survives a normal clear+arm sequence.
+
+### Why `FID_HIST` exists
+
+`frame_capture` drives `s_axis_tready` low unless it is actively capturing,
+and its FSM terminates on the **second** `tuser` (that SOF beat is accepted
+but not stored). Two consequences, both measured on the board:
+
+- Between captures the VTPGZ stalls mid-field with `STATUS[0]` (busy) high
+  and `STATUS[15:8]` (frame_count) frozen.
+- Each arm→done cycle consumes exactly **two** field starts (frame_count
+  advances by 2 per capture), so consecutive captures always land on the
+  **same** field parity. `CAPTURE_STATUS[1]` alone therefore cannot show
+  `fid` alternating, even though the core alternates correctly.
+
+`FID_HIST` records every field start instead, so adjacent bits are
+consecutive fields and must differ for an interlaced source. That is what
+`run_hw_interlace.py` checks.
 
 ## Build
 

@@ -109,6 +109,12 @@ module vtpgz_core #(
     // AXI-Lite wrapper), held constant across every beat. -----
     parameter integer TID_WIDTH   = 0,
     parameter integer TDEST_WIDTH = 0,
+    // ----- interlaced-video support (AMD/Xilinx AXI4-Stream video
+    // convention, see v_tpg PG103 / UG934). 0 (default) strips every field
+    // register and ties fid / sts_field_id to zero, so no interlace state
+    // logic is generated (the ports stay, as constants). At 1, cfg_interlace
+    // selects interlaced operation at runtime. -----
+    parameter integer EN_INTERLACE = 0,
     // ----- derived per-PIXEL tdata width: the smallest multiple-of-8 that
     // holds the active components for the chosen mode/bpc (do NOT override) --
     parameter PIX_TDATA_WIDTH =
@@ -130,6 +136,9 @@ module vtpgz_core #(
     input  wire        cfg_enable,
     input  wire        cfg_sw_fsync,
     input  wire        cfg_ext_sync,
+    // Interlaced-video enable (only used when EN_INTERLACE=1). coverage_off:
+    // a stripped build never reads it, so it never toggles.
+    /*verilator coverage_off*/ input wire cfg_interlace, /*verilator coverage_on*/
     input  wire [15:0] cfg_img_width,
     input  wire [15:0] cfg_img_height,
     input  wire [3:0]  cfg_pattern,
@@ -157,6 +166,9 @@ module vtpgz_core #(
     // ----- status outputs -----
     output reg         sts_busy,
     output reg  [7:0]  sts_frame_count,
+    // Field ID of the field the timing engine is currently producing
+    // (source side, ahead of fid by the output pipeline depth).
+    /*verilator coverage_off*/ output wire sts_field_id, /*verilator coverage_on*/
 
     // AXI4-Stream master (video out)
     /*verilator coverage_off*/ output wire [C_AXIS_TDATA_WIDTH-1:0] m_axis_tdata, /*verilator coverage_on*/
@@ -172,9 +184,18 @@ module vtpgz_core #(
     output wire [((TID_WIDTH   > 0) ? TID_WIDTH   : 1)-1:0] m_axis_tid,
     output wire [((TDEST_WIDTH > 0) ? TDEST_WIDTH : 1)-1:0] m_axis_tdest,
     /*verilator coverage_on*/
+    // Interlaced field ID sideband: 0 = even (top) field, 1 = odd (bottom)
+    // field, sampled coincident with SOF (m_axis_tuser) and held stable for
+    // every beat of the field. Constant 0 when EN_INTERLACE=0 or while
+    // cfg_interlace is low -- the progressive case, as UG934 requires.
+    /*verilator coverage_off*/ output wire fid, /*verilator coverage_on*/
 
     // External frame sync
-    input  wire                          frame_sync_in
+    input  wire                          frame_sync_in,
+    // Field ID of the externally-synced source, sampled on the frame_sync_in
+    // edge that starts each field (only used when EN_INTERLACE=1 and both
+    // cfg_interlace and cfg_ext_sync are set). Mirrors v_tpg's fid_in.
+    /*verilator coverage_off*/ input wire fid_in /*verilator coverage_on*/
 );
 
     // Clamp to >=1 so a stripped sideband is a 1-bit tie-off (Verilog-2001
@@ -1725,5 +1746,81 @@ module vtpgz_core #(
     // stable across every beat). Stripped to a constant 0 when the width is 0.
     assign m_axis_tid   = (TID_WIDTH   > 0) ? cfg_tid[TID_W-1:0]     : {TID_W{1'b0}};
     assign m_axis_tdest = (TDEST_WIDTH > 0) ? cfg_tdest[TDEST_W-1:0] : {TDEST_W{1'b0}};
+
+    // ---------------- interlaced field ID ----------------
+    // Follows the AMD/Xilinx AXI4-Stream video convention (v_tpg PG103,
+    // UG934), which keeps the pixel datapath completely untouched:
+    //   * a FIELD is what the timing engine already calls a frame. Program
+    //     IMG_HEIGHT with the FIELD height, i.e. frame_height/2 (PG103:
+    //     "while configuring the interlaced resolution, the active_height
+    //     should be configured as half"). Patterns are rendered in FIELD
+    //     coordinates, so a feature N lines tall spans ~2N scanlines once
+    //     the two fields are woven -- PG103 documents the same effect for
+    //     its box ("NxN for progressive video and Nx2N for interlaced").
+    //     Program BOX_SIZE with HALF the wanted frame height.
+    //   * TUSER (SOF) asserts on the first beat of EVERY field; TLAST stays
+    //     end-of-line.
+    //   * fid is sampled coincident with SOF and holds for the whole field:
+    //     0 = even (top) field, 1 = odd (bottom) field.
+    //   * one frame-sync pulse (internal divider or frame_sync_in) starts one
+    //     FIELD, so the sync rate is the field rate = 2x the frame rate.
+    // With internal sync the core alternates fid itself; with external sync
+    // it samples fid_in on the sync edge so it stays locked to the source.
+    generate if (EN_INTERLACE) begin : g_interlace
+        reg fid_src;
+        always @(posedge aclk) begin
+            if (!aresetn)
+                fid_src <= 1'b0;
+            // A field owns its field ID for its whole lifetime. The timing
+            // engine deliberately runs an in-flight field to completion after
+            // cfg_enable drops (that IS the documented reconfiguration
+            // sequence: clear CONTROL, let the field drain, reprogram), so the
+            // clear is gated on !active -- otherwise the tail of a draining
+            // odd field would emit valid beats carrying fid=0. Clearing
+            // cfg_interlace mid-field is handled the same way: it takes effect
+            // on the next field, not on the one already streaming.
+            else if (!active && (!cfg_enable || !cfg_interlace))
+                fid_src <= 1'b0;
+            // External sync: the source owns the parity, so load fid_in on
+            // the sync edge that starts the field. This takes priority over
+            // the end-of-field toggle below (the two can never collide --
+            // the load needs !active, the toggle needs active).
+            else if (cfg_ext_sync && !active && frame_start)
+                fid_src <= fid_in;
+            // Alternate at the end of every field, in BOTH sync modes, so
+            // fid_src always holds the ID the NEXT field will use. In
+            // external mode the next frame_start overwrites it with fid_in,
+            // so this is invisible there -- except when software switches
+            // ext->internal between fields, where it is exactly what keeps
+            // the sequence alternating instead of repeating the last
+            // externally-driven parity. Gated on cfg_interlace so a
+            // progressive field never disturbs the constant-0 fid.
+            else if (cfg_interlace && source_advance && end_of_frame)
+                fid_src <= ~fid_src;
+        end
+
+        // Carry fid down the same two pipeline stages + output register as
+        // the pixel it belongs to, so the value on the bus is the field of
+        // the beat being presented -- not of the field the source has
+        // already moved on to.
+        reg fid_s1, fid_q, fid_r;
+        always @(posedge aclk) begin
+            if (!aresetn) begin
+                fid_s1 <= 1'b0;
+                fid_q  <= 1'b0;
+                fid_r  <= 1'b0;
+            end else if (pipe_advance) begin
+                fid_s1 <= fid_src;
+                fid_q  <= fid_s1;
+                fid_r  <= fid_q;
+            end
+        end
+
+        assign fid   = fid_r;
+        assign sts_field_id = fid_src;
+    end else begin : g_interlace_off
+        assign fid   = 1'b0;
+        assign sts_field_id = 1'b0;
+    end endgenerate
 
 endmodule

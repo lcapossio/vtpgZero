@@ -48,6 +48,8 @@ module vtpgz_axilite_top #(
     // ----- optional AXI4-Stream routing sidebands (forwarded to core) -----
     parameter integer TID_WIDTH   = 0,
     parameter integer TDEST_WIDTH = 0,
+    // Interlaced-video support (see vtpgz_core). 0 strips the field logic.
+    parameter integer EN_INTERLACE = 0,
     // ----- derived tdata widths (same formulas as in core) -----
     parameter PIX_TDATA_WIDTH =
         (OUTPUT_MODE == `VTPGZ_MODE_RGB) ? (((3*BPC + 7) / 8) * 8) :
@@ -93,15 +95,21 @@ module vtpgz_axilite_top #(
     output wire [((TID_WIDTH   > 0) ? TID_WIDTH   : 1)-1:0] m_axis_tid,
     output wire [((TDEST_WIDTH > 0) ? TDEST_WIDTH : 1)-1:0] m_axis_tdest,
     /*verilator coverage_on*/
+    // Interlaced field ID (0 = even/top, 1 = odd/bottom), sampled with SOF.
+    /*verilator coverage_off*/ output wire fid, /*verilator coverage_on*/
 
     // External frame sync
-    input  wire                          frame_sync_in
+    input  wire                          frame_sync_in,
+    // Source field ID, sampled on the frame_sync_in edge (external-sync
+    // interlaced operation only).
+    /*verilator coverage_off*/ input wire fid_in /*verilator coverage_on*/
 );
 
     // ---------------- cfg / status interconnect ----------------
     wire        cfg_enable;
     wire        cfg_sw_fsync;
     wire        cfg_ext_sync;
+    wire        cfg_interlace;
     wire [15:0] cfg_img_width;
     wire [15:0] cfg_img_height;
     wire [3:0]  cfg_pattern;
@@ -127,6 +135,7 @@ module vtpgz_axilite_top #(
 
     wire        sts_busy;
     wire [7:0]  sts_frame_count;
+    /*verilator coverage_off*/ wire sts_field_id; /*verilator coverage_on*/
 
     // ---------------- AXI-Lite register file ----------------
     vtpgz_axil_regs #(
@@ -161,9 +170,11 @@ module vtpgz_axilite_top #(
         .s_axi_rready    (s_axi_rready),
         .sts_busy         (sts_busy),
         .sts_frame_count  (sts_frame_count),
+        .sts_field_id     (sts_field_id),
         .cfg_enable       (cfg_enable),
         .cfg_sw_fsync     (cfg_sw_fsync),
         .cfg_ext_sync     (cfg_ext_sync),
+        .cfg_interlace    (cfg_interlace),
         .cfg_img_width    (cfg_img_width),
         .cfg_img_height   (cfg_img_height),
         .cfg_pattern      (cfg_pattern),
@@ -218,6 +229,7 @@ module vtpgz_axilite_top #(
         .LINE_GAP_CYCLES(LINE_GAP_CYCLES),
         .TID_WIDTH   (TID_WIDTH),
         .TDEST_WIDTH (TDEST_WIDTH),
+        .EN_INTERLACE(EN_INTERLACE),
         .PIX_TDATA_WIDTH(PIX_TDATA_WIDTH),
         .C_AXIS_TDATA_WIDTH(C_AXIS_TDATA_WIDTH)
     ) u_core (
@@ -226,6 +238,7 @@ module vtpgz_axilite_top #(
         .cfg_enable       (cfg_enable),
         .cfg_sw_fsync     (cfg_sw_fsync),
         .cfg_ext_sync     (cfg_ext_sync),
+        .cfg_interlace    (cfg_interlace),
         .cfg_img_width    (cfg_img_width),
         .cfg_img_height   (cfg_img_height),
         .cfg_pattern      (cfg_pattern),
@@ -250,6 +263,7 @@ module vtpgz_axilite_top #(
         .cfg_tdest           (cfg_tdest),
         .sts_busy         (sts_busy),
         .sts_frame_count  (sts_frame_count),
+        .sts_field_id     (sts_field_id),
         .m_axis_tdata     (m_axis_tdata),
         .m_axis_tvalid    (m_axis_tvalid),
         .m_axis_tready    (m_axis_tready),
@@ -257,7 +271,9 @@ module vtpgz_axilite_top #(
         .m_axis_tuser     (m_axis_tuser),
         .m_axis_tid       (m_axis_tid),
         .m_axis_tdest     (m_axis_tdest),
-        .frame_sync_in    (frame_sync_in)
+        .fid       (fid),
+        .frame_sync_in    (frame_sync_in),
+        .fid_in           (fid_in)
     );
 
 endmodule

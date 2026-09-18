@@ -55,7 +55,8 @@ module tb_stream_route;
         .m_axis_tdata(m_tdata), .m_axis_tvalid(m_tvalid), .m_axis_tready(m_tready),
         .m_axis_tlast(m_tlast), .m_axis_tuser(m_tuser),
         .m_axis_tid(m_tid), .m_axis_tdest(m_tdest),
-        .frame_sync_in(1'b0)
+        .frame_sync_in(1'b0),
+        .fid_in            (1'b0)
     );
 
     // Parallel stripped instance (TID_WIDTH=0/TDEST_WIDTH=0 defaults) sharing
@@ -79,7 +80,8 @@ module tb_stream_route;
         .m_axis_tdata(m_tdata0), .m_axis_tvalid(m_tvalid0), .m_axis_tready(m_tready),
         .m_axis_tlast(m_tlast0), .m_axis_tuser(m_tuser0),
         .m_axis_tid(m_tid0), .m_axis_tdest(m_tdest0),
-        .frame_sync_in(1'b0)
+        .frame_sync_in(1'b0),
+        .fid_in            (1'b0)
     );
 
     // ---------------- AXI-Lite write task ----------------

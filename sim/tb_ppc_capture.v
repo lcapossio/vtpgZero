@@ -106,6 +106,7 @@ module tb_ppc_capture;
         .cfg_enable(cfg_enable),
         .cfg_sw_fsync(1'b0),
         .cfg_ext_sync(1'b0),
+        .cfg_interlace(1'b0),
         .cfg_img_width(cfg_img_width),
         .cfg_img_height(cfg_img_height),
         .cfg_pattern(cfg_pattern),
@@ -135,9 +136,11 @@ module tb_ppc_capture;
         .m_axis_tready(m_tready),
         .m_axis_tlast(m_tlast),
         .m_axis_tuser(m_tuser),
+        .fid    (),
         .m_axis_tid(),
         .m_axis_tdest(),
-        .frame_sync_in(1'b0)
+        .frame_sync_in(1'b0),
+        .fid_in            (1'b0)
     );
 
     integer out_fd;

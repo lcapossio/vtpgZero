@@ -82,6 +82,7 @@ module sim_top #(
     wire        axis_tready;
     wire        axis_tlast;
     wire        axis_tuser;
+    wire        axis_fid;
 
     vtpgz_axilite_top #(
         .C_S_AXI_ADDR_WIDTH(8),
@@ -120,9 +121,11 @@ module sim_top #(
         .m_axis_tready (axis_tready),
         .m_axis_tlast  (axis_tlast),
         .m_axis_tuser  (axis_tuser),
+        .fid           (axis_fid),
         .m_axis_tid    (),   // routing sidebands unused here (TID_WIDTH=0)
         .m_axis_tdest  (),
-        .frame_sync_in (1'b0)
+        .frame_sync_in (1'b0),
+        .fid_in            (1'b0)
     );
 
     frame_capture #(
@@ -138,6 +141,7 @@ module sim_top #(
         .s_axis_tready (axis_tready),
         .s_axis_tlast  (axis_tlast),
         .s_axis_tuser  (axis_tuser),
+        .s_axis_fid    (axis_fid),
         .s_axi_awaddr  (fc_awaddr),
         .s_axi_awlen   (fc_awlen),
         .s_axi_awsize  (fc_awsize),

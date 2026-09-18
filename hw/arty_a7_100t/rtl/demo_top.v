@@ -254,6 +254,7 @@ module demo_top (
     wire        vtpgz_axis_tready;
     wire        vtpgz_axis_tlast;
     wire        vtpgz_axis_tuser;
+    wire        vtpgz_axis_fid;
 
     vtpgz_axilite_top #(
         .C_S_AXI_ADDR_WIDTH(8),
@@ -263,7 +264,11 @@ module demo_top (
         .RAW_BAYER    (VTPGZ_RAW_BAYER),
         .RGB_ORDER    (VTPGZ_RGB_ORDER),
         .BPC          (VTPGZ_BPC),
-        .PIXELS_PER_CLOCK(VTPGZ_PIXELS_PER_CLOCK)
+        .PIXELS_PER_CLOCK(VTPGZ_PIXELS_PER_CLOCK),
+        // Interlaced-video support: CONTROL[3] selects it at runtime, and the
+        // capture sink reports the captured field at CAPTURE_STATUS[1].
+        // Progressive behaviour is bit-identical with CONTROL[3]=0.
+        .EN_INTERLACE (1)
     ) u_vtpgz (
         .aclk          (clk),
         .aresetn       (rst_n),
@@ -291,7 +296,9 @@ module demo_top (
         .m_axis_tready (vtpgz_axis_tready),
         .m_axis_tlast  (vtpgz_axis_tlast),
         .m_axis_tuser  (vtpgz_axis_tuser),
-        .frame_sync_in (1'b0)
+        .fid           (vtpgz_axis_fid),
+        .frame_sync_in (1'b0),
+        .fid_in        (1'b0)
     );
 
     // ---------------- frame_capture ----------------
@@ -316,6 +323,7 @@ module demo_top (
         .s_axis_tready (vtpgz_axis_tready),
         .s_axis_tlast  (vtpgz_axis_tlast),
         .s_axis_tuser  (vtpgz_axis_tuser),
+        .s_axis_fid    (vtpgz_axis_fid),
 
         .s_axi_awaddr  (br_awaddr),
         .s_axi_awlen   (br_awlen),

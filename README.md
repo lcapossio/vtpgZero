@@ -19,6 +19,7 @@ an AXI4-Lite slave register interface.
   - [Using vtpgz_axilite_top (AXI4-Lite controlled)](#using-vtpgz_axilite_top-axi4-lite-controlled)
   - [Programming sequence](#programming-sequence)
   - [External frame sync](#external-frame-sync)
+  - [Interlaced video](#interlaced-video)
   - [Multi-pixel-per-clock](#multi-pixel-per-clock)
   - [Output modes](#output-modes)
   - [Image patterns](#image-patterns)
@@ -76,6 +77,9 @@ Both have **identical** pattern/output behavior — they only differ in how the
   active components for the chosen mode/bpc. No manual sizing needed.
 - **AXI4-Lite** slave for runtime configuration (18 writable registers).
 - **AXI4-Stream** master output with full backpressure support.
+- **Interlaced video** (build-time `EN_INTERLACE`): per-field SOF plus a
+  `fid` field-ID sideband and a `fid_in` lock input, following the AMD/Xilinx
+  v_tpg (PG103) / UG934 convention. Stripped at elaboration when `EN_INTERLACE=0`.
 - **Frame sync**: internal (clock divider) or external (rising-edge input).
 - **Build-time pattern selection**: each pattern is gated by an `EN_*`
   parameter and stripped from the netlist when set to `0`.
@@ -93,15 +97,15 @@ Both have **identical** pattern/output behavior — they only differ in how the
 |--------|----------------|------------------------------------------------------|
 | 0x00   | CORE_ID        | **RO** fixed magic `0x47505456` = ASCII "VTPG" little-endian. Read this first to confirm you're talking to a vtpgZero core. |
 | 0x04   | VERSION        | **RO** `{major[8], minor[8], patch[16]}`             |
-| 0x08   | CONTROL        | `[0]` enable, `[1]` sw_fsync, `[2]` ext_sync         |
-| 0x0C   | STATUS         | **RO** `[0]` busy, `[15:8]` frame_count              |
+| 0x08   | CONTROL        | `[0]` enable, `[1]` sw_fsync, `[2]` ext_sync, `[3]` interlace |
+| 0x0C   | STATUS         | **RO** `[0]` busy, `[1]` field_id, `[15:8]` frame_count |
 | 0x10   | IMG_WIDTH      | active pixels per line                                |
-| 0x14   | IMG_HEIGHT     | active lines per frame                                |
+| 0x14   | IMG_HEIGHT     | active lines per frame (per **field** in interlaced mode — see [Interlaced video](#interlaced-video)) |
 | 0x18   | PATTERN_SEL    | 0=colorbar 1=hgrad 2=vgrad 3=checker 4=solid 5=(reserved) 6=grid 7=ramp 8=noise 9=image |
 | 0x1C   | COLOR_FORMAT   | **RO** build-time configuration mirror: `[1:0]`=output_mode (0=RGB 1=RAW 2=YUV), `[2]`=yuv_subsample (0=444 1=422), `[5:3]`=raw_bayer (0=PLAIN 1=RGGB 2=BGGR 3=GRBG 4=GBRG), `[6]`=rgb_order (0=Xilinx 1=legacy), `[15:8]`=BPC (8/10/12/14/16), `[31:16]`=TDATA_WIDTH |
 | 0x20   | SOLID_COLOR    | `{8'h0, R[8], G[8], B[8]}`                           |
 | 0x24   | BOX_COLOR      | moving box color                                     |
-| 0x28   | BOX_SIZE       | `{width[16], height[16]}`                            |
+| 0x28   | BOX_SIZE       | `{width[16], height[16]}`. Each half is clamped by the core to `1 <= size <= IMG_WIDTH`/`IMG_HEIGHT`, so a zero field renders a 1x1 box rather than disabling the overlay. Zero is not a supported configuration (it is also a divide-by-zero in the `BOX_IMG_*_STEP` host precompute); use `BOX_COLOR` equal to the background to make the overlay invisible. |
 | 0x2C   | BOX_SPEED      | `{dx[16], dy[16]}` pixels per frame                  |
 | 0x30   | PIXELS_PER_CLOCK | **RO** build-time pixels-per-AXI-beat (1/2/4/8)     |
 | 0x34   | GRID_SPACING   | grid line spacing in pixels                          |
@@ -159,6 +163,7 @@ The AXI-Lite flavor adds the other two files.
 | `RGB_ORDER` | 0 (Xilinx) | Component order in `tdata`. **0** = `{pad,B,G,R}` (Xilinx PG044); **1** = `{R,G,B,pad}` legacy MSB-first. |
 | `BPC` | 8 | Bits per component: 8, 10, 12, 14, or 16. |
 | `PIXELS_PER_CLOCK` | 1 | Pixels per AXI-Stream beat (1/2/4/8). See [Multi-pixel-per-clock](#multi-pixel-per-clock). |
+| `EN_INTERLACE` | 0 | Add interlaced-video support (`fid` / `fid_in`, `CONTROL[3]`). `0` (default) strips every field register and ties `fid` / `STATUS[1]` to 0, so no interlace logic is generated (the ports remain, as constants). See [Interlaced video](#interlaced-video). |
 | `TID_WIDTH` / `TDEST_WIDTH` | 0 | Add optional AXI4-Stream routing sidebands `m_axis_tid` / `m_axis_tdest`. `0` (default) strips them to a 1-bit tie-off, leaving the netlist unchanged. Set >0 and drive the value from the `STREAM_ROUTE` register (0x5C); it stays constant across every beat. |
 | `PIX_TDATA_WIDTH` / `C_AXIS_TDATA_WIDTH` | (auto) | **Derived** — don't override. Per-pixel and full-beat `tdata` widths. |
 
@@ -193,6 +198,7 @@ vtpgz_core #(
     .cfg_enable        (1'b1),                  // run forever
     .cfg_sw_fsync      (1'b0),
     .cfg_ext_sync      (1'b0),                  // use internal frame sync
+    .cfg_interlace     (1'b0),                  // progressive (EN_INTERLACE=1 only)
     .cfg_img_width     (16'd1920),
     .cfg_img_height    (16'd1080),
     .cfg_pattern       (4'd0),                  // colorbar
@@ -213,6 +219,7 @@ vtpgz_core #(
     // Status -- leave dangling if you don't need them
     .sts_busy          (),
     .sts_frame_count   (),
+    .sts_field_id      (),
 
     // AXI4-Stream master (video out)
     .m_axis_tdata      (vid_tdata),
@@ -220,9 +227,14 @@ vtpgz_core #(
     .m_axis_tready     (vid_tready),
     .m_axis_tlast      (vid_tlast),
     .m_axis_tuser      (vid_tsof),
+    // Interlaced field ID (EN_INTERLACE=1 only; constant 0 otherwise)
+    .fid        (vid_fid),
 
     // External frame sync (only used when cfg_ext_sync=1)
-    .frame_sync_in     (1'b0)
+    .frame_sync_in     (1'b0),
+    // Source field ID, sampled on the frame_sync_in edge (interlaced
+    // external-sync operation only)
+    .fid_in            (1'b0)
 );
 ```
 
@@ -346,6 +358,69 @@ A rising edge that arrives while a frame is still in flight is **dropped**
 (not queued) — correct for a free-running vsync. For latched-pending
 behavior, add your own pending-bit FF before `frame_sync_in`.
 
+### Interlaced video
+
+Build with `EN_INTERLACE = 1` and set `CONTROL[3]` to emit interlaced fields.
+The implementation follows the AMD/Xilinx AXI4-Stream video convention used
+by the Video Test Pattern Generator (PG103) and UG934, so the stream drops
+straight into a Xilinx video pipeline:
+
+- **`IMG_HEIGHT` holds the FIELD height** — program `frame_height / 2` (540
+  for 1080i), exactly as PG103 requires for `active_height`. A field is what
+  the timing engine already calls a frame, so the pixel datapath, the
+  patterns and the reference model are untouched by this feature.
+- **`m_axis_tuser` (SOF) asserts on the first beat of every field**;
+  `m_axis_tlast` stays end-of-line.
+- **`fid`** (named as on v_tpg, so Vivado does not fold it into the
+  `m_axis` interface) carries the field ID: `0` = even (top) field, `1` = odd
+  (bottom) field. It is sampled coincident with SOF and held stable for
+  every beat of the field. It is constant `0` for a progressive stream
+  (`CONTROL[3] = 0`, or an `EN_INTERLACE = 0` build), as UG934 requires.
+- **One frame-sync pulse starts one field.** `FRAME_RATE_DIV` therefore sets
+  the *field* rate, and an external `frame_sync_in` is expected at twice the
+  frame rate (59.94 Hz for 1080i29.97). `STATUS[15:8]` counts fields.
+- **Internal sync** alternates `fid` itself (0, 1, 0, 1, …). **External sync**
+  samples the **`fid_in`** port on the sync edge instead, so the core stays
+  locked to the field parity of the upstream source; repeat a field by
+  repeating the `fid_in` value. The port carries the same field information
+  v_tpg's `fid_in` does, but the sync-edge sampling is vtpgZero's own design
+  — PG103 describes its `fid_in` as a pass-through input, not a generator
+  parity input. Switching external → internal between fields continues the
+  alternation from the last emitted field rather than repeating it.
+- A fresh enable restarts at the even field: dropping `CONTROL[0]` (or
+  `CONTROL[3]`) across an idle cycle clears the parity, so the next field is
+  field 0. A field already in flight always keeps its own `fid` to the last
+  beat — clearing CONTROL mid-field does not retag the tail.
+- `STATUS[1]` reads back the field the timing engine is currently producing
+  (source side, so it runs slightly ahead of `fid`).
+
+Because each field is rendered in field coordinates, a feature N lines tall
+spans roughly 2N scanlines once the two fields are woven — v_tpg documents
+the same effect for its box ("NxN for progressive video and Nx2N for
+interlaced"). So program `BOX_SIZE` height for **half** what you want on the
+woven frame: an N-tall box on screen means programming N/2.
+
+`VG_STEP` is a step, not a height, so it follows the usual formula against
+the programmed (field) height — `VG_STEP = 0xFFF / (field_height - 1)`,
+i.e. roughly twice the progressive step for the same frame. Each field then
+sweeps the full gradient on its own, as v_tpg's field-coordinate rendering
+does.
+
+Two integration notes for real AMD pipelines:
+
+- `fid` is deliberately **not** part of the inferred `m_axis` interface, so a
+  block design that connects `m_axis` does not carry it along — wire `fid` to
+  the consumer's field input yourself (and configure that core for
+  interlace). AXI4-Stream to Video Out samples it with SOF, as UG934 states.
+- Polarity matches v_tpg (`0` = even, `1` = odd), but the Video Processing
+  Subsystem deinterlacer's `deint_field_id` uses the **opposite** polarity
+  (PG231) — invert `fid` when driving that core.
+
+`frame_sync_in` and `fid_in` are sampled directly by `aclk` with no
+synchronizer: both must be synchronous to `aclk`, and `fid_in` must be stable
+around the sync edge that starts the field. Cross a clock domain yourself
+before these pins.
+
 ### Multi-pixel-per-clock
 
 At `PIXELS_PER_CLOCK` of 2/4/8, that many horizontally-adjacent pixels are
@@ -401,6 +476,7 @@ All simulation is driven by one Python script (no Makefile):
 python sim/run_sim.py regression   # lint + build + run + 100% coverage + model gate
 python sim/run_sim.py all_modes    # byte-exact sim↔model gate across every mode/BPC
 python sim/cocotb/run_ppc.py       # beat-exact pixels-per-clock data path (1/2/4/8)
+python sim/run_iverilog_interlace.py  # interlaced field ID (fid) semantics
 ```
 
 There is also an Icarus smoke test, a cocotb control-plane suite, and a full

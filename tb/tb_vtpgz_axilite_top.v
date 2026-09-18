@@ -80,7 +80,9 @@ module tb_vtpgz_axilite_top;
         .m_axis_tready (m_tready),
         .m_axis_tlast  (m_tlast),
         .m_axis_tuser  (m_tuser),
-        .frame_sync_in (frame_sync_in)
+        .fid    (),
+        .frame_sync_in (frame_sync_in),
+        .fid_in            (1'b0)
     );
 
     // 100 MHz clock
