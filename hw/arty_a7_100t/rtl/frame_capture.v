@@ -10,11 +10,19 @@
 // CSR window (offset 0x0000, single-beat AXI4 writes/reads):
 //   0x00 CAPTURE_CTRL  W : [0]=arm (one-shot, self-clearing on capture done)
 //                        : [1]=clear (resets done + word_count)
+//                        : [2]=clear FID_HIST + SOF_COUNT (independent of [1],
+//                        :     so the history survives a normal clear+arm)
 //   0x04 CAPTURE_STATUS R : [0]=done, [1]=field_id of the captured frame
 //                        :   (vtpgZero `fid`, latched at its SOF beat -- only
 //                        :   meaningful for an interlaced stream),
 //                        : [31:16]=word_count
-//   0x08 CAPTURE_LEN  RW : number of beats to capture (default = full BRAM)
+//   0x08 FID_HIST     R : field ID of the last 32 SOF beats seen on the
+//                        :   stream, bit 0 = most recent. Because the capture
+//                        :   FSM stops on the SECOND tuser, each arm->done
+//                        :   cycle consumes TWO field starts and consecutive
+//                        :   captures always land on the SAME parity; this
+//                        :   register exposes every field start instead.
+//   0x0C SOF_COUNT    R : [7:0] number of SOF beats shifted into FID_HIST
 //
 // BRAM window (offset 0x1000+, AXI4 read bursts supported):
 //   stores tdata[31:0] of each captured beat as one 32-bit LE word.
@@ -146,6 +154,31 @@ module frame_capture #(
     endgenerate
     wire stream_beat = s_axis_tvalid && s_axis_tready;
     wire [31:0] beat_word = tdata_ext[31:0];   // word 0 (low 32 bits)
+
+    // ---------------- field-ID (fid) observer ----------------
+    // Independent of the capture FSM: shift the fid of EVERY accepted SOF
+    // beat into a history register (bit 0 = most recent) and count them.
+    // The capture FSM terminates on the second tuser, so an arm->done cycle
+    // always spans two field starts and captured_fid alone can never show
+    // alternation. This register can: adjacent bits are consecutive fields
+    // and must differ for an interlaced source.
+    reg [31:0] fid_hist;
+    reg [7:0]  sof_count;
+    wire       sof_beat = stream_beat && s_axis_tuser;
+    wire       csr_histclr_pulse;
+
+    always @(posedge aclk) begin
+        if (!aresetn) begin
+            fid_hist  <= 32'h0;
+            sof_count <= 8'h0;
+        end else if (csr_histclr_pulse) begin
+            fid_hist  <= 32'h0;
+            sof_count <= 8'h0;
+        end else if (sof_beat) begin
+            fid_hist  <= {fid_hist[30:0], s_axis_fid};
+            sof_count <= sof_count + 8'd1;
+        end
+    end
 
     // Capture FSM
     //   armed -> wait for first tuser (SOF), latch saw_sof
@@ -284,8 +317,10 @@ module frame_capture #(
     reg        wlast_q;
     reg        csr_arm_pulse_r;
     reg        csr_clear_pulse_r;
-    assign csr_arm_pulse   = csr_arm_pulse_r;
-    assign csr_clear_pulse = csr_clear_pulse_r;
+    reg        csr_histclr_pulse_r;
+    assign csr_arm_pulse     = csr_arm_pulse_r;
+    assign csr_clear_pulse   = csr_clear_pulse_r;
+    assign csr_histclr_pulse = csr_histclr_pulse_r;
 
     wire write_to_ctrl = (awaddr_q[15] == 1'b0) && (awaddr_q[7:0] == 8'h00);
     wire write_ok = write_to_ctrl && (awlen_q == 8'h00) && wlast_q && wstrb_q[0];
@@ -303,12 +338,14 @@ module frame_capture #(
             wdata_q           <= 32'h0;
             wstrb_q           <= {DATA_W/8{1'b0}};
             wlast_q           <= 1'b0;
-            csr_arm_pulse_r   <= 1'b0;
-            csr_clear_pulse_r <= 1'b0;
+            csr_arm_pulse_r     <= 1'b0;
+            csr_clear_pulse_r   <= 1'b0;
+            csr_histclr_pulse_r <= 1'b0;
         end else begin
             // Default: pulses self-clear each cycle
-            csr_arm_pulse_r   <= 1'b0;
-            csr_clear_pulse_r <= 1'b0;
+            csr_arm_pulse_r     <= 1'b0;
+            csr_clear_pulse_r   <= 1'b0;
+            csr_histclr_pulse_r <= 1'b0;
             // AW handshake
             if (!aw_taken && s_axi_awvalid) begin
                 aw_taken      <= 1'b1;
@@ -331,8 +368,9 @@ module frame_capture #(
             // Commit
             if (aw_taken && w_taken && !s_axi_bvalid) begin
                 if (write_ok) begin
-                    if (wdata_q[0]) csr_arm_pulse_r   <= 1'b1;
-                    if (wdata_q[1]) csr_clear_pulse_r <= 1'b1;
+                    if (wdata_q[0]) csr_arm_pulse_r     <= 1'b1;
+                    if (wdata_q[1]) csr_clear_pulse_r   <= 1'b1;
+                    if (wdata_q[2]) csr_histclr_pulse_r <= 1'b1;
                 end
                 s_axi_bvalid <= 1'b1;
                 s_axi_bresp  <= write_ok ? 2'b00 : 2'b10;
@@ -390,11 +428,15 @@ module frame_capture #(
                                 8'h00: s_axi_rdata <= 32'h0;
                                 8'h04: s_axi_rdata <= {2'h0, wr_idx, 14'h0,
                                                        captured_fid, done};
+                                8'h08: s_axi_rdata <= fid_hist;
+                                8'h0C: s_axi_rdata <= {24'h0, sof_count};
                                 default: s_axi_rdata <= 32'h0;
                             endcase
                             s_axi_rresp  <= ((s_axi_arlen == 8'h00) &&
                                              ((s_axi_araddr[7:0] == 8'h00) ||
-                                              (s_axi_araddr[7:0] == 8'h04))) ? 2'b00 : 2'b10;
+                                              (s_axi_araddr[7:0] == 8'h04) ||
+                                              (s_axi_araddr[7:0] == 8'h08) ||
+                                              (s_axi_araddr[7:0] == 8'h0C))) ? 2'b00 : 2'b10;
                             s_axi_rvalid <= 1'b1;
                             s_axi_rlast  <= 1'b1;
                         end

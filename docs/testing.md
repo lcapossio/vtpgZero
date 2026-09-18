@@ -128,6 +128,24 @@ python sim/run_iverilog_interlace.py
 
 Expected: `PASS: tb_interlace field ID (fid)`.
 
+### On hardware
+
+```sh
+python hw/arty_a7_100t/python/run_hw_interlace.py
+```
+
+This requires the Arty A7-100T demo bitstream (built with `EN_INTERLACE=1`).
+It checks that consecutive field starts alternate and that every captured
+field is byte-exact against the Python model at the field height.
+
+Alternation is read from the demo sink's `FID_HIST` register, not from the
+per-capture `CAPTURE_STATUS[1]`. `frame_capture` holds `s_axis_tready` low
+unless it is capturing, and its FSM stops on the second `tuser`, so each
+capture consumes exactly two field starts (confirmed on the board: the
+core's `frame_count` advances by 2 per capture) and every capture lands on
+the same parity. That is a property of the demo sink, not of the core — see
+[hw/arty_a7_100t/README.md](../hw/arty_a7_100t/README.md).
+
 ## Hardware test on Arty A7-100T
 
 A complete reference design under `hw/arty_a7_100t/` instantiates the VTPGZ
