@@ -296,6 +296,7 @@ module demo_top (
         .m_axis_tready (vtpgz_axis_tready),
         .m_axis_tlast  (vtpgz_axis_tlast),
         .m_axis_tuser  (vtpgz_axis_tuser),
+        .eof              (),
         .fid           (vtpgz_axis_fid),
         .frame_sync_in (1'b0),
         .fid_in        (1'b0)

@@ -20,6 +20,7 @@ an AXI4-Lite slave register interface.
   - [Programming sequence](#programming-sequence)
   - [External frame sync](#external-frame-sync)
   - [Interlaced video](#interlaced-video)
+  - [Parallel video out (FVAL/LVAL/DVAL)](#parallel-video-out-fvallvaldval)
   - [Multi-pixel-per-clock](#multi-pixel-per-clock)
   - [Output modes](#output-modes)
   - [Image patterns](#image-patterns)
@@ -421,6 +422,82 @@ synchronizer: both must be synchronous to `aclk`, and `fid_in` must be stable
 around the sync edge that starts the field. Cross a clock domain yourself
 before these pins.
 
+### Parallel video out (FVAL/LVAL/DVAL)
+
+`rtl/vtpgz_axis_to_flvdval.v` converts the AXI4-Stream output into the classic
+parallel video timing interface used by frame grabbers and camera links:
+
+| Signal | Meaning |
+|---|---|
+| `FVAL` | frame valid — high for the whole frame (the whole **field** when interlaced) |
+| `LVAL` | line valid — high for the whole active line |
+| `DVAL` | data valid — qualifies one beat of `PIX_DATA` |
+| `FIELD_ID` | `fid` of the frame `FVAL` encloses, latched at its SOF |
+
+```verilog
+vtpgz_axis_to_flvdval #(
+    .TDATA_WIDTH (24),   // one beat; = one pixel at PIXELS_PER_CLOCK=1
+    .FVAL_LEAD   (0),    // FVAL front porch, in cycles
+    .FVAL_TRAIL  (0)     // FVAL back porch, in cycles
+) u_flv (
+    .aclk(aclk), .aresetn(aresetn),
+    .s_axis_tdata(m_axis_tdata), .s_axis_tvalid(m_axis_tvalid),
+    .s_axis_tready(m_axis_tready), .s_axis_tlast(m_axis_tlast),
+    .s_axis_tuser(m_axis_tuser), .s_axis_eof(eof), .s_axis_fid(fid),
+    .pix_data(pix_data), .fval(fval), .lval(lval), .dval(dval),
+    .field_id(field_id),
+    .timing_err(timing_err), .timing_err_clr(1'b0)
+);
+```
+
+**There is no FIFO, and there cannot be a stall.** FVAL/LVAL/DVAL has no
+backpressure, so the adapter ties `TREADY` high permanently and relies on the
+source running gap-free. vtpgZero does: with `TREADY` high it emits exactly
+`IMG_WIDTH/PPC` contiguous beats per line, then `LINE_GAP_CYCLES` of idle,
+with no bubbles inside a line. Put this behind anything that *can* stall (a
+crossbar, a DMA, a slower-draining CDC FIFO) and that breaks — not silently:
+`LVAL` stays high across a mid-line bubble while `DVAL` drops, and
+`TIMING_ERR` latches. Such a source needs a line or frame FIFO in front.
+
+The adapter also needs `eof`, the core's end-of-frame marker (asserted on the
+same beat as the final `m_axis_tlast` of the frame). AXIS video leaves EOF
+implicit; the core already computes it, so it is brought out as a port.
+
+#### Blanking: it comes from the source, not the adapter
+
+The adapter has no buffer, so it can only reproduce the gaps the source
+already leaves. Both blanking intervals are therefore set upstream:
+
+| Interval | Set by | Cycles |
+|---|---|---|
+| Horizontal blanking (line break) | `LINE_GAP_CYCLES` (build parameter, min 1) | `LINE_GAP_CYCLES`, after every line but the last |
+| Vertical blanking (frame break) | `FRAME_RATE_DIV` (runtime register) | `FRAME_RATE_DIV - ACTIVE` |
+
+where the active time of one frame (field) is
+
+```
+ACTIVE = (IMG_WIDTH / PPC) * IMG_HEIGHT + LINE_GAP_CYCLES * (IMG_HEIGHT - 1)
+```
+
+So to hit a required blanking spec, pick `LINE_GAP_CYCLES` for the line break
+and then `FRAME_RATE_DIV = ACTIVE + wanted vertical blanking`. `FRAME_RATE_DIV`
+must exceed `ACTIVE` or frames overrun each other and no vertical blanking is
+left at all.
+
+`FVAL_LEAD` and `FVAL_TRAIL` carve the FVAL porches out of that vertical
+blanking, so they are only realisable while
+`FVAL_LEAD + FVAL_TRAIL < FRAME_RATE_DIV - ACTIVE`. The front porch is
+implemented by delaying the pixel path, so it costs `FVAL_LEAD` cycles of
+latency and `FVAL_LEAD * (TDATA_WIDTH+3)` flops; the back porch is just a
+counter and costs nothing. At `FVAL_LEAD = 0` no delay line is generated and
+`FVAL` rises together with the first `LVAL`.
+
+A classic parallel interface is one pixel per clock, so use
+`PIXELS_PER_CLOCK=1`. At `PPC=N` the adapter passes `TDATA_WIDTH` straight
+through and presents N pixels per `DVAL` on a wide bus — fine for an on-chip
+sink, but a true parallel link needs an external N:1 serializer running N
+times faster.
+
 ### Multi-pixel-per-clock
 
 At `PIXELS_PER_CLOCK` of 2/4/8, that many horizontally-adjacent pixels are
@@ -524,6 +601,8 @@ rtl/
   vtpgz_core.v          port-driven core: timing engine, pattern generators,
                         inline pack stage, AXIS output
   vtpgz_axilite_top.v   thin wrapper: vtpgz_axil_regs + vtpgz_core
+  vtpgz_axis_to_flvdval.v  optional adapter: AXIS video -> parallel
+                        FVAL/LVAL/DVAL (no FIFO, source must be gap-free)
 tb/                     Icarus Verilog smoke testbench
 sim/                    Verilator/iverilog/cocotb harnesses + run_sim.py
                         (see docs/testing.md)

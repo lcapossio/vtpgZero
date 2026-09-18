@@ -89,6 +89,9 @@ module vtpgz_axilite_top #(
     input  wire                          m_axis_tready,
     output wire                          m_axis_tlast,
     output wire                          m_axis_tuser,
+    // End of frame/field, coincident with the final m_axis_tlast of the
+    // frame. See vtpgz_core for why it is not called m_axis_eof.
+    output wire                          eof,
     // Optional routing sidebands (1-bit tie-off when the width is 0).
     // coverage_off: constant in the default (stripped) build -> never toggles.
     /*verilator coverage_off*/
@@ -269,6 +272,7 @@ module vtpgz_axilite_top #(
         .m_axis_tready    (m_axis_tready),
         .m_axis_tlast     (m_axis_tlast),
         .m_axis_tuser     (m_axis_tuser),
+        .eof              (eof),
         .m_axis_tid       (m_axis_tid),
         .m_axis_tdest     (m_axis_tdest),
         .fid       (fid),

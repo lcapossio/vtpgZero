@@ -136,6 +136,7 @@ module tb_ppc_capture;
         .m_axis_tready(m_tready),
         .m_axis_tlast(m_tlast),
         .m_axis_tuser(m_tuser),
+        .eof              (),
         .fid    (),
         .m_axis_tid(),
         .m_axis_tdest(),

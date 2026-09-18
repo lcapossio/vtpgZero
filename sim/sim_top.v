@@ -121,6 +121,7 @@ module sim_top #(
         .m_axis_tready (axis_tready),
         .m_axis_tlast  (axis_tlast),
         .m_axis_tuser  (axis_tuser),
+        .eof              (),
         .fid           (axis_fid),
         .m_axis_tid    (),   // routing sidebands unused here (TID_WIDTH=0)
         .m_axis_tdest  (),

@@ -60,7 +60,7 @@ module tb_interlace;
         .s_axi_araddr(araddr), .s_axi_arprot(3'b000), .s_axi_arvalid(arvalid), .s_axi_arready(arready),
         .s_axi_rdata(rdata), .s_axi_rresp(rresp), .s_axi_rvalid(rvalid), .s_axi_rready(rready),
         .m_axis_tdata(m_tdata), .m_axis_tvalid(m_tvalid), .m_axis_tready(m_tready),
-        .m_axis_tlast(m_tlast), .m_axis_tuser(m_tuser),
+        .m_axis_tlast(m_tlast), .m_axis_tuser(m_tuser), .eof(),
         .m_axis_tid(), .m_axis_tdest(), .fid(m_fid),
         .frame_sync_in(frame_sync), .fid_in(fid_drive)
     );
@@ -82,7 +82,7 @@ module tb_interlace;
         .s_axi_araddr(8'h0), .s_axi_arprot(3'b000), .s_axi_arvalid(1'b0), .s_axi_arready(),
         .s_axi_rdata(), .s_axi_rresp(), .s_axi_rvalid(), .s_axi_rready(1'b0),
         .m_axis_tdata(m_tdata0), .m_axis_tvalid(m_tvalid0), .m_axis_tready(m_tready),
-        .m_axis_tlast(m_tlast0), .m_axis_tuser(m_tuser0),
+        .m_axis_tlast(m_tlast0), .m_axis_tuser(m_tuser0), .eof(),
         .m_axis_tid(), .m_axis_tdest(), .fid(m_fid0),
         .frame_sync_in(frame_sync), .fid_in(fid_drive)
     );
@@ -118,7 +118,7 @@ module tb_interlace;
         .s_axi_araddr(8'h0), .s_axi_arprot(3'b000), .s_axi_arvalid(1'b0), .s_axi_arready(),
         .s_axi_rdata(), .s_axi_rresp(), .s_axi_rvalid(), .s_axi_rready(1'b0),
         .m_axis_tdata(g_tdata), .m_axis_tvalid(g_tvalid), .m_axis_tready(g_tready),
-        .m_axis_tlast(g_tlast), .m_axis_tuser(g_tuser),
+        .m_axis_tlast(g_tlast), .m_axis_tuser(g_tuser), .eof(),
         .m_axis_tid(), .m_axis_tdest(), .fid(g_fid),
         .frame_sync_in(frame_sync), .fid_in(fid_drive)
     );

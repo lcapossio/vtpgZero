@@ -53,7 +53,7 @@ module tb_stream_route;
         .s_axi_araddr(araddr), .s_axi_arprot(3'b000), .s_axi_arvalid(arvalid), .s_axi_arready(arready),
         .s_axi_rdata(rdata), .s_axi_rresp(rresp), .s_axi_rvalid(rvalid), .s_axi_rready(rready),
         .m_axis_tdata(m_tdata), .m_axis_tvalid(m_tvalid), .m_axis_tready(m_tready),
-        .m_axis_tlast(m_tlast), .m_axis_tuser(m_tuser),
+        .m_axis_tlast(m_tlast), .m_axis_tuser(m_tuser), .eof(),
         .m_axis_tid(m_tid), .m_axis_tdest(m_tdest),
         .frame_sync_in(1'b0),
         .fid_in            (1'b0)
@@ -78,7 +78,7 @@ module tb_stream_route;
         .s_axi_araddr(8'h0), .s_axi_arprot(3'b000), .s_axi_arvalid(1'b0), .s_axi_arready(),
         .s_axi_rdata(), .s_axi_rresp(), .s_axi_rvalid(), .s_axi_rready(1'b0),
         .m_axis_tdata(m_tdata0), .m_axis_tvalid(m_tvalid0), .m_axis_tready(m_tready),
-        .m_axis_tlast(m_tlast0), .m_axis_tuser(m_tuser0),
+        .m_axis_tlast(m_tlast0), .m_axis_tuser(m_tuser0), .eof(),
         .m_axis_tid(m_tid0), .m_axis_tdest(m_tdest0),
         .frame_sync_in(1'b0),
         .fid_in            (1'b0)

@@ -72,6 +72,9 @@ jobs:
       - name: Interlaced field ID (fid) regression
         run: python sim/run_iverilog_interlace.py
 
+      - name: Parallel video adapter (FVAL/LVAL/DVAL)
+        run: python sim/run_iverilog_flvdval.py
+
       - name: Multi-pixel sweep (RTL vs model beat-exact, PPC 1/2/4/8)
         run: python sim/check_ppc_vs_model.py
 
@@ -92,6 +95,12 @@ jobs:
 
       - name: Lint multi-pixel (Verilator, PPC 2/4/8)
         run: for p in 2 4 8; do python sim/run_sim.py lint --ppc $p; done
+
+      - name: Lint parallel video adapter (FVAL/LVAL/DVAL, porch 0 and 4)
+        run: |
+          for lead in 0 4; do
+            verilator --lint-only -Wall -Wno-UNUSED -Wno-WIDTH -Wno-DECLFILENAME               --top-module vtpgz_axis_to_flvdval               -GFVAL_LEAD=$lead -GFVAL_TRAIL=6 rtl/vtpgz_axis_to_flvdval.v
+          done
 
       - name: Regression (coverage + model gate, RGB 8bpc)
         run: python sim/run_sim.py regression

@@ -113,6 +113,36 @@ and modes, PPC 1/2/4/8) is also available:
 python sim/check_ppc_vs_model.py
 ```
 
+## Parallel video adapter (FVAL/LVAL/DVAL)
+
+`tb/tb_flvdval.v` drives `vtpgz_axis_to_flvdval` from a real core instance and
+checks the raster properties a parallel sink depends on, all derived from the
+geometry rather than from the adapter's own outputs:
+
+- `LVAL` high for exactly `IMG_WIDTH` cycles per line, `IMG_HEIGHT` lines
+  inside every `FVAL`;
+- horizontal blanking exactly `LINE_GAP_CYCLES`;
+- vertical blanking exactly `FRAME_RATE_DIV - ACTIVE`, where
+  `ACTIVE = W*H + LINE_GAP_CYCLES*(H-1)`;
+- `DVAL` never outside `LVAL`, `LVAL` never outside `FVAL`, and the `DVAL`
+  count equal to the number of AXIS beats (nothing dropped or invented);
+- `PIX_DATA` equal to the AXIS beat on every `DVAL`;
+- `FIELD_ID` alternating across fields for an interlaced source.
+
+A second adapter instance on the same stream uses `FVAL_LEAD=4`,
+`FVAL_TRAIL=6` and measures both porches, plus a testbench-side copy of the
+delay line proving the pixel path really is delayed by `FVAL_LEAD`.
+
+A third instance is fed a hand-built stream so the failure case is deliberate:
+`TIMING_ERR` must stay clear on a gap-free stream, must latch when a mid-line
+bubble is injected, and must clear on `timing_err_clr`.
+
+```sh
+python sim/run_iverilog_flvdval.py
+```
+
+Expected: `PASS: tb_flvdval FVAL/LVAL/DVAL adapter`.
+
 ## Interlaced field ID (fid)
 
 `tb/tb_interlace.v` drives an `EN_INTERLACE=1` build alongside a stripped
