@@ -65,6 +65,7 @@ module flv_monitor (
     reg [7:0]  fid_hist_r;
     reg        dval_ne_r;
     reg        lval_q, fval_q;
+    reg        vb_armed;
 
     wire lval_fall = lval_q && !lval;
     wire fval_fall = fval_q && !fval;
@@ -85,6 +86,7 @@ module flv_monitor (
             dval_ne_r    <= 1'b0;
             lval_q       <= 1'b0;
             fval_q       <= 1'b0;
+            vb_armed     <= 1'b0;
         end else begin
             lval_q <= lval;
             fval_q <= fval;
@@ -101,18 +103,27 @@ module flv_monitor (
             end
 
             // ---- vertical blanking ----
-            // Counted only between frames: the count is armed by the first
-            // FVAL fall, so the idle time before the very first frame (which
-            // is not blanking, it is the host still programming registers)
-            // never lands in the min.
+            // Counted only between frames, so the idle time before the very
+            // first frame -- which is not blanking, it is the host still
+            // programming registers -- never lands in the min.
+            //
+            // The arm must include the FVAL falling cycle itself, because
+            // that cycle is already the first blanking cycle. Gating on
+            // frames_r instead would miss it: frames_r increments on that
+            // same edge, so the old value is still 0 when it is read here,
+            // and the FIRST interval alone would come up one cycle short --
+            // enough to drag vb_min below vb_max forever.
             if (fval)
                 vb_cnt <= 16'h0;
-            else if (frames_r != 8'h0)
+            else if (vb_armed || fval_fall)
                 vb_cnt <= vb_cnt + 16'd1;
+
+            if (fval_fall)
+                vb_armed <= 1'b1;
 
             if (fval_rise) begin
                 fid_hist_r <= {fid_hist_r[6:0], field_id};
-                if (frames_r != 8'h0) begin
+                if (vb_armed) begin
                     if (vb_cnt < vb_min_r) vb_min_r <= vb_cnt;
                     if (vb_cnt > vb_max_r) vb_max_r <= vb_cnt;
                 end
