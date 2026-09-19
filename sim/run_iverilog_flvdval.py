@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """Run the FVAL/LVAL/DVAL parallel-video adapter regressions with Icarus.
 
-Two benches: tb_flvdval (the adapter itself) and tb_gapfree, swept over
-configurations, which pins down the gap-free-line assumption the adapter has
-no FIFO to survive without.
+Three benches:
+
+  tb_flvdval  the adapter itself
+  tb_gapfree  swept over configurations, pinning down the gap-free-line
+              assumption the adapter has no FIFO to survive without
+  tb_flvmon   flv_monitor, the instrument run_hw_flvdval.py reads its numbers
+              from -- a wrong monitor makes the board test lie in either
+              direction, and tb_gapfree does not cover it because it measures
+              the raster with its own testbench-side counters
 """
 
 from __future__ import annotations
@@ -17,6 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "sim" / "flvdval_tb.vvp"
 OUT_GF = ROOT / "sim" / "gapfree_tb.vvp"
+OUT_MON = ROOT / "sim" / "flvmon_tb.vvp"
 
 # (ppc, w, h, gap, rate, pattern, en_image)
 GAPFREE_SWEEP = [
@@ -31,6 +38,15 @@ GAPFREE_SWEEP = [
     (1, 32, 1, 1, 400, 0, 0),   # single-line frame
     (1, 32, 4, 1, 132, 0, 0),   # minimum vertical blanking (1 cycle)
     (1, 32, 4, 1, 100, 0, 0),   # sync ticks dropped: period is a multiple
+]
+
+# (ppc, w, h, gap, rate, interlaced)
+FLVMON_SWEEP = [
+    (1, 32, 4, 1, 400, 0),   # generous blanking
+    (4, 32, 4, 1, 400, 0),   # the pack stage at PPC>1
+    (1, 32, 4, 1, 132, 0),   # 1-cycle blanking: min and max have no slack
+    (1, 32, 4, 1, 100, 0),   # sync ticks dropped: period is a multiple
+    (1, 32, 2, 1, 400, 1),   # interlaced: fid_hist must alternate
 ]
 
 
@@ -105,8 +121,39 @@ def main() -> int:
             print("ERROR: tb_gapfree did not report PASS.", file=sys.stderr)
             return 1
 
+    # ---- the monitor the hardware test reads its numbers from ----
+    for ppc, w, h, gap, rate, ilace in FLVMON_SWEEP:
+        run(
+            [
+                "iverilog", "-g2001", "-Wall", "-I", "rtl", "-o", str(OUT_MON),
+                "-s", "tb_flvmon",
+                f"-Ptb_flvmon.PPC={ppc}", f"-Ptb_flvmon.W={w}",
+                f"-Ptb_flvmon.H={h}", f"-Ptb_flvmon.GAP={gap}",
+                f"-Ptb_flvmon.RATE={rate}", f"-Ptb_flvmon.ILACE={ilace}",
+                "tb/tb_flvmon.v",
+                "rtl/vtpgz_core.v",
+                "rtl/vtpgz_axil_regs.v",
+                "rtl/vtpgz_axilite_top.v",
+                "rtl/vtpgz_axis_to_flvdval.v",
+                "hw/arty_a7_100t/rtl/flv_monitor.v",
+            ],
+            quiet=True,
+        )
+        p = subprocess.run(
+            ["vvp", str(OUT_MON)], cwd=ROOT, check=True,
+            capture_output=True, text=True,
+        )
+        line = next((ln for ln in p.stdout.splitlines()
+                     if ln.startswith(("PASS: tb_flvmon", "FAIL: tb_flvmon",
+                                       "ERROR:"))), "")
+        print("  " + (line or p.stdout.strip()), flush=True)
+        if "PASS: tb_flvmon" not in p.stdout:
+            print("ERROR: tb_flvmon did not report PASS.", file=sys.stderr)
+            return 1
+
     print("PASS: parallel video adapter + gap-free assumption "
-          f"({len(GAPFREE_SWEEP)} configs)")
+          f"({len(GAPFREE_SWEEP)} configs) + flv_monitor "
+          f"({len(FLVMON_SWEEP)} configs)")
     return 0
 
 

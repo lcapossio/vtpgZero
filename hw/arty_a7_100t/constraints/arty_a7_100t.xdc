@@ -38,7 +38,21 @@ set_clock_groups -asynchronous \
 # The bounce-check arithmetic feeds back into box_x/box_y. The update only
 # fires at end_of_frame, so the combinational chain has the entire frame
 # to settle. Tell timing analysis it's a 2-cycle multi-cycle path.
-set_multicycle_path 2 -setup -from [get_cells u_tpg/g_box.box_x_reg*]
-set_multicycle_path 1 -hold  -from [get_cells u_tpg/g_box.box_x_reg*]
-set_multicycle_path 2 -setup -from [get_cells u_tpg/g_box.box_y_reg*]
-set_multicycle_path 1 -hold  -from [get_cells u_tpg/g_box.box_y_reg*]
+#
+# Matched hierarchically, not by absolute path. The core sits at
+# u_vtpgz/u_core here, not at the top level, and the old absolute path
+# (u_tpg/...) matched nothing at all -- Vivado only emits a critical warning
+# for that, the build still succeeds, and the paths quietly go unconstrained.
+# check_box_multicycle in scripts/build.tcl now fails the build if these stop
+# matching. The logic lives there because an XDC file only accepts a subset of
+# Tcl: foreach and if are rejected with "not supported in the xdc constraint
+# file", which silently drops whatever they contain.
+#
+# IS_SEQUENTIAL is required: Vivado names the LUTs feeding a register after
+# that register (box_x_reg[11]_i_1), so the name glob alone would apply -from
+# to combinational cells. box_x_reflect_reg and box_x_wrap_thr_reg do not
+# contain the substring "box_x_reg" and are excluded by the name.
+set_multicycle_path 2 -setup -from [get_cells -hierarchical -filter {NAME =~ *g_box.box_x_reg* && IS_SEQUENTIAL}]
+set_multicycle_path 1 -hold  -from [get_cells -hierarchical -filter {NAME =~ *g_box.box_x_reg* && IS_SEQUENTIAL}]
+set_multicycle_path 2 -setup -from [get_cells -hierarchical -filter {NAME =~ *g_box.box_y_reg* && IS_SEQUENTIAL}]
+set_multicycle_path 1 -hold  -from [get_cells -hierarchical -filter {NAME =~ *g_box.box_y_reg* && IS_SEQUENTIAL}]

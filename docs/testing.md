@@ -157,6 +157,26 @@ arithmetic.
 python sim/run_iverilog_flvdval.py
 ```
 
+`tb/tb_flvmon.v` covers `flv_monitor`, the fabric instrument the board test
+reads its numbers from. That matters because `run_hw_flvdval.py` asserts
+nothing directly -- it compares the monitor's counters against the geometry,
+so a wrong monitor either invents a hardware failure or hides a real one.
+`tb_gapfree` checks the same raster properties but measures them with its own
+testbench-side counters and never instantiates the monitor, which is how an
+off-by-one in it reached the board once already (see below). The runner sweeps
+5 configurations including 1-cycle blanking, a dropped-tick frame rate, and an
+interlaced source.
+
+The `min == max` comparisons are the load-bearing ones: a monitor that
+mismeasures a single interval out of many still moves `min` or `max` and
+cannot average the error away. Reintroducing the first-blanking-interval bug
+makes `tb_flvmon` fail while `tb_flvdval` and all 11 `tb_gapfree` configs
+still pass -- that mutation is what establishes the bench is doing work.
+
+```sh
+python sim/run_iverilog_flvdval.py
+```
+
 Expected: `PASS: tb_flvdval FVAL/LVAL/DVAL adapter`.
 
 ### On hardware
@@ -183,6 +203,13 @@ It sets `FLV_MODE[0]` first, which hands `tready` from `frame_capture` to the
 adapter and ties it high; the source must free-run gap-free because a parallel
 interface cannot express a stall. Capture is meaningless while that bit is
 set, and the script clears it on the way out.
+
+Two counter widths bound what can be asked of it. The monitor counts blanking
+in 16 bits, so the script checks each case's expected blanking against that
+before trusting the comparison rather than silently measuring a wrapped value;
+pick a faster `FRAME_RATE_DIV` if a geometry trips the assertion. The frame
+count saturates at 255 instead of wrapping, because a single JTAG round trip
+is long enough for thousands of frames to pass.
 
 ## Interlaced field ID (fid)
 

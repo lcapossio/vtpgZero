@@ -79,6 +79,28 @@ if {[get_property PROGRESS [get_runs synth_1]] != "100%"} {
     error "Synthesis failed - see $proj_dir/${project_name}.runs/synth_1/"
 }
 open_run synth_1 -name synth_1
+
+# ─── the box multicycle paths actually landed ─────────────────────
+# A set_multicycle_path whose -from matches nothing is only a CRITICAL
+# WARNING: the build still succeeds and the paths go unconstrained. That is
+# exactly how the constraint in arty_a7_100t.xdc sat dead against a stale
+# u_tpg/... path. Verify here instead, where real Tcl is allowed (an XDC file
+# rejects foreach/if outright), so a hierarchy rename fails the build loudly.
+foreach axis {x y} {
+    set ff [get_cells -quiet -hierarchical \
+        -filter "NAME =~ *g_box.box_${axis}_reg* && IS_SEQUENTIAL"]
+    set g_box [get_cells -quiet -hierarchical -filter {NAME =~ *g_box.*}]
+    if {[llength $ff] > 0} {
+        puts "INFO: box_${axis} multicycle path -> [llength $ff] registers"
+    } elseif {[llength $g_box] > 0} {
+        error "g_box is present but box_${axis} registers did not match the\
+               filter in arty_a7_100t.xdc; the multicycle path is silently\
+               unconstrained. Fix the filter."
+    } else {
+        puts "INFO: EN_MOVING_BOX=0, box_${axis} multicycle path not needed"
+    }
+}
+
 report_utilization    -file $rpt_dir/synth_utilization.rpt
 report_timing_summary -file $rpt_dir/synth_timing.rpt
 write_checkpoint -force $build_dir/post_synth.dcp
