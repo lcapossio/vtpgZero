@@ -171,7 +171,18 @@ module sim_top #(
         .s_axi_rlast   (fc_rlast),
         .s_axi_rready  (fc_rready),
         .capture_busy_o(),
-        .capture_done_o()
+        .capture_done_o(),
+        .flv_parallel_mode(),
+        .flv_clear(),
+        .flv_lval_min(16'h0),
+        .flv_lval_max(16'h0),
+        .flv_lines_last(16'h0),
+        .flv_vblank_min(16'h0),
+        .flv_vblank_max(16'h0),
+        .flv_frames(8'h0),
+        .flv_fid_hist(8'h0),
+        .flv_dval_ne_lval(1'b0),
+        .flv_timing_err(1'b0)
     );
 
 endmodule

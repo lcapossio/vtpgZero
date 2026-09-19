@@ -159,6 +159,31 @@ python sim/run_iverilog_flvdval.py
 
 Expected: `PASS: tb_flvdval FVAL/LVAL/DVAL adapter`.
 
+### On hardware
+
+The Arty demo instantiates the adapter on the same stream the capture sink
+sees, plus `flv_monitor`, which measures the emitted raster in fabric and
+reports it through the capture CSR window (`0x0001_0010`-`0x0001_0020`, see
+`hw/arty_a7_100t/README.md`). The pixel bus stays on-chip -- at
+`PIXELS_PER_CLOCK=4` it is 96 bits wide, so no board can bring it out -- and
+what is proven on silicon is the timing.
+
+```sh
+python hw/arty_a7_100t/python/run_hw_flvdval.py
+```
+
+The script asserts the same properties `tb_gapfree` asserts in simulation:
+LVAL pulse min == max == `IMG_WIDTH/PPC`, lines per frame == `IMG_HEIGHT`,
+vertical blanking min == max == `PERIOD - ACTIVE`, `TIMING_ERR` clear, DVAL
+identical to LVAL throughout, and `FIELD_ID` alternating at the FVAL rising
+edge for an interlaced source. Every expected value is computed from the
+geometry, not read back from the adapter.
+
+It sets `FLV_MODE[0]` first, which hands `tready` from `frame_capture` to the
+adapter and ties it high; the source must free-run gap-free because a parallel
+interface cannot express a stall. Capture is meaningless while that bit is
+set, and the script clears it on the way out.
+
 ## Interlaced field ID (fid)
 
 `tb/tb_interlace.v` drives an `EN_INTERLACE=1` build alongside a stripped

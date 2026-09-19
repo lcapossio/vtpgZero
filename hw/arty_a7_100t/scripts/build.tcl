@@ -49,6 +49,8 @@ add_files [list \
     $hw_dir/rtl/axi4_to_axil.v \
     $hw_dir/rtl/bram_sdp.v \
     $hw_dir/rtl/frame_capture.v \
+    $hw_dir/rtl/flv_monitor.v \
+    $repo_root/rtl/vtpgz_axis_to_flvdval.v \
     $hw_dir/rtl/demo_top.v \
     $fcapz_dir/rtl/fcapz_async_fifo.v \
     $fcapz_dir/rtl/fcapz_ejtagaxi.v \
