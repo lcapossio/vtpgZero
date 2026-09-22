@@ -48,6 +48,11 @@ test pattern generator on the Digilent Arty A7-100T.
 | `0x0001_0004` | `CAPTURE_STATUS` R: `[0]`=done, `[1]`=field_id of the captured frame (vtpgZero `fid`, latched at its SOF beat; only meaningful when `CONTROL[3]` interlace is set), `[29:16]`=word_count |
 | `0x0001_0008` | `FID_HIST` R: field ID of the last 32 SOF beats seen on the stream, bit 0 = most recent |
 | `0x0001_000C` | `SOF_COUNT` R: `[7:0]` number of SOF beats shifted into `FID_HIST` |
+| `0x0001_0010` | `FLV_MODE` RW: `[0]`=parallel mode (the FVAL/LVAL/DVAL adapter owns `tready`), `[1]`=clear the monitor statistics (self-clearing) |
+| `0x0001_0014` | `FLV_STATUS` R: `[0]`=adapter `TIMING_ERR`, `[1]`=DVAL ever differed from LVAL, `[15:8]`=frames seen, `[31:16]`=LVAL pulses in the last complete frame |
+| `0x0001_0018` | `FLV_LVAL` R: `{max[31:16], min[15:0]}` LVAL pulse width in cycles |
+| `0x0001_001C` | `FLV_VBLANK` R: `{max[31:16], min[15:0]}` vertical blanking in cycles |
+| `0x0001_0020` | `FLV_FID` R: `[7:0]` `FIELD_ID` sampled at the last 8 FVAL rising edges, bit 0 = most recent |
 | `0x0001_8000`–`0x0001_FFFF` | `FRAME_BRAM` (read-only window, 32 KB) |
 
 `CAPTURE_CTRL[2]` clears `FID_HIST`/`SOF_COUNT`; it is independent of
@@ -69,6 +74,41 @@ but not stored). Two consequences, both measured on the board:
 `FID_HIST` records every field start instead, so adjacent bits are
 consecutive fields and must differ for an interlaced source. That is what
 `run_hw_interlace.py` checks.
+
+## Parallel video out on the board
+
+The demo also instantiates `vtpgz_axis_to_flvdval` on the same stream the
+capture sink sees, so the FVAL/LVAL/DVAL adapter is exercised on silicon and
+not only in simulation.
+
+The pixel bus does **not** leave the device. This build runs the core at
+`PIXELS_PER_CLOCK=4`, which makes `PIX_DATA` 96 bits wide -- far more than the
+Arty's headers can carry. What is verified on hardware is therefore the raster
+*timing*, measured in fabric by `flv_monitor` and read back through the CSRs
+above.
+
+Only one consumer may drive `tready`. `frame_capture` normally holds it low
+between captures, which the adapter cannot tolerate: a parallel interface has
+no way to express a stall, so the source must free-run gap-free. Setting
+`FLV_MODE[0]` hands `tready` to the adapter and ties it high. Capture results
+are meaningless while that bit is set, and `run_hw_flvdval.py` clears it again
+when it finishes.
+
+```sh
+python hw/arty_a7_100t/python/run_hw_flvdval.py
+```
+
+For each geometry it asserts, from the geometry alone, the same properties
+`tb_gapfree` asserts in simulation:
+
+- LVAL pulse `min == max == IMG_WIDTH / PIXELS_PER_CLOCK` -- one short or long
+  line anywhere in the run moves `min` or `max` and cannot average away;
+- lines per frame `== IMG_HEIGHT`;
+- vertical blanking `min == max == PERIOD - ACTIVE`, with `ACTIVE` and the
+  dropped-sync-tick `PERIOD` as defined in the top-level README;
+- `TIMING_ERR` never latches and DVAL never differs from LVAL;
+- `FIELD_ID` at the FVAL rising edge alternates for an interlaced source and
+  stays 0 for a progressive one.
 
 ## Build
 

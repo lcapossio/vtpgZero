@@ -113,6 +113,104 @@ and modes, PPC 1/2/4/8) is also available:
 python sim/check_ppc_vs_model.py
 ```
 
+## Parallel video adapter (FVAL/LVAL/DVAL)
+
+`tb/tb_flvdval.v` drives `vtpgz_axis_to_flvdval` from a real core instance and
+checks the raster properties a parallel sink depends on, all derived from the
+geometry rather than from the adapter's own outputs:
+
+- `LVAL` high for exactly `IMG_WIDTH` cycles per line, `IMG_HEIGHT` lines
+  inside every `FVAL`;
+- horizontal blanking exactly `LINE_GAP_CYCLES`;
+- vertical blanking exactly `FRAME_RATE_DIV - ACTIVE`, where
+  `ACTIVE = W*H + LINE_GAP_CYCLES*(H-1)`;
+- `DVAL` never outside `LVAL`, `LVAL` never outside `FVAL`, and the `DVAL`
+  count equal to the number of AXIS beats (nothing dropped or invented);
+- `PIX_DATA` equal to the AXIS beat on every `DVAL`;
+- `FIELD_ID` alternating across fields for an interlaced source.
+
+A second adapter instance on the same stream uses `FVAL_LEAD=4`,
+`FVAL_TRAIL=6` and measures both porches, plus a testbench-side copy of the
+delay line proving the pixel path really is delayed by `FVAL_LEAD`.
+
+`FIELD_ID` is sampled at the **FVAL rising edge**, not just at its fall: FVAL
+rises combinationally on SOF, so a receiver latching the field ID on that edge
+must not see the previous field's parity.
+
+A third instance is fed a hand-built stream so the failure case is deliberate:
+`TIMING_ERR` must stay clear on a gap-free stream, must latch when a mid-line
+bubble is injected, and must clear on `timing_err_clr`. A fourth, with
+`FVAL_LEAD=4`, checks the porch-envelope violation: clean with blanking wider
+than the porch, `TIMING_ERR` latched when the next SOF arrives while the
+previous frame is still draining the delay line.
+
+`tb/tb_gapfree.v` pins down the assumption the adapter has no FIFO to survive
+without. The runner sweeps 11 configurations — `PIXELS_PER_CLOCK` 1/2/4/8,
+NOISE (leap-ahead LFSR), the BRAM-backed IMAGE build at PPC 1 and 4, a width
+that is not a multiple of PPC, a single-line frame, minimum (1-cycle) vertical
+blanking, and a frame rate below the active time — and each run asserts that
+every `LVAL` pulse is exactly `IMG_WIDTH/PPC` cycles (min == max), that
+`TIMING_ERR` never latches, and that vertical blanking equals the documented
+arithmetic.
+
+```sh
+python sim/run_iverilog_flvdval.py
+```
+
+`tb/tb_flvmon.v` covers `flv_monitor`, the fabric instrument the board test
+reads its numbers from. That matters because `run_hw_flvdval.py` asserts
+nothing directly -- it compares the monitor's counters against the geometry,
+so a wrong monitor either invents a hardware failure or hides a real one.
+`tb_gapfree` checks the same raster properties but measures them with its own
+testbench-side counters and never instantiates the monitor, which is how an
+off-by-one in it reached the board once already (see below). The runner sweeps
+5 configurations including 1-cycle blanking, a dropped-tick frame rate, and an
+interlaced source.
+
+The `min == max` comparisons are the load-bearing ones: a monitor that
+mismeasures a single interval out of many still moves `min` or `max` and
+cannot average the error away. Reintroducing the first-blanking-interval bug
+makes `tb_flvmon` fail while `tb_flvdval` and all 11 `tb_gapfree` configs
+still pass -- that mutation is what establishes the bench is doing work.
+
+```sh
+python sim/run_iverilog_flvdval.py
+```
+
+Expected: `PASS: tb_flvdval FVAL/LVAL/DVAL adapter`.
+
+### On hardware
+
+The Arty demo instantiates the adapter on the same stream the capture sink
+sees, plus `flv_monitor`, which measures the emitted raster in fabric and
+reports it through the capture CSR window (`0x0001_0010`-`0x0001_0020`, see
+`hw/arty_a7_100t/README.md`). The pixel bus stays on-chip -- at
+`PIXELS_PER_CLOCK=4` it is 96 bits wide, so no board can bring it out -- and
+what is proven on silicon is the timing.
+
+```sh
+python hw/arty_a7_100t/python/run_hw_flvdval.py
+```
+
+The script asserts the same properties `tb_gapfree` asserts in simulation:
+LVAL pulse min == max == `IMG_WIDTH/PPC`, lines per frame == `IMG_HEIGHT`,
+vertical blanking min == max == `PERIOD - ACTIVE`, `TIMING_ERR` clear, DVAL
+identical to LVAL throughout, and `FIELD_ID` alternating at the FVAL rising
+edge for an interlaced source. Every expected value is computed from the
+geometry, not read back from the adapter.
+
+It sets `FLV_MODE[0]` first, which hands `tready` from `frame_capture` to the
+adapter and ties it high; the source must free-run gap-free because a parallel
+interface cannot express a stall. Capture is meaningless while that bit is
+set, and the script clears it on the way out.
+
+Two counter widths bound what can be asked of it. The monitor counts blanking
+in 16 bits, so the script checks each case's expected blanking against that
+before trusting the comparison rather than silently measuring a wrapped value;
+pick a faster `FRAME_RATE_DIV` if a geometry trips the assertion. The frame
+count saturates at 255 instead of wrapping, because a single JTAG round trip
+is long enough for thousands of frames to pass.
+
 ## Interlaced field ID (fid)
 
 `tb/tb_interlace.v` drives an `EN_INTERLACE=1` build alongside a stripped

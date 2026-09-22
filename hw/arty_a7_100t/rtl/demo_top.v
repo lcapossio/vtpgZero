@@ -255,6 +255,7 @@ module demo_top (
     wire        vtpgz_axis_tlast;
     wire        vtpgz_axis_tuser;
     wire        vtpgz_axis_fid;
+    wire        vtpgz_axis_eof;
 
     vtpgz_axilite_top #(
         .C_S_AXI_ADDR_WIDTH(8),
@@ -296,9 +297,71 @@ module demo_top (
         .m_axis_tready (vtpgz_axis_tready),
         .m_axis_tlast  (vtpgz_axis_tlast),
         .m_axis_tuser  (vtpgz_axis_tuser),
+        .eof           (vtpgz_axis_eof),
         .fid           (vtpgz_axis_fid),
         .frame_sync_in (1'b0),
         .fid_in        (1'b0)
+    );
+
+    // ---------------- parallel video out (FVAL/LVAL/DVAL) ----------------
+    // The adapter taps the same stream the capture sink sees. Only one of the
+    // two may own TREADY: FLV_MODE[0] hands it to the adapter, which ties it
+    // high so the core free-runs gap-free -- the condition the parallel
+    // interface needs, since it has no way to express a stall.
+    //
+    // PIX_DATA is PIXELS_PER_CLOCK * 24 = 96 bits wide here, far more than the
+    // board can bring out, so it is left unconnected and the raster TIMING is
+    // measured on-chip by flv_monitor instead. Synthesis will trim the data
+    // path; the timing logic is what is under test.
+    wire flv_fval, flv_lval, flv_dval, flv_field_id, flv_timing_err;
+
+    vtpgz_axis_to_flvdval #(
+        .TDATA_WIDTH(VTPGZ_TDATA_WIDTH),
+        .FVAL_LEAD  (0),
+        .FVAL_TRAIL (0)
+    ) u_flv (
+        .aclk          (clk),
+        .aresetn       (rst_n),
+        .s_axis_tdata  (vtpgz_axis_tdata),
+        .s_axis_tvalid (vtpgz_axis_tvalid),
+        .s_axis_tready (),                  // capture sink arbitrates TREADY
+        .s_axis_tlast  (vtpgz_axis_tlast),
+        .s_axis_tuser  (vtpgz_axis_tuser),
+        .s_axis_eof    (vtpgz_axis_eof),
+        .s_axis_fid    (vtpgz_axis_fid),
+        .pix_data      (),
+        .fval          (flv_fval),
+        .lval          (flv_lval),
+        .dval          (flv_dval),
+        .field_id      (flv_field_id),
+        .timing_err    (flv_timing_err),
+        .timing_err_clr(flv_clear_w)
+    );
+
+    wire [15:0] flv_lval_min_w, flv_lval_max_w, flv_lines_last_w;
+    wire [15:0] flv_vblank_min_w, flv_vblank_max_w;
+    wire [7:0]  flv_frames_w, flv_fid_hist_w;
+    wire        flv_dval_ne_w, flv_timing_err_w;
+    wire        flv_parallel_mode_w, flv_clear_w;
+
+    flv_monitor u_flvmon (
+        .aclk        (clk),
+        .aresetn     (rst_n),
+        .fval        (flv_fval),
+        .lval        (flv_lval),
+        .dval        (flv_dval),
+        .field_id    (flv_field_id),
+        .timing_err  (flv_timing_err),
+        .clear       (flv_clear_w),
+        .lval_min    (flv_lval_min_w),
+        .lval_max    (flv_lval_max_w),
+        .lines_last  (flv_lines_last_w),
+        .vblank_min  (flv_vblank_min_w),
+        .vblank_max  (flv_vblank_max_w),
+        .frames      (flv_frames_w),
+        .fid_hist    (flv_fid_hist_w),
+        .dval_ne_lval(flv_dval_ne_w),
+        .timing_err_o(flv_timing_err_w)
     );
 
     // ---------------- frame_capture ----------------
@@ -353,7 +416,19 @@ module demo_top (
         .s_axi_rlast   (fc_rlast),
         .s_axi_rready  (br_rready && (ar_target == 1'b1)),
         .capture_busy_o(capture_busy),
-        .capture_done_o(capture_done)
+        .capture_done_o(capture_done),
+
+        .flv_parallel_mode(flv_parallel_mode_w),
+        .flv_clear        (flv_clear_w),
+        .flv_lval_min     (flv_lval_min_w),
+        .flv_lval_max     (flv_lval_max_w),
+        .flv_lines_last   (flv_lines_last_w),
+        .flv_vblank_min   (flv_vblank_min_w),
+        .flv_vblank_max   (flv_vblank_max_w),
+        .flv_frames       (flv_frames_w),
+        .flv_fid_hist     (flv_fid_hist_w),
+        .flv_dval_ne_lval (flv_dval_ne_w),
+        .flv_timing_err   (flv_timing_err_w)
     );
 
     // ---------------- bridge response mux ----------------

@@ -23,6 +23,16 @@
 //                        :   captures always land on the SAME parity; this
 //                        :   register exposes every field start instead.
 //   0x0C SOF_COUNT    R : [7:0] number of SOF beats shifted into FID_HIST
+//   0x10 FLV_MODE    RW : [0]=parallel mode -- the FVAL/LVAL/DVAL adapter
+//                        :   owns TREADY (tied high) instead of this sink, so
+//                        :   the stream free-runs gap-free as the adapter
+//                        :   requires. Capture is meaningless while set.
+//                        : [1]=clear the flv_monitor statistics (self-clearing)
+//   0x14 FLV_STATUS   R : [0]=adapter TIMING_ERR, [1]=DVAL ever != LVAL,
+//                        : [15:8]=frames seen, [31:16]=lines in the last frame
+//   0x18 FLV_LVAL     R : {LVAL pulse max[31:16], min[15:0]} in cycles
+//   0x1C FLV_VBLANK   R : {vertical blanking max[31:16], min[15:0]} in cycles
+//   0x20 FLV_FID      R : [7:0] FIELD_ID at the last 8 FVAL rising edges
 //
 // BRAM window (offset 0x1000+, AXI4 read bursts supported):
 //   stores tdata[31:0] of each captured beat as one 32-bit LE word.
@@ -84,7 +94,23 @@ module frame_capture #(
     input  wire                  s_axi_rready,
 
     output wire                  capture_busy_o,
-    output wire                  capture_done_o
+    output wire                  capture_done_o,
+
+    // ---- FVAL/LVAL/DVAL adapter control + flv_monitor readback ----
+    // Parallel mode hands TREADY to the adapter; the statistics come from
+    // flv_monitor and are exposed read-only in this CSR window so the demo
+    // needs no second AXI slave.
+    output wire                  flv_parallel_mode,
+    output wire                  flv_clear,
+    input  wire [15:0]           flv_lval_min,
+    input  wire [15:0]           flv_lval_max,
+    input  wire [15:0]           flv_lines_last,
+    input  wire [15:0]           flv_vblank_min,
+    input  wire [15:0]           flv_vblank_max,
+    input  wire [7:0]            flv_frames,
+    input  wire [7:0]            flv_fid_hist,
+    input  wire                  flv_dval_ne_lval,
+    input  wire                  flv_timing_err
 );
 
     localparam DEPTH = (1 << DEPTH_LOG2);
@@ -147,9 +173,11 @@ module frame_capture #(
     // holds the next beat until the current one is fully stored.
     generate
         if (WPB > 1) begin : g_tready_ser
-            assign s_axis_tready = capturing && !bram_full && !serializing;
+            assign s_axis_tready = parallel_mode_r ? 1'b1 :
+                                   (capturing && !bram_full && !serializing);
         end else begin : g_tready_simple
-            assign s_axis_tready = capturing && !bram_full;
+            assign s_axis_tready = parallel_mode_r ? 1'b1 :
+                                   (capturing && !bram_full);
         end
     endgenerate
     wire stream_beat = s_axis_tvalid && s_axis_tready;
@@ -318,12 +346,19 @@ module frame_capture #(
     reg        csr_arm_pulse_r;
     reg        csr_clear_pulse_r;
     reg        csr_histclr_pulse_r;
+    reg        parallel_mode_r;
+    reg        flv_clear_r;
+    assign flv_parallel_mode = parallel_mode_r;
+    assign flv_clear         = flv_clear_r;
     assign csr_arm_pulse     = csr_arm_pulse_r;
     assign csr_clear_pulse   = csr_clear_pulse_r;
     assign csr_histclr_pulse = csr_histclr_pulse_r;
 
-    wire write_to_ctrl = (awaddr_q[15] == 1'b0) && (awaddr_q[7:0] == 8'h00);
-    wire write_ok = write_to_ctrl && (awlen_q == 8'h00) && wlast_q && wstrb_q[0];
+    wire write_to_csr  = (awaddr_q[15] == 1'b0);
+    wire write_to_ctrl = write_to_csr && (awaddr_q[7:0] == 8'h00);
+    wire write_to_mode = write_to_csr && (awaddr_q[7:0] == 8'h10);
+    wire write_ok = (write_to_ctrl || write_to_mode) &&
+                    (awlen_q == 8'h00) && wlast_q && wstrb_q[0];
 
     always @(posedge aclk) begin
         if (!aresetn) begin
@@ -341,11 +376,15 @@ module frame_capture #(
             csr_arm_pulse_r     <= 1'b0;
             csr_clear_pulse_r   <= 1'b0;
             csr_histclr_pulse_r <= 1'b0;
+            parallel_mode_r     <= 1'b0;
+            flv_clear_r         <= 1'b0;
         end else begin
-            // Default: pulses self-clear each cycle
+            // Default: pulses self-clear each cycle. parallel_mode_r is a
+            // level and deliberately persists.
             csr_arm_pulse_r     <= 1'b0;
             csr_clear_pulse_r   <= 1'b0;
             csr_histclr_pulse_r <= 1'b0;
+            flv_clear_r         <= 1'b0;
             // AW handshake
             if (!aw_taken && s_axi_awvalid) begin
                 aw_taken      <= 1'b1;
@@ -367,10 +406,14 @@ module frame_capture #(
             end
             // Commit
             if (aw_taken && w_taken && !s_axi_bvalid) begin
-                if (write_ok) begin
+                if (write_ok && write_to_ctrl) begin
                     if (wdata_q[0]) csr_arm_pulse_r     <= 1'b1;
                     if (wdata_q[1]) csr_clear_pulse_r   <= 1'b1;
                     if (wdata_q[2]) csr_histclr_pulse_r <= 1'b1;
+                end
+                if (write_ok && write_to_mode) begin
+                    parallel_mode_r <= wdata_q[0];
+                    if (wdata_q[1]) flv_clear_r <= 1'b1;
                 end
                 s_axi_bvalid <= 1'b1;
                 s_axi_bresp  <= write_ok ? 2'b00 : 2'b10;
@@ -430,13 +473,28 @@ module frame_capture #(
                                                        captured_fid, done};
                                 8'h08: s_axi_rdata <= fid_hist;
                                 8'h0C: s_axi_rdata <= {24'h0, sof_count};
+                                8'h10: s_axi_rdata <= {31'h0, parallel_mode_r};
+                                8'h14: s_axi_rdata <= {flv_lines_last,
+                                                       flv_frames, 6'h0,
+                                                       flv_dval_ne_lval,
+                                                       flv_timing_err};
+                                8'h18: s_axi_rdata <= {flv_lval_max,
+                                                       flv_lval_min};
+                                8'h1C: s_axi_rdata <= {flv_vblank_max,
+                                                       flv_vblank_min};
+                                8'h20: s_axi_rdata <= {24'h0, flv_fid_hist};
                                 default: s_axi_rdata <= 32'h0;
                             endcase
                             s_axi_rresp  <= ((s_axi_arlen == 8'h00) &&
                                              ((s_axi_araddr[7:0] == 8'h00) ||
                                               (s_axi_araddr[7:0] == 8'h04) ||
                                               (s_axi_araddr[7:0] == 8'h08) ||
-                                              (s_axi_araddr[7:0] == 8'h0C))) ? 2'b00 : 2'b10;
+                                              (s_axi_araddr[7:0] == 8'h0C) ||
+                                              (s_axi_araddr[7:0] == 8'h10) ||
+                                              (s_axi_araddr[7:0] == 8'h14) ||
+                                              (s_axi_araddr[7:0] == 8'h18) ||
+                                              (s_axi_araddr[7:0] == 8'h1C) ||
+                                              (s_axi_araddr[7:0] == 8'h20))) ? 2'b00 : 2'b10;
                             s_axi_rvalid <= 1'b1;
                             s_axi_rlast  <= 1'b1;
                         end

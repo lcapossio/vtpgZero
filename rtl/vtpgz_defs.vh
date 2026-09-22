@@ -8,7 +8,11 @@
 `define VTPGZ_DEFS_VH
 
 // IP version
-//   0.6.0 = current: interlaced video (EN_INTERLACE) -- per-field SOF, fid
+//   0.7.0 = current: parallel video out -- vtpgz_axis_to_flvdval adapter
+//           (FVAL/LVAL/DVAL + FIELD_ID, configurable FVAL front/back porch)
+//           and a new `eof` end-of-frame sideband on the core, asserted on
+//           the same beat as the frame's final TLAST.
+//   0.6.0: interlaced video (EN_INTERLACE) -- per-field SOF, fid
 //           sideband + fid_in lock input, CONTROL[3] interlace enable and
 //           STATUS[1] field_id, following AMD v_tpg (PG103) / UG934.
 //   0.5.0: optional AXI4-Stream routing sidebands (TID_WIDTH/TDEST_WIDTH)
@@ -27,7 +31,7 @@
 //   0.1.0: box overlay + configurable border, no CSC, BPC 8-16,
 //           4 Bayer tiles, CORE_ID at 0x00, vtpgz_core split
 `define VTPGZ_VERSION_MAJOR  8'd0
-`define VTPGZ_VERSION_MINOR  8'd6
+`define VTPGZ_VERSION_MINOR  8'd7
 `define VTPGZ_VERSION_PATCH 16'd0
 
 // Register byte offsets (AXI4-Lite, 32-bit data)

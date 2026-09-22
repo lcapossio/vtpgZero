@@ -20,6 +20,7 @@ an AXI4-Lite slave register interface.
   - [Programming sequence](#programming-sequence)
   - [External frame sync](#external-frame-sync)
   - [Interlaced video](#interlaced-video)
+  - [Parallel video out (FVAL/LVAL/DVAL)](#parallel-video-out-fvallvaldval)
   - [Multi-pixel-per-clock](#multi-pixel-per-clock)
   - [Output modes](#output-modes)
   - [Image patterns](#image-patterns)
@@ -421,6 +422,111 @@ synchronizer: both must be synchronous to `aclk`, and `fid_in` must be stable
 around the sync edge that starts the field. Cross a clock domain yourself
 before these pins.
 
+### Parallel video out (FVAL/LVAL/DVAL)
+
+`rtl/vtpgz_axis_to_flvdval.v` converts the AXI4-Stream output into the classic
+parallel video timing interface used by frame grabbers and camera links:
+
+| Signal | Meaning |
+|---|---|
+| `FVAL` | frame valid — high for the whole frame (the whole **field** when interlaced) |
+| `LVAL` | line valid — high for the whole active line |
+| `DVAL` | data valid — qualifies one beat of `PIX_DATA` |
+| `FIELD_ID` | `fid` of the frame `FVAL` encloses, latched at its SOF |
+
+```verilog
+vtpgz_axis_to_flvdval #(
+    .TDATA_WIDTH (24),   // one beat; = one pixel at PIXELS_PER_CLOCK=1
+    .FVAL_LEAD   (0),    // FVAL front porch, in cycles
+    .FVAL_TRAIL  (0)     // FVAL back porch, in cycles
+) u_flv (
+    .aclk(aclk), .aresetn(aresetn),
+    .s_axis_tdata(m_axis_tdata), .s_axis_tvalid(m_axis_tvalid),
+    .s_axis_tready(m_axis_tready), .s_axis_tlast(m_axis_tlast),
+    .s_axis_tuser(m_axis_tuser), .s_axis_eof(eof), .s_axis_fid(fid),
+    .pix_data(pix_data), .fval(fval), .lval(lval), .dval(dval),
+    .field_id(field_id),
+    .timing_err(timing_err), .timing_err_clr(1'b0)
+);
+```
+
+**There is no FIFO, and there cannot be a stall.** FVAL/LVAL/DVAL has no
+backpressure, so the adapter ties `TREADY` high permanently and relies on the
+source running gap-free. vtpgZero does: with `TREADY` high it emits exactly
+`IMG_WIDTH/PPC` contiguous beats per line, then `LINE_GAP_CYCLES` of idle,
+with no bubbles inside a line. Put this behind anything that *can* stall (a
+crossbar, a DMA, a slower-draining CDC FIFO) and that breaks — not silently:
+`LVAL` stays high across a mid-line bubble while `DVAL` drops, and
+`TIMING_ERR` latches. Such a source needs a line or frame FIFO in front.
+
+The adapter also needs `eof`, the core's end-of-frame marker (asserted on the
+same beat as the final `m_axis_tlast` of the frame). AXIS video leaves EOF
+implicit; the core already computes it, so it is brought out as a port.
+
+#### Blanking: it comes from the source, not the adapter
+
+The adapter has no buffer, so it can only reproduce the gaps the source
+already leaves. Both blanking intervals are therefore set upstream:
+
+| Interval | Set by | Cycles |
+|---|---|---|
+| Horizontal blanking (line break) | `LINE_GAP_CYCLES` (build parameter, min 1) | `LINE_GAP_CYCLES`, after every line but the last |
+| Vertical blanking (frame break) | `FRAME_RATE_DIV` (runtime register) | `FRAME_RATE_DIV - ACTIVE` |
+
+where the active time of one frame (field) is
+
+```
+ACTIVE = (IMG_WIDTH / PPC) * IMG_HEIGHT + LINE_GAP_CYCLES * (IMG_HEIGHT - 1)
+```
+
+So to hit a required blanking spec, pick `LINE_GAP_CYCLES` for the line break
+and then `FRAME_RATE_DIV = ACTIVE + wanted vertical blanking`.
+
+`FRAME_RATE_DIV` must be **strictly greater** than `ACTIVE`. Frames do not
+overrun each other if it is not — the timing engine only accepts a sync tick
+while it is idle, so ticks landing inside an active frame are simply dropped
+(including one coincident with the final active cycle). The frame period
+becomes
+
+```
+PERIOD = FRAME_RATE_DIV * (floor(ACTIVE / FRAME_RATE_DIV) + 1)
+VBLANK = PERIOD - ACTIVE
+```
+
+so the frame rate silently drops to a submultiple rather than the blanking
+going negative. Measured on the RTL with `ACTIVE = 131`: `FRAME_RATE_DIV` of
+132 gives 1 cycle of blanking, 133 gives 2, 400 gives 269 — but 131 gives a
+262-cycle period with 131 cycles of blanking (half the requested rate), and
+100 gives a 200-cycle period with 69. Under **external** frame sync,
+`FRAME_RATE_DIV` does not determine vertical blanking at all; the sync source
+does.
+
+`FVAL_LEAD` and `FVAL_TRAIL` carve the FVAL porches out of that vertical
+blanking, so they are only realisable while
+`FVAL_LEAD + FVAL_TRAIL < FRAME_RATE_DIV - ACTIVE`. The front porch is
+implemented by delaying the pixel path, so it costs `FVAL_LEAD` cycles of
+latency and `FVAL_LEAD * (TDATA_WIDTH+3)` registers — which Vivado largely
+maps to SRLs, so the real cost is lower than that count suggests. The back
+porch is just a counter. At `FVAL_LEAD = 0` no delay line is generated and
+`FVAL` rises together with the first `LVAL`.
+
+Out-of-context synthesis on `xc7a100tcsg324-1` at `TDATA_WIDTH=24`:
+`FVAL_LEAD=0, FVAL_TRAIL=0` costs 9 LUT / 5 FF; `FVAL_LEAD=4, FVAL_TRAIL=6`
+costs 41 LUT / 65 FF.
+
+If the porches do overrun the vertical blanking, the adapter does not fail
+silently: a new frame's SOF arriving while the previous frame is still
+draining the delay line latches `TIMING_ERR`, which also covers mid-line
+bubbles. Consecutive frames genuinely overlap inside the delay line there, so
+no correct `FVAL` exists to emit — the condition is reported rather than
+papered over.
+
+A classic parallel interface is one pixel per clock, so use
+`PIXELS_PER_CLOCK=1`. At `PPC=N` the adapter passes `TDATA_WIDTH` straight
+through and presents N pixels per `DVAL` on a wide bus — fine for an on-chip
+sink, but a true parallel link needs an external N:1 serializer running N
+times faster.
+
 ### Multi-pixel-per-clock
 
 At `PIXELS_PER_CLOCK` of 2/4/8, that many horizontally-adjacent pixels are
@@ -524,6 +630,8 @@ rtl/
   vtpgz_core.v          port-driven core: timing engine, pattern generators,
                         inline pack stage, AXIS output
   vtpgz_axilite_top.v   thin wrapper: vtpgz_axil_regs + vtpgz_core
+  vtpgz_axis_to_flvdval.v  optional adapter: AXIS video -> parallel
+                        FVAL/LVAL/DVAL (no FIFO, source must be gap-free)
 tb/                     Icarus Verilog smoke testbench
 sim/                    Verilator/iverilog/cocotb harnesses + run_sim.py
                         (see docs/testing.md)

@@ -176,6 +176,13 @@ module vtpgz_core #(
     input  wire                          m_axis_tready,
     output wire                          m_axis_tlast,   // end of line
     output wire                          m_axis_tuser,   // SOF (first pixel of frame)
+    // End of frame (end of FIELD when interlaced): asserted on the SAME beat
+    // as the final m_axis_tlast of the frame. Not an AXI4-Stream signal --
+    // AXIS video (UG934) leaves EOF implicit -- but the core already computes
+    // it to suppress the inter-line gap after the last line, and a parallel
+    // video sink needs it to close FVAL. Named `eof` rather than `m_axis_eof`
+    // so Vivado does not fold it into an inferred AXIS interface.
+    output wire                          eof,
     // Optional routing sidebands (see TID_WIDTH/TDEST_WIDTH). At width 0 the
     // port is a 1-bit constant zero. Inline width expr because Verilog-2001
     // localparams are not visible in the ANSI port list. coverage_off: the
@@ -1740,6 +1747,7 @@ module vtpgz_core #(
     assign m_axis_tdata  = tdata_r;
     assign m_axis_tvalid = tvalid_r;
     assign m_axis_tlast  = tlast_r;
+    assign eof           = teof_r;
     assign m_axis_tuser  = tuser_r;
 
     // Routing sidebands: constant per stream (from cfg_tid/cfg_tdest, held
