@@ -2,7 +2,9 @@
 
 A synthesizable Verilog-2001 video test pattern generator IP core. Outputs
 pixels over an AXI4-Stream master interface and is configured at runtime via
-an AXI4-Lite slave register interface.
+an AXI4-Lite slave register interface. An optional adapter converts that
+stream to a classic parallel video interface (FVAL/LVAL/DVAL) for frame
+grabbers and camera-link style sinks.
 
 <p align="center">
   <img src="docs/img/mjpeg_eth_demo.gif" alt="vtpgZero output streamed live over Ethernet as MJPEG">
@@ -49,6 +51,14 @@ It ships in two flavors:
 Both have **identical** pattern/output behavior — they only differ in how the
 `cfg_*` fields get set.
 
+A third, optional module sits *after* either of them:
+
+- **`vtpgz_axis_to_flvdval`** — converts the AXI4-Stream output to parallel
+  FVAL/LVAL/DVAL timing. It is a wire-level adapter with no FIFO, so it ties
+  `tready` high and requires the source to free-run gap-free; that is exactly
+  what vtpgZero does when nothing stalls it. See
+  [Parallel video out](#parallel-video-out-fvallvaldval).
+
 
 [↑ back to top](#index)
 
@@ -78,6 +88,12 @@ Both have **identical** pattern/output behavior — they only differ in how the
   active components for the chosen mode/bpc. No manual sizing needed.
 - **AXI4-Lite** slave for runtime configuration (18 writable registers).
 - **AXI4-Stream** master output with full backpressure support.
+- **Parallel video out (FVAL/LVAL/DVAL)**: optional `vtpgz_axis_to_flvdval`
+  adapter presenting the classic frame-grabber timing interface, with
+  `FIELD_ID` for interlaced sources and configurable FVAL front/back porches.
+  No FIFO — it requires a gap-free source and latches a sticky `TIMING_ERR`
+  if that ever breaks, rather than emitting a corrupted raster. 9 LUT / 5 FF
+  at zero porch.
 - **Interlaced video** (build-time `EN_INTERLACE`): per-field SOF plus a
   `fid` field-ID sideband and a `fid_in` lock input, following the AMD/Xilinx
   v_tpg (PG103) / UG934 convention. Stripped at elaboration when `EN_INTERLACE=0`.
@@ -583,6 +599,7 @@ python sim/run_sim.py regression   # lint + build + run + 100% coverage + model 
 python sim/run_sim.py all_modes    # byte-exact sim↔model gate across every mode/BPC
 python sim/cocotb/run_ppc.py       # beat-exact pixels-per-clock data path (1/2/4/8)
 python sim/run_iverilog_interlace.py  # interlaced field ID (fid) semantics
+python sim/run_iverilog_flvdval.py    # FVAL/LVAL/DVAL adapter + gap-free source
 ```
 
 There is also an Icarus smoke test, a cocotb control-plane suite, and a full
@@ -602,14 +619,17 @@ Measured on the full Arty A7-100T demo (Vivado 2025.2, default strategies):
 |---|---|
 | Target | Digilent Arty A7-100T (XC7A100TCSG324-1, speed grade -1) |
 | Clock | 130 MHz (on-board 100 MHz osc via MMCM) |
-| WNS | +0.333 ns (timing met, 0 failing endpoints) |
-| LUTs | 2070 / 63400 = 3.26% |
-| FFs | 2457 / 126800 = 1.94% |
-| BRAM36 | 6 / 135 = 4.44% |
+| WNS | +5.252 ns (timing met, 0 failing endpoints) |
+| LUTs | 3529 / 63400 = 5.57% |
+| FFs | 3229 / 126800 = 2.55% |
+| BRAM36 | 8 / 135 = 5.93% |
 | Hardware test | **108/108 byte-exact** vs Python model |
 
 That row includes the whole demo (core + `frame_capture` + fpgacapZero
-JTAG-AXI bridge + BRAM frame buffer + MMCM). Standalone, the all-patterns
+JTAG-AXI bridge + BRAM frame buffer + MMCM), and now also the
+`vtpgz_axis_to_flvdval` adapter and the `flv_monitor` raster instrument that
+the on-silicon parallel-video test reads — neither of which you pay for
+unless you instantiate them. Standalone, the all-patterns
 `vtpgz_axilite_top` is ~**1270 LUT / 1212 FF** (RGB-8b, OOC synth, no BRAM),
 and pixels-per-clock scales strongly sub-linearly — 8× throughput for only
 **+56% LUT / +36% FF**. The smallest build (1 pattern, RAW-8b) is ~534 LUT.
