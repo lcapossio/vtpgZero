@@ -1101,16 +1101,13 @@ module vtpgz_core #(
         assign grid_g = grid_g_bus[11:0];
         assign grid_b = grid_b_bus[11:0];
     end else begin : g_grid_off
-        assign grid_r = Y_BLACK_LIM;
-        assign grid_g = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
-        assign grid_b = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
-        // Off-lanes replicate the lane-0 background across the bus.
-        genvar gof;
-        for (gof = 0; gof < NPPC; gof = gof + 1) begin : g_grid_off_bus
-            assign grid_r_bus[12*gof +: 12] = 12'h000;
-            assign grid_g_bus[12*gof +: 12] = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
-            assign grid_b_bus[12*gof +: 12] = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
-        end
+        // The build's black on every lane (see BLACK_C0).
+        assign grid_r = BLACK_C0;
+        assign grid_g = BLACK_C12;
+        assign grid_b = BLACK_C12;
+        assign grid_r_bus = {NPPC{BLACK_C0}};
+        assign grid_g_bus = {NPPC{BLACK_C12}};
+        assign grid_b_bus = {NPPC{BLACK_C12}};
     end endgenerate
 
     // ---- Ramp ----

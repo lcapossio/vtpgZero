@@ -107,8 +107,8 @@ against the model.
 One case the model cannot reach is a pattern stripped at build time, since
 the model has no `EN_*` flags. A stripped slot is documented to read as
 black, and in YUV black is `{Y_black, 0x800, 0x800}` — the all-zero triple is
-saturated green. `tb/tb_black.v` builds the core with COLORBAR, SOLID and
-IMAGE stripped and checks those slots plus slot 5 are exactly black on every
+saturated green. `tb/tb_black.v` builds the core with every pattern but HGRAD
+stripped, and checks each stripped slot plus slot 5 is exactly black on every
 lane, at PPC 1/2/4/8 in both ranges:
 
 ```sh

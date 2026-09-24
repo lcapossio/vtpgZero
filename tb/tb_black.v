@@ -8,8 +8,10 @@
 //
 // The byte-exact model gate cannot see the stripped-pattern stubs, because
 // the model has no notion of EN_* build flags. This bench builds the core with
-// COLORBAR, SOLID, IMAGE and the box stripped, selects each of those slots plus
-// slot 5, and asserts every pixel of every lane is exactly black.
+// every pattern but HGRAD stripped (and the box), selects each stripped slot
+// plus slot 5, and asserts every pixel of every lane is exactly black. The
+// runtime-luma stubs (VGRAD, CHECKER, RAMP, NOISE) go through the limited-
+// range map; GRID's stub replicates its background across the bus.
 //
 // Parameters: PPC (1/2/4/8), RANGE (0=full 1=limited). 8 bpc, YUV 4:4:4, so
 // each pixel is {Cr[7:0], Cb[7:0], Y[7:0]}.
@@ -153,6 +155,11 @@ module tb_black;
         run_pattern(`VTPGZ_PAT_SOLID);       // stripped
         run_pattern(5);                       // no standalone pattern
         run_pattern(`VTPGZ_PAT_IMAGE);       // stripped
+        run_pattern(`VTPGZ_PAT_VGRAD);       // stripped
+        run_pattern(`VTPGZ_PAT_CHECKER);     // stripped
+        run_pattern(`VTPGZ_PAT_GRID);        // stripped
+        run_pattern(`VTPGZ_PAT_RAMP);        // stripped
+        run_pattern(`VTPGZ_PAT_NOISE);       // stripped
 
         if (errors != 0) begin
             $display("FAIL: tb_black PPC=%0d RANGE=%0d: %0d non-black pixels",
