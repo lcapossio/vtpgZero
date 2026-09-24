@@ -40,6 +40,9 @@ module vtpgz_axilite_top #(
     // ----- output mode (forwarded) -----
     parameter OUTPUT_MODE   = `VTPGZ_MODE_RGB,
     parameter YUV_SUBSAMPLE = `VTPGZ_YUV_444,
+    // Forwarded to vtpgz_core; see there for what they mean.
+    parameter YUV_RANGE     = `VTPGZ_YUV_FULL,
+    parameter YUV_MATRIX    = `VTPGZ_YUV_BT601,
     parameter RAW_BAYER     = `VTPGZ_RAW_RGGB,
     parameter RGB_ORDER     = `VTPGZ_RGB_ORDER_XILINX,
     parameter BPC           = 8,
@@ -225,6 +228,8 @@ module vtpgz_axilite_top #(
         .BOX_IMAGE_HEX_FILE(BOX_IMAGE_HEX_FILE),
         .OUTPUT_MODE  (OUTPUT_MODE),
         .YUV_SUBSAMPLE(YUV_SUBSAMPLE),
+        .YUV_RANGE    (YUV_RANGE),
+        .YUV_MATRIX   (YUV_MATRIX),
         .RAW_BAYER    (RAW_BAYER),
         .RGB_ORDER    (RGB_ORDER),
         .BPC          (BPC),
