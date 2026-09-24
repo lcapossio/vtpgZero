@@ -674,8 +674,8 @@ Measured on the full Arty A7-100T demo (Vivado 2025.2, default strategies):
 |---|---|
 | Target | Digilent Arty A7-100T (XC7A100TCSG324-1, speed grade -1) |
 | Clock | 50 MHz at 4 pixels/clock = 200 Mpixel/s (on-board 100 MHz osc via MMCM) |
-| WNS | +5.252 ns at 50 MHz (timing met, 0 failing endpoints) |
-| LUTs | 3529 / 63400 = 5.57% |
+| WNS | +6.637 ns at 50 MHz (timing met, 0 failing endpoints) |
+| LUTs | 3494 / 63400 = 5.51% |
 | FFs | 3229 / 126800 = 2.55% |
 | BRAM36 | 8 / 135 = 5.93% |
 | Hardware test | **9/9 patterns byte-exact** vs Python model |
