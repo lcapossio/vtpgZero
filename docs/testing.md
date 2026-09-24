@@ -115,6 +115,16 @@ lane, at PPC 1/2/4/8 in both ranges:
 python sim/run_iverilog_black.py
 ```
 
+A YUV build's image memories must hold YCbCr codes, so the core refuses at
+elaboration a YUV build that enables IMAGE or BOX_IMAGE while pointing at the
+shipped RGB mandrill files. `check_image_guard.py` elaborates eight builds and
+checks that the guard fires where it should (default path, absolute path, box
+image) and nowhere else (converted file, short path, image off, RGB, RAW):
+
+```sh
+python sim/check_image_guard.py
+```
+
 The C++ harness runs **7 phases** for full coverage:
 
 1. **Register sweep** — write `0xFFFFFFFF`/`0x00000000`/`0xAAAAAAAA`/`0x55555555`

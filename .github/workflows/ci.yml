@@ -87,6 +87,9 @@ jobs:
       - name: Black is black in YUV builds (Icarus)
         run: python sim/run_iverilog_black.py
 
+      - name: YUV builds refuse the RGB default images (Icarus)
+        run: python sim/check_image_guard.py
+
       - name: Multi-pixel sweep (RTL vs model beat-exact, PPC 1/2/4/8)
         run: python sim/check_ppc_vs_model.py
 

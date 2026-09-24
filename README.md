@@ -618,9 +618,10 @@ source memory per lane — see [Image patterns](#image-patterns).
   Generate the image memory with `scripts/image_to_hex.py --yuv --matrix
   {601,709} --range {full,limited}`, matching the build's `YUV_MATRIX` and
   `YUV_RANGE`, and the core passes those codes through untouched (widened by
-  a shift, so 8-bit 128 is exactly 10-bit 512). An RGB memory in a YUV build
-  comes out as the wrong colours, and the core cannot tell, so keep the two
-  in step. The padding around a centred image is the build's black. See
+  a shift, so 8-bit 128 is exactly 10-bit 512). A YUV build that enables an
+  image but still points at the shipped RGB mandrill files fails at
+  elaboration; any other RGB memory comes out as the wrong colours, and the
+  core cannot tell, so keep the two in step. The padding around a centred image is the build's black. See
   [docs/images.md](docs/images.md#yuv-builds).
 
 A pattern stripped at build time still has its `PATTERN_SEL` slot, but
@@ -650,6 +651,7 @@ python sim/cocotb/run_ppc.py       # beat-exact pixels-per-clock data path (1/2/
 python sim/run_iverilog_interlace.py  # interlaced field ID (fid) semantics
 python sim/run_iverilog_flvdval.py    # FVAL/LVAL/DVAL adapter + gap-free source
 python sim/run_iverilog_black.py      # empty/stripped pattern slots are real black in YUV
+python sim/check_image_guard.py       # YUV builds refuse the RGB default images
 python hw/arty_a7_100t/python/check_yuv_range.py            # YUV colorimetry vs the standards
 python hw/arty_a7_100t/python/check_yuv_range_mutations.py  # ...and proof those checks bite
 ```

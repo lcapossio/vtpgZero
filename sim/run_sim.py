@@ -118,11 +118,37 @@ def lint_flags(args: argparse.Namespace) -> list[str]:
             "-I" + str(RTL_DIR), "--top-module", TOP] + generics(args)
 
 
+def _image_files(args: argparse.Namespace) -> tuple[Path, Path]:
+    """The IMAGE / BOX_IMAGE memories for this build.
+
+    The shipped mandrill files are RGB. A YUV build refuses them at
+    elaboration, so convert them for its colorimetry the way
+    scripts/image_to_hex.py --yuv would.
+    """
+    if args.mode != 2:
+        return IMAGE_HEX_FILE_DEFAULT, BOX_IMAGE_HEX_FILE_DEFAULT
+    sys.path.insert(0, str(HERE.parent / "scripts"))
+    from image_to_hex import pixel_word
+    matrix = MATRIX_NAMES[getattr(args, 'yuv_matrix', 0)]
+    limited = getattr(args, 'yuv_range', 0) == 1
+    out = []
+    for src in (IMAGE_HEX_FILE_DEFAULT, BOX_IMAGE_HEX_FILE_DEFAULT):
+        words = [int(w, 16) for w in src.read_text().split()]
+        dst = OBJ_DIR / f"{src.stem}_yuv{matrix}{'lim' if limited else 'full'}.mem"
+        dst.parent.mkdir(exist_ok=True)
+        dst.write_text("".join(
+            f"{pixel_word(w >> 16, (w >> 8) & 0xFF, w & 0xFF, True, matrix, limited):06x}\n"
+            for w in words))
+        out.append(dst)
+    return out[0], out[1]
+
+
 def build_flags(args: argparse.Namespace) -> list[str]:
     # Coverage build also enables EN_IMAGE/EN_BOX_IMAGE so the new generate
     # blocks, the PAT_IMAGE case, and the box-image step input ports get
     # exercised in the coverage sim (sim_main.cpp drives pattern 9 and
     # writes the two step regs).
+    img, bimg = _image_files(args)
     return ["--cc", "--exe", "--build", "--trace",
             "--coverage", "--coverage-line", "--coverage-toggle",
             "--coverage-user",
@@ -131,8 +157,8 @@ def build_flags(args: argparse.Namespace) -> list[str]:
             "-GLINE_GAP_CYCLES=2",
             "-GEN_IMAGE=1",
             "-GEN_BOX_IMAGE=1",
-            f'-GIMAGE_HEX_FILE="{IMAGE_HEX_FILE_DEFAULT.as_posix()}"',
-            f'-GBOX_IMAGE_HEX_FILE="{BOX_IMAGE_HEX_FILE_DEFAULT.as_posix()}"']
+            f'-GIMAGE_HEX_FILE="{img.as_posix()}"',
+            f'-GBOX_IMAGE_HEX_FILE="{bimg.as_posix()}"']
 
 
 def capture_flags(args: argparse.Namespace) -> list[str]:

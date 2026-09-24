@@ -282,6 +282,28 @@ module vtpgz_core #(
         end
     endgenerate
 
+    // A YUV build's image memories must hold YCbCr codes, converted for the
+    // build by scripts/image_to_hex.py --yuv. The shipped mandrill files --
+    // the IMAGE_HEX_FILE / BOX_IMAGE_HEX_FILE defaults -- are RGB, so a YUV
+    // build that enables an image without pointing it at a converted file
+    // would show wrong colours with no other sign. Refuse it here. The
+    // check is on the file NAME's tail, so it also catches the RGB mandrill
+    // passed by absolute path; assigning the path to a fixed-width
+    // localparam keeps its last N characters (a shorter path zero-pads and
+    // cannot match).
+    localparam [8*20-1:0] IMG_FILE_TAIL  = IMAGE_HEX_FILE;
+    localparam [8*18-1:0] BIMG_FILE_TAIL = BOX_IMAGE_HEX_FILE;
+    generate
+        if ((OUTPUT_MODE == `VTPGZ_MODE_YUV) && EN_IMAGE &&
+            (IMG_FILE_TAIL == "mandrill_128x128.mem")) begin : g_yuv_rgb_image
+            VTPGZ_YUV_IMAGE_NEEDS_YCBCR_HEX_FILE_SEE_IMAGE_TO_HEX_YUV guard();
+        end
+        if ((OUTPUT_MODE == `VTPGZ_MODE_YUV) && EN_BOX_IMAGE &&
+            (BIMG_FILE_TAIL == "mandrill_32x32.mem")) begin : g_yuv_rgb_box_image
+            VTPGZ_YUV_BOX_IMAGE_NEEDS_YCBCR_HEX_FILE_SEE_IMAGE_TO_HEX_YUV guard();
+        end
+    endgenerate
+
     // PIXELS_PER_CLOCK must be one of 1/2/4/8. As of M3 every pattern (and
     // the box + box-image overlays) is supported at PPC>1, so there is no
     // longer a per-pattern restriction -- only the legal-value check remains.

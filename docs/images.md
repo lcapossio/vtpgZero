@@ -73,8 +73,12 @@ become 10-bit 512, not 514. It applies no limiter, since the codes are
 already in the build's range. The same applies to `BOX_IMAGE_HEX_FILE`.
 
 The core cannot tell an RGB memory from a YCbCr one, or one colorimetry from
-another, so this is on the build: a mismatch produces wrong colours, not an
-error. The padding around a centred image is the build's black
+another. It does refuse the obvious mistake: a YUV build that enables IMAGE
+or BOX_IMAGE while still pointing at the shipped RGB mandrill files (the
+defaults, matched by file name) fails at elaboration with
+`VTPGZ_YUV_IMAGE_NEEDS_YCBCR_HEX_FILE_SEE_IMAGE_TO_HEX_YUV`. Beyond that it
+is on the build: any other RGB file, or a file converted for the wrong
+matrix or range, produces wrong colours, not an error. The padding around a centred image is the build's black
 (`{16, 128, 128}` at 8 bits in limited range).
 
 ## Image-in-box overlay (`EN_BOX_IMAGE=1`)
