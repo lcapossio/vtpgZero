@@ -189,9 +189,10 @@ capture itself completes in microseconds.
 - Output format, bit depth and pixels per clock are build-time: the script
   reads them back from the loaded bitstream, and another format means
   another bitstream. Pass `VTPGZ_<NAME>=<int>` to `build.py`, e.g.
-  `VTPGZ_OUTPUT_MODE=2 VTPGZ_BPC=10 VTPGZ_YUV_RANGE=1 VTPGZ_YUV_MATRIX=1`,
-  and give `run_hw_test.py` the matching `--yuv-range`/`--yuv-matrix`
-  (those two are not in the read-back).
+  `VTPGZ_OUTPUT_MODE=2 VTPGZ_BPC=10 VTPGZ_YUV_RANGE=1 VTPGZ_YUV_MATRIX=1
+  VTPGZ_BAR_LEVEL=75`, and give `run_hw_test.py` the matching
+  `--yuv-range`/`--yuv-matrix`/`--bar-level` (those three are not in the
+  read-back).
 - Pass criterion: byte-exact equality between FPGA capture and the
   cycle-accurate Python model
 

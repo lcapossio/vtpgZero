@@ -46,29 +46,59 @@ python sim/run_sim.py all_modes
 
 The sweep also covers the three non-default YUV colorimetry builds
 (`YUV_MATRIX` × `YUV_RANGE`, minus the default BT.601/full which is already
-in the mode sweep) at 8, 10 and 12 bpc — the two BPCs where the limited-range
-endpoints land exactly by different truncations, plus the untruncated one.
+in the mode sweep) at 8, 10 and 12 bpc, which are the three palette depths.
+It adds six `BAR_LEVEL=75` builds as well: BT.709 limited at 8, 10 and 12
+bpc, plus one each of YUV BT.601 full, RGB and RAW.
 
-### YUV range and matrix
+### YUV range, matrix and bar level
 
-The colorimetry itself is asserted against the Python model, which derives
-its palettes from Kr/Kb rather than copying the RTL constants:
+The colour-bar palettes are generated from the colorimetry by
+`scripts/gen_yuv_palettes.py`, which writes them into `vtpgz_core.v`. CI
+checks that the RTL is up to date with the generator:
+
+```sh
+python scripts/gen_yuv_palettes.py --check
+```
+
+The colorimetry itself is asserted against the Python model, which takes its
+palettes from the same generator rather than copying the RTL constants:
 
 ```sh
 python hw/arty_a7_100t/python/check_yuv_range.py
 python hw/arty_a7_100t/python/check_yuv_range_mutations.py
 ```
 
-The first checks four properties: the limited palettes equal the published
-standard codes exactly at 8, 10 and 12 bpc; a limited build keeps every
-runtime-valued pattern inside Y 64..940 / C 64..960 *and actually reaches
-both ends* on the gradients; neutral chroma stays exactly `0x800`; and the
-shipped BT.601 full-range palette is unchanged bit for bit.
+The first checks five properties:
 
-The second is the reason to believe the first. It mutates the model — moves a
-palette constant by one LSB, drops the limited-range luma map, rescales the
-raw color registers — and asserts that the check which *owns* that bug is the
-one that fires. A spec test nobody has seen fail is not evidence.
+- Every build's colour bars equal the standard codes exactly, at 8, 10 and
+  12 bpc. That covers RGB and YUV, both matrices, both ranges, and 100% and
+  75% bars. It renders a real frame through the model, so palette selection
+  is under test too. The expected values are the published tables where
+  one exists: the classic 8-bit and 10-bit limited tables, and SMPTE RP 219
+  for 75% BT.709. Otherwise they come from an exact-arithmetic
+  implementation of BT.601/BT.709/H.273, written separately from the
+  generator.
+- A limited build keeps every runtime-valued pattern inside Y 64..940 /
+  C 64..960, *and actually reaches both ends* on the gradients.
+- Neutral chroma stays exactly `0x800`.
+- The shipped RGB and BT.601 full-range 100% palettes are unchanged bit for
+  bit.
+- `image_to_hex.py --yuv` converts the eight bar colours to the published
+  8-bit codes.
+
+The second is the reason to believe the first. It mutates the model and
+asserts that the check which *owns* that bug is the one that fires. The
+mutations are:
+
+- move a palette constant by one LSB;
+- give an 8-bit build the 10-bit codes truncated (the bug the per-depth
+  palettes fix);
+- give a 75% build the 100% bars;
+- drop the limited-range luma map;
+- rescale the raw colour registers;
+- make the image converter ignore `--matrix`.
+
+A spec test nobody has seen fail is not evidence.
 
 Together with `all_modes`, this is what carries the spec through to RTL: the
 model is checked against the standard, and the RTL is checked byte-for-byte
@@ -332,10 +362,11 @@ python hw/arty_a7_100t/python/run_hw_test.py --yuv-range limited --yuv-matrix 70
 ```
 
 `run_hw_test.py` reads mode, BPC, subsampling, Bayer order and PPC back from
-the bitstream, but YUV range and matrix are not in `COLOR_FORMAT`, so they
-must be given on the command line to match the build. Getting them wrong
-cannot pass quietly: against the wrong colorimetry the colorbar, gradients,
-checker and grid background all mismatch.
+the bitstream, but YUV range, matrix and bar level are not in
+`COLOR_FORMAT`, so they must be given on the command line to match the build.
+Getting them wrong cannot pass quietly: against the wrong colorimetry the
+colorbar, gradients, checker and grid background all mismatch, and against
+the wrong bar level the colorbar does.
 
 YUV 4:4:4, 10 bpc, limited range, BT.709 is verified byte-exact across all
 patterns on the board (0 DSPs, timing met). As a negative control, the same
@@ -343,6 +374,22 @@ bitstream checked against full-range BT.601 fails 8 of 9 patterns, with the
 board showing gradient white at 940 and black at 64: the limited-range map is
 active on silicon, not just matching by coincidence. Only SOLID matches both
 ways, because colour registers are raw code values by design.
+
+Two more colorimetry builds are verified byte-exact across all patterns on
+the board, each with a negative control:
+
+- BT.709 limited, **75% bars** (`VTPGZ_BAR_LEVEL=75`), 10 bpc: SMPTE RP 219.
+  Checked against 100% bars instead, the colour bars fail and nothing else
+  does.
+- BT.709 limited, 100% bars, **8 bpc**: the classic 8-bit table. Checked
+  against the 10-bit codes truncated (what the core emitted before each
+  bit depth got its own palette), the colour bars fail: the board sends cyan
+  Cb 154, the published code, where truncation gives 615 >> 2 = 153.
+
+```sh
+python hw/arty_a7_100t/scripts/build.py VTPGZ_OUTPUT_MODE=2 VTPGZ_BPC=10     VTPGZ_YUV_RANGE=1 VTPGZ_YUV_MATRIX=1 VTPGZ_BAR_LEVEL=75
+python hw/arty_a7_100t/python/run_hw_test.py --yuv-range limited     --yuv-matrix 709 --bar-level 75
+```
 
 ### Pixels-per-clock on silicon
 

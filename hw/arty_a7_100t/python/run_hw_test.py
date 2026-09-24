@@ -108,13 +108,14 @@ DEFAULT_BIT = HERE.parent / "build" / "demo_top.bit"
 
 def cfg_for(pat: int, mode: int, bpc: int, sub: int,
             bayer: int, order: int, ppc: int = 1,
-            yuv_range: int = 0, yuv_matrix: int = 0) -> VtpgzConfig:
+            yuv_range: int = 0, yuv_matrix: int = 0,
+            bar_level: int = 100) -> VtpgzConfig:
     return VtpgzConfig(
         width=WIDTH, height=HEIGHT,
         pattern=pat,
         output_mode=mode, yuv_subsample=sub, raw_bayer=bayer,
         rgb_order=order, bpc=bpc, pixels_per_clock=ppc,
-        yuv_range=yuv_range, yuv_matrix=yuv_matrix,
+        yuv_range=yuv_range, yuv_matrix=yuv_matrix, bar_level=bar_level,
         bar_width=WIDTH // 8,
         hg_step=0xFFF // (WIDTH - 1),
         vg_step=0xFFF // (HEIGHT - 1),
@@ -233,6 +234,8 @@ def main() -> int:
     # and gradient codes differ), it cannot pass silently.
     ap.add_argument("--yuv-range", choices=["full", "limited"], default="full")
     ap.add_argument("--yuv-matrix", choices=["601", "709"], default="601")
+    # Nor is the colour-bar level; state it too (VTPGZ_BAR_LEVEL).
+    ap.add_argument("--bar-level", type=int, choices=[100, 75], default=100)
     args = ap.parse_args()
 
     if not args.skip_program and not args.bit.exists():
@@ -324,7 +327,8 @@ def main() -> int:
             n += 1
             cfg = cfg_for(pat, mode, bpc, sub, bayer, order, ppc=rb_ppc,
                           yuv_range=1 if args.yuv_range == "limited" else 0,
-                          yuv_matrix=1 if args.yuv_matrix == "709" else 0)
+                          yuv_matrix=1 if args.yuv_matrix == "709" else 0,
+                          bar_level=args.bar_level)
             ok, err = run_one(bridge, cfg, verbose=(args.only is not None))
             tag = "OK  " if ok else "FAIL"
             print(f"  {tag}  pat={pat}" + (f"  {err}" if err else ""))

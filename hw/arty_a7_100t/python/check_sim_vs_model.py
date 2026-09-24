@@ -67,13 +67,14 @@ def load_words(path: Path) -> list[int]:
 
 def model_words(pat: int, mode: int, bpc: int, sub: int,
                 bayer: int, order: int,
-                yuv_range: int = 0, yuv_matrix: int = 0) -> list[int]:
+                yuv_range: int = 0, yuv_matrix: int = 0,
+                bar_level: int = 100) -> list[int]:
     cfg = VtpgzConfig(
         width=WIDTH, height=HEIGHT,
         pattern=pat,
         output_mode=mode, yuv_subsample=sub, raw_bayer=bayer,
         rgb_order=order, bpc=bpc,
-        yuv_range=yuv_range, yuv_matrix=yuv_matrix,
+        yuv_range=yuv_range, yuv_matrix=yuv_matrix, bar_level=bar_level,
         bar_width=WIDTH // 8,
         hg_step=0xFFF // (WIDTH - 1),
         vg_step=0xFFF // (HEIGHT - 1),
@@ -98,6 +99,7 @@ def main() -> int:
     # in RGB/RAW builds the RTL ignores the parameters and so does the model.
     ap.add_argument("--yuv-range", choices=["full", "limited"], default="full")
     ap.add_argument("--yuv-matrix", choices=["601", "709"], default="601")
+    ap.add_argument("--bar-level", type=int, choices=[100, 75], default=100)
     args = ap.parse_args()
 
     if not args.sim_binary.exists():
@@ -117,7 +119,8 @@ def main() -> int:
 
     print(f"Configuration: mode={args.mode} bpc={args.bpc} "
           f"sub={args.yuv_sub} bayer={args.raw_bayer} order={args.rgb_order} "
-          f"range={args.yuv_range} matrix={args.yuv_matrix}")
+          f"range={args.yuv_range} matrix={args.yuv_matrix} "
+          f"level={args.bar_level}")
 
     fails = []
     n = 0
@@ -133,7 +136,7 @@ def main() -> int:
                 continue
             sim = load_words(out_file)
             mod = model_words(pat, mode, args.bpc, sub, bayer, order,
-                              yrange, ymatrix)
+                              yrange, ymatrix, args.bar_level)
             if sim != mod:
                 first_diff = next(
                     (i for i, (a, b) in enumerate(zip(sim, mod)) if a != b),

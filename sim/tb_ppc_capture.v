@@ -24,6 +24,9 @@ module tb_ppc_capture;
     parameter integer RAW_BAYER        = `VTPGZ_RAW_RGGB;
     parameter integer RGB_ORDER        = `VTPGZ_RGB_ORDER_XILINX;
     parameter integer BPC              = 8;
+    parameter integer YUV_RANGE        = `VTPGZ_YUV_FULL;
+    parameter integer YUV_MATRIX       = `VTPGZ_YUV_BT601;
+    parameter integer BAR_LEVEL        = 100;
     // Only M1 patterns are legal at PPC>1, so the non-M1 enables default off.
     // For a PPC=1 regression they can be turned on via -P to re-check the
     // refactored pack stage against the model for every pattern.
@@ -96,6 +99,9 @@ module tb_ppc_capture;
         .BOX_IMAGE_HEX_FILE(BOX_IMAGE_HEX_FILE),
         .OUTPUT_MODE  (OUTPUT_MODE),
         .YUV_SUBSAMPLE(YUV_SUBSAMPLE),
+        .YUV_RANGE    (YUV_RANGE),
+        .YUV_MATRIX   (YUV_MATRIX),
+        .BAR_LEVEL    (BAR_LEVEL),
         .RAW_BAYER    (RAW_BAYER),
         .RGB_ORDER    (RGB_ORDER),
         .BPC          (BPC),

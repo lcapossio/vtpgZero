@@ -45,6 +45,7 @@ module demo_top #(
     parameter VTPGZ_RGB_ORDER     = 0, // 0=Xilinx, 1=legacy
     parameter VTPGZ_YUV_RANGE     = 0, // 0=full 1=limited (YUV only)
     parameter VTPGZ_YUV_MATRIX    = 0, // 0=BT.601 1=BT.709 (YUV only)
+    parameter VTPGZ_BAR_LEVEL     = 100, // colour-bar level: 100 or 75 (%)
     // Pixels per clock (1/2/4/8). PPC>1 also slows the demo clock, below.
     parameter VTPGZ_PIXELS_PER_CLOCK = 4
 ) (
@@ -270,6 +271,7 @@ module demo_top #(
         .BPC          (VTPGZ_BPC),
         .YUV_RANGE    (VTPGZ_YUV_RANGE),
         .YUV_MATRIX   (VTPGZ_YUV_MATRIX),
+        .BAR_LEVEL    (VTPGZ_BAR_LEVEL),
         .PIXELS_PER_CLOCK(VTPGZ_PIXELS_PER_CLOCK),
         // Interlaced-video support: CONTROL[3] selects it at runtime, and the
         // capture sink reports the captured field at CAPTURE_STATUS[1].

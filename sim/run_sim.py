@@ -108,6 +108,7 @@ def generics(args: argparse.Namespace) -> list[str]:
         # default", which is FULL/BT.601.
         f"-GYUV_RANGE={getattr(args, 'yuv_range', 0)}",
         f"-GYUV_MATRIX={getattr(args, 'yuv_matrix', 0)}",
+        f"-GBAR_LEVEL={getattr(args, 'bar_level', 100)}",
     ]
 
 
@@ -219,7 +220,8 @@ def _config_obj_dir(args: argparse.Namespace) -> Path:
     tag = (f"m{args.mode}_b{args.bpc}_s{args.yuv_sub}"
            f"_y{args.raw_bayer}_o{args.rgb_order}"
            f"_r{getattr(args, 'yuv_range', 0)}"
-           f"_x{getattr(args, 'yuv_matrix', 0)}")
+           f"_x{getattr(args, 'yuv_matrix', 0)}"
+           f"_l{getattr(args, 'bar_level', 100)}")
     return HERE / f"obj_capture_{tag}"
 
 
@@ -276,7 +278,8 @@ def _build_and_check_one(cfg: dict) -> tuple[dict, bool, str]:
                  "--raw-bayer", BAYER_NAMES[args.raw_bayer],
                  "--rgb-order", ORDER_NAMES[args.rgb_order],
                  "--yuv-range", RANGE_NAMES[getattr(args, 'yuv_range', 0)],
-                 "--yuv-matrix", MATRIX_NAMES[getattr(args, 'yuv_matrix', 0)]]
+                 "--yuv-matrix", MATRIX_NAMES[getattr(args, 'yuv_matrix', 0)],
+                 "--bar-level", str(getattr(args, 'bar_level', 100))]
     r = subprocess.run(check_cmd, cwd=str(HERE),
                        capture_output=True, text=True)
     return cfg, r.returncode == 0, (r.stdout + r.stderr)[-2000:]
@@ -363,6 +366,21 @@ def cmd_all_modes(args):
                 configs.append(dict(mode=2, bpc=bpc, yuv_sub=0, raw_bayer=1,
                                     rgb_order=0, yuv_range=yrange,
                                     yuv_matrix=matrix))
+    # 75% bars. Each palette is the exact code for its bit depth, so sweep
+    # the three palette depths in the most-used broadcast build (BT.709
+    # limited, where 10 bits is SMPTE RP 219), then one of each other
+    # colour space: RGB and RAW share the RGB palette, BT.601 full is the
+    # one computed full-range 601 palette (the 100% one is frozen).
+    for bpc in (8, 10, 12):
+        configs.append(dict(mode=2, bpc=bpc, yuv_sub=0, raw_bayer=1,
+                            rgb_order=0, yuv_range=1, yuv_matrix=1,
+                            bar_level=75))
+    configs.append(dict(mode=2, bpc=10, yuv_sub=0, raw_bayer=1, rgb_order=0,
+                        bar_level=75))
+    configs.append(dict(mode=0, bpc=10, yuv_sub=0, raw_bayer=1, rgb_order=0,
+                        bar_level=75))
+    configs.append(dict(mode=1, bpc=8, yuv_sub=0, raw_bayer=1, rgb_order=0,
+                        bar_level=75))
     # RAW mode: also sweep every Bayer tile (PLAIN/RGGB/BGGR/GRBG/GBRG)
     # at 8bpc to exercise the full 4-way Bayer mux.
     for bayer in (0, 2, 3, 4):  # 1 already covered above
@@ -385,7 +403,8 @@ def cmd_all_modes(args):
             tag = (f"mode={cfg['mode']} bpc={cfg['bpc']} "
                    f"sub={cfg['yuv_sub']} bayer={cfg['raw_bayer']} "
                    f"range={RANGE_NAMES[cfg.get('yuv_range', 0)]} "
-                   f"matrix={MATRIX_NAMES[cfg.get('yuv_matrix', 0)]}")
+                   f"matrix={MATRIX_NAMES[cfg.get('yuv_matrix', 0)]} "
+                   f"level={cfg.get('bar_level', 100)}")
             mark = "OK  " if ok else "FAIL"
             print(f"  [{done:2d}/{len(configs)}] {mark}  {tag}")
             if not ok:

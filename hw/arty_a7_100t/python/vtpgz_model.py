@@ -84,6 +84,7 @@ class VtpgzConfig:
     yuv_subsample: int = YUV_444
     yuv_range: int = YUV_FULL
     yuv_matrix: int = YUV_BT601
+    bar_level: int = 100          # colour-bar level, percent: 100 or 75
     raw_bayer: int = RAW_RGGB
     rgb_order: int = RGB_ORDER_XILINX
     bpc: int = 8
@@ -175,29 +176,19 @@ class VtpgzRegs:
 # Combinational pattern outputs (read current registers, return RGB12)
 # ============================================================================
 
-# RGB palette (build OUTPUT_MODE in {RGB, RAW}): {R, G, B}
-PALETTE_RGB = [
-    (0xFFF, 0xFFF, 0xFFF),  # 0 white
-    (0xFFF, 0xFFF, 0x000),  # 1 yellow
-    (0x000, 0xFFF, 0xFFF),  # 2 cyan
-    (0x000, 0xFFF, 0x000),  # 3 green
-    (0xFFF, 0x000, 0xFFF),  # 4 magenta
-    (0xFFF, 0x000, 0x000),  # 5 red
-    (0x000, 0x000, 0xFFF),  # 6 blue
-    (0x000, 0x000, 0x000),  # 7 black
-]
-# YUV palettes (build OUTPUT_MODE = YUV): {Y, Cb, Cr}, 12-bit, one per
-# {matrix, range}. DERIVED from the colorimetry by scripts/gen_yuv_palettes.py,
-# deliberately NOT transcribed from the RTL.
+# Colour-bar palettes, one per build: 12-bit {R,G,B} (RGB/RAW) or {Y,Cb,Cr}
+# (YUV), chosen by output mode, YUV matrix and range, bar level and palette
+# bit depth (BPC capped at 12). DERIVED from the colorimetry by
+# scripts/gen_yuv_palettes.py, deliberately NOT transcribed from the RTL.
 #
 # This matters more than it looks. The byte-exact sim<->model gate only proves
 # the two agree; if the model held a copy of the RTL constants, a wrong
 # constant would agree with itself and the gate would pass. Computing them
 # here from Kr/Kb means the gate actually checks the numbers.
 #
-# (BT.601 full is the one exception the generator itself documents: it returns
-# the frozen shipped constants, because regenerating them would move green and
-# magenta chroma by one LSB and change every existing 10- and 12-bit build.)
+# (RGB 100% and BT.601 full 100% are the exceptions the generator documents:
+# they return the frozen shipped constants, so the default builds stay
+# bit-exact.)
 import sys as _sys
 from pathlib import Path as _Path
 
@@ -205,17 +196,46 @@ _SCRIPTS = _Path(__file__).resolve().parents[3] / "scripts"
 if str(_SCRIPTS) not in _sys.path:
     _sys.path.insert(0, str(_SCRIPTS))
 from gen_yuv_palettes import palette as _gen_palette  # noqa: E402
+from gen_yuv_palettes import pal_bits as _pal_bits    # noqa: E402
 
-PALETTE_YUV_BY_BUILD = {
-    (YUV_BT601, YUV_FULL):    [t for _, t in _gen_palette("601", False)],
-    (YUV_BT601, YUV_LIMITED): [t for _, t in _gen_palette("601", True)],
-    (YUV_BT709, YUV_FULL):    [t for _, t in _gen_palette("709", False)],
-    (YUV_BT709, YUV_LIMITED): [t for _, t in _gen_palette("709", True)],
-}
-# Back-compat alias: the default build's palette.
-PALETTE_YUV = PALETTE_YUV_BY_BUILD[(YUV_BT601, YUV_FULL)]
+_PALETTES: dict = {}
+
+
+def bar_palette(output_mode: int, yuv_matrix: int = YUV_BT601,
+                yuv_range: int = YUV_FULL, bar_level: int = 100,
+                bpc: int = 8) -> list:
+    """The colour-bar palette of one build, as a list of 8 triples.
+
+    The same list object is returned for the same build, so a test can
+    perturb it in place (and must put it back).
+    """
+    yuv = (output_mode == MODE_YUV)
+    key = ((yuv, yuv_matrix, yuv_range) if yuv else (False, 0, 0),
+           bar_level, _pal_bits(bpc))
+    if key not in _PALETTES:
+        _PALETTES[key] = [t for _, t in _gen_palette(
+            yuv, "709" if yuv_matrix == YUV_BT709 else "601",
+            yuv_range == YUV_LIMITED, bar_level, _pal_bits(bpc))]
+    return _PALETTES[key]
+
+
+# Back-compat aliases: the default builds' palettes.
+PALETTE_RGB = bar_palette(MODE_RGB)
+PALETTE_YUV = bar_palette(MODE_YUV)
 
 CHROMA_NEUTRAL = 0x800  # 12-bit Q12 neutral chroma (0.5)
+
+
+def img_expand(v8: int, output_mode: int) -> int:
+    """8-bit image component -> 12 bits. Mirrors img_expand() in RTL.
+
+    RGB/RAW: an intensity, widened by bit replication (0xFF -> 0xFFF).
+    YUV: already a YCbCr code (scripts/image_to_hex.py --yuv), widened by a
+    plain shift, so 8-bit 128 is exactly 0x800 and 16 is exactly 0x100.
+    """
+    if output_mode == MODE_YUV:
+        return v8 << 4
+    return (v8 << 4) | (v8 >> 4)
 
 
 def y_to_limited(y: int) -> int:
@@ -247,8 +267,8 @@ def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int,
         return (v, v, v)
 
     if pat == PAT_COLORBAR:
-        pal = (PALETTE_YUV_BY_BUILD[(cfg.yuv_matrix, cfg.yuv_range)]
-               if is_yuv else PALETTE_RGB)
+        pal = bar_palette(cfg.output_mode, cfg.yuv_matrix, cfg.yuv_range,
+                          cfg.bar_level, cfg.bpc)
         return pal[regs.bar_idx & 0x7]
 
     if pat == PAT_HGRAD:
@@ -294,15 +314,16 @@ def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int,
         # Centred, scaled with Q16 nearest-neighbour. Source pixel index
         # for output pixel k (0..image_out_w - 1) is (k * step) >> 16,
         # where step = (image_w << 16) // image_out_w, mirroring the RTL.
+        # No image, or outside its window: the build's black, like slot 5.
         if cfg.image_w == 0 or cfg.image_h == 0 or not cfg.image_rgb888:
-            return (0, 0, 0)
+            return gray(0)
         out_w = cfg.image_out_w or cfg.image_w
         out_h = cfg.image_out_h or cfg.image_h
         x_off = (cfg.width  - out_w) // 2 if cfg.width  > out_w else 0
         y_off = (cfg.height - out_h) // 2 if cfg.height > out_h else 0
         if not (x_off <= x < x_off + out_w and
                 y_off <= y < y_off + out_h):
-            return (0, 0, 0)
+            return gray(0)
         step_x = (cfg.image_w << 16) // out_w
         step_y = (cfg.image_h << 16) // out_h
         ix = (((x - x_off) * step_x) >> 16) & (cfg.image_w - 1)
@@ -311,9 +332,8 @@ def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int,
         r8 = (word >> 16) & 0xFF
         g8 = (word >> 8)  & 0xFF
         b8 =  word        & 0xFF
-        return ((r8 << 4) | (r8 >> 4),
-                (g8 << 4) | (g8 >> 4),
-                (b8 << 4) | (b8 >> 4))
+        m = cfg.output_mode
+        return (img_expand(r8, m), img_expand(g8, m), img_expand(b8, m))
 
     # Slot 5 and any unused code: black for THIS build. In YUV that is
     # neutral chroma (and limited-range Y in a LIMITED build), not {0,0,0},
@@ -563,9 +583,8 @@ def _box_overlay(c0: int, c1: int, c2: int, x: int, y: int,
         r8 = (word >> 16) & 0xFF
         g8 = (word >> 8)  & 0xFF
         b8 =  word        & 0xFF
-        return ((r8 << 4) | (r8 >> 4),
-                (g8 << 4) | (g8 >> 4),
-                (b8 << 4) | (b8 >> 4))
+        m = cfg.output_mode
+        return (img_expand(r8, m), img_expand(g8, m), img_expand(b8, m))
     col = cfg.box_color
     r = ((col >> 16) & 0xFF) << 4
     g = ((col >> 8)  & 0xFF) << 4

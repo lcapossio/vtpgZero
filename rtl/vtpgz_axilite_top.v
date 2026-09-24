@@ -43,6 +43,7 @@ module vtpgz_axilite_top #(
     // Forwarded to vtpgz_core; see there for what they mean.
     parameter YUV_RANGE     = `VTPGZ_YUV_FULL,
     parameter YUV_MATRIX    = `VTPGZ_YUV_BT601,
+    parameter BAR_LEVEL     = 100,
     parameter RAW_BAYER     = `VTPGZ_RAW_RGGB,
     parameter RGB_ORDER     = `VTPGZ_RGB_ORDER_XILINX,
     parameter BPC           = 8,
@@ -230,6 +231,7 @@ module vtpgz_axilite_top #(
         .YUV_SUBSAMPLE(YUV_SUBSAMPLE),
         .YUV_RANGE    (YUV_RANGE),
         .YUV_MATRIX   (YUV_MATRIX),
+        .BAR_LEVEL    (BAR_LEVEL),
         .RAW_BAYER    (RAW_BAYER),
         .RGB_ORDER    (RGB_ORDER),
         .BPC          (BPC),

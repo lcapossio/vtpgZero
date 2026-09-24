@@ -19,7 +19,8 @@ Storage scales as `IMAGE_W × IMAGE_H × 24 bits`: 128×128 ≈ 393 kbit ≈ a
 dozen BRAM36 tiles (post-pack); 64×64 fits comfortably in 3–4 tiles. Scaling
 adds two ~20-bit accumulators + adders (~80 LUTs / 50 FFs) and no extra
 BRAM. The 8-bit-per-component source is upsampled to the 12-bit internal
-pipeline by MSB replication (`0xFF → 0xFFF`, `0x00 → 0x000`).
+pipeline by MSB replication (`0xFF → 0xFFF`, `0x00 → 0x000`), or in a YUV
+build by a plain shift (see [YUV builds](#yuv-builds)).
 
 Enable in a build (override `IMAGE_W`/`IMAGE_H`/`IMAGE_HEX_FILE` if not using
 the defaults):
@@ -51,6 +52,30 @@ python scripts/image_to_hex.py --fetch-mandrill --width 128 --height 128 \
 python scripts/image_to_hex.py myphoto.png --width 64 --height 64 \
     --out tests/images/myphoto_64x64.mem
 ```
+
+### YUV builds
+
+In a YUV build (`OUTPUT_MODE=2`) the image memory must hold YCbCr codes, not
+RGB: the core has no run-time colour conversion (that would cost DSPs).
+Convert at build time, for the build's `YUV_MATRIX` and `YUV_RANGE`:
+
+```sh
+python scripts/image_to_hex.py myphoto.png --width 64 --height 64 \
+    --yuv --matrix 709 --range limited \
+    --out tests/images/myphoto_64x64_709lim.mem
+```
+
+Each line is then `{Y, Cb, Cr}` as 8-bit codes, using the same conversion as
+the colour-bar palettes, and the file starts with a `//` comment recording
+the colorimetry (`$readmemh` skips it). The core widens YCbCr codes by a
+plain shift rather than the MSB replication it uses for RGB: 8-bit 128 must
+become 10-bit 512, not 514. It applies no limiter, since the codes are
+already in the build's range. The same applies to `BOX_IMAGE_HEX_FILE`.
+
+The core cannot tell an RGB memory from a YCbCr one, or one colorimetry from
+another, so this is on the build: a mismatch produces wrong colours, not an
+error. The padding around a centred image is the build's black
+(`{16, 128, 128}` at 8 bits in limited range).
 
 ## Image-in-box overlay (`EN_BOX_IMAGE=1`)
 

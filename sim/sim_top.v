@@ -16,6 +16,7 @@ module sim_top #(
     parameter BPC           = 8,
     parameter YUV_RANGE     = 0,
     parameter YUV_MATRIX    = 0,
+    parameter BAR_LEVEL     = 100,
     parameter integer PIXELS_PER_CLOCK = 1,
     parameter LINE_GAP_CYCLES = 1,
     // Derived per-pixel width, then packed by PIXELS_PER_CLOCK (must match
@@ -96,6 +97,7 @@ module sim_top #(
         .BPC          (BPC),
         .YUV_RANGE    (YUV_RANGE),
         .YUV_MATRIX   (YUV_MATRIX),
+        .BAR_LEVEL    (BAR_LEVEL),
         .PIXELS_PER_CLOCK(PIXELS_PER_CLOCK),
         .LINE_GAP_CYCLES(LINE_GAP_CYCLES)
     ) u_vtpgz (

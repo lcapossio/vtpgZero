@@ -25,7 +25,10 @@ jobs:
       - name: YUV spec test (model-side property gate)
         run: python hw/arty_a7_100t/python/check_yuv_spec.py
 
-      - name: YUV range/matrix spec test
+      - name: Colour-bar palettes in the RTL match the generator
+        run: python scripts/gen_yuv_palettes.py --check
+
+      - name: YUV range/matrix/bar-level spec test
         run: python hw/arty_a7_100t/python/check_yuv_range.py
 
       - name: YUV range/matrix mutation check (the spec test must bite)

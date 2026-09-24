@@ -179,6 +179,7 @@ The AXI-Lite flavor adds the other two files.
 | `YUV_SUBSAMPLE` | 0 (444) | Only for `OUTPUT_MODE=2`. **0** = 4:4:4; **1** = 4:2:2. |
 | `YUV_RANGE` | 0 (full) | Only for `OUTPUT_MODE=2`. **0** = full range (0..max); **1** = limited/studio range (Y 64..940, C 64..960 at 10 bits). See [Output modes](#output-modes). |
 | `YUV_MATRIX` | 0 (BT.601) | Only for `OUTPUT_MODE=2`. **0** = BT.601 (Kr=0.299, Kb=0.114); **1** = BT.709 (Kr=0.2126, Kb=0.0722). Selects the colorbar palette. |
+| `BAR_LEVEL` | 100 | Colorbar level in percent, any output mode: **100** or **75** (in YUV, the SMPTE RP 219 bars). Selects the colorbar palette. |
 | `RAW_BAYER` | 1 (RGGB) | Only for `OUTPUT_MODE=1`. **0** = plain monochrome; **1** = RGGB; **2** = BGGR; **3** = GRBG; **4** = GBRG. |
 | `RGB_ORDER` | 0 (Xilinx) | Component order in `tdata`. **0** = `{pad,B,G,R}` (Xilinx PG044); **1** = `{R,G,B,pad}` legacy MSB-first. |
 | `BPC` | 8 | Bits per component: 8, 10, 12, 14, or 16. |
@@ -578,9 +579,21 @@ source memory per lane — see [Image patterns](#image-patterns).
   `=1` → 4:2:2 (`{C,Y}`, C alternates Cb on even-x and Cr on odd-x).
 
   `YUV_MATRIX` picks the colorbar colorimetry — BT.601 (SD) or BT.709 (HD) —
-  and `YUV_RANGE` picks full or limited (studio) range. The four combinations
-  are four build-time constant palettes; none of them costs logic, since only
-  one is ever elaborated.
+  and `YUV_RANGE` picks full or limited (studio) range. `BAR_LEVEL=75` gives
+  75% bars in any mode (in YUV BT.709 limited at 10 bpc, exactly SMPTE
+  RP 219). Every combination is a build-time constant palette, and none of
+  them costs logic, since only one is ever elaborated.
+
+  Each palette holds the exact code **for the build's bit depth**. An 8-bit
+  limited code is not the 10-bit one truncated (BT.601 cyan Y is 170 at 8
+  bits, but 678 >> 2 = 169), so 8-, 10- and 12-bit builds each get their own
+  constants, and all of them equal the published tables. BPC 14/16 use the
+  12-bit codes. Full range follows H.273 / BT.2100 at every depth. The
+  palettes are generated from the colorimetry by
+  `scripts/gen_yuv_palettes.py`, which writes them into `vtpgz_core.v`; CI
+  fails if the two drift apart. The one exception is the shipped default,
+  BT.601 full range 100%, which is kept bit-for-bit as it always was (two
+  chroma values sit one LSB off the formula).
 
   In a limited-range build the patterns whose luma is a runtime value
   (gradients, checker, ramp, noise) are compressed onto the legal range by
@@ -601,11 +614,14 @@ source memory per lane — see [Image patterns](#image-patterns).
   core will happily emit `0x3FF` if you ask it to. The grid *background* does
   follow the range, because its luma is a build-time constant.
 
-  **Known limitation:** the IMAGE pattern is not color-converted in YUV
-  builds. Its R/G/B feed the `{Y,Cb,Cr}` lanes directly, and the padding
-  around a centred image is `{0,0,0}`, which in YCbCr is saturated green
-  rather than black. Supply an image whose pixels are already YCbCr if you
-  need IMAGE in a YUV build. `YUV_RANGE` does not touch this path either.
+  **IMAGE in YUV builds** is converted at build time, not in the core.
+  Generate the image memory with `scripts/image_to_hex.py --yuv --matrix
+  {601,709} --range {full,limited}`, matching the build's `YUV_MATRIX` and
+  `YUV_RANGE`, and the core passes those codes through untouched (widened by
+  a shift, so 8-bit 128 is exactly 10-bit 512). An RGB memory in a YUV build
+  comes out as the wrong colours, and the core cannot tell, so keep the two
+  in step. The padding around a centred image is the build's black. See
+  [docs/images.md](docs/images.md#yuv-builds).
 
 A pattern stripped at build time still has its `PATTERN_SEL` slot, but
 selecting it at runtime produces a black frame. At least one pattern must

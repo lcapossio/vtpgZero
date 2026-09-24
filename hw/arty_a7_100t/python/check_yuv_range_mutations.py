@@ -26,6 +26,7 @@ sys.path.insert(0, str(HERE))
 
 import vtpgz_model as model      # noqa: E402
 import check_yuv_range as chk    # noqa: E402
+import image_to_hex              # noqa: E402  (path set by check_yuv_range)
 
 from vtpgz_model import YUV_BT601, YUV_BT709, YUV_FULL, YUV_LIMITED  # noqa: E402
 
@@ -39,13 +40,17 @@ def run_checks() -> list[str]:
     chk.check_color_registers_unscaled()
     chk.check_black_slot()
     chk.check_neutral_chroma()
+    chk.check_image_converter()
     return list(chk.failures)
 
 
 @contextmanager
 def mutated_palette(build, bar: int, comp: int, delta: int):
-    """Perturb one component of one bar by delta, then put it back."""
-    pal = chk.PALETTE_YUV_BY_BUILD[build]
+    """Perturb one component of one bar by delta, then put it back.
+
+    build is (output_mode, matrix, range, level, bpc).
+    """
+    pal = model.bar_palette(*build)
     orig = pal[bar]
     pal[bar] = tuple(v + delta if i == comp else v
                      for i, v in enumerate(orig))
@@ -53,6 +58,21 @@ def mutated_palette(build, bar: int, comp: int, delta: int):
         yield
     finally:
         pal[bar] = orig
+
+
+@contextmanager
+def replaced_palette(build, source):
+    """Make one build use another build's palette -- a selection bug."""
+    pal = model.bar_palette(*build)
+    orig = list(pal)
+    pal[:] = model.bar_palette(*source)
+    try:
+        yield
+    finally:
+        pal[:] = orig
+
+
+YUV = model.MODE_YUV
 
 
 @contextmanager
@@ -90,23 +110,52 @@ def scaled_color_registers():
         chk.render_frame_native = orig
 
 
+@contextmanager
+def converter_wrong_matrix():
+    """image_to_hex converts with BT.601 whatever --matrix says."""
+    orig = image_to_hex.rgb_to_ycbcr8
+    image_to_hex.rgb_to_ycbcr8 = \
+        lambda r, g, b, matrix, limited: orig(r, g, b, "601", limited)
+    try:
+        yield
+    finally:
+        image_to_hex.rgb_to_ycbcr8 = orig
+
+
 MUTATIONS = [
     # (name, context manager, substring the OWNING failure must contain)
-    ("BT.709 limited green Cb off by one LSB",
-     lambda: mutated_palette((YUV_BT709, YUV_LIMITED), 3, 1, 4),
-     "palette BT.709 limited"),
-    ("BT.601 limited white Y off by one LSB",
-     lambda: mutated_palette((YUV_BT601, YUV_LIMITED), 0, 0, -4),
-     "palette BT.601 limited"),
+    ("BT.709 limited green Cb off by one LSB at 10 bits",
+     lambda: mutated_palette((YUV, YUV_BT709, YUV_LIMITED, 100, 10), 3, 1, 4),
+     "palette BT.709 limited 100% BPC=10 bar 'green'"),
+    ("BT.601 limited white Y off by one LSB at 10 bits",
+     lambda: mutated_palette((YUV, YUV_BT601, YUV_LIMITED, 100, 10), 0, 0, -4),
+     "palette BT.601 limited 100% BPC=10 bar 'white'"),
     ("shipped BT.601 full palette changed",
-     lambda: mutated_palette((YUV_BT601, YUV_FULL), 2, 2, 1),
-     "DEFAULT build changed"),
+     lambda: mutated_palette((YUV, YUV_BT601, YUV_FULL, 100, 12), 2, 2, 1),
+     "DEFAULT build changed at BPC=12"),
+    # The bug this palette set was introduced to fix: an 8-bit build that
+    # takes the 10-bit codes and lets the pack stage truncate them.
+    ("8-bit BT.601 limited palette is the 10-bit one truncated",
+     lambda: replaced_palette((YUV, YUV_BT601, YUV_LIMITED, 100, 8),
+                              (YUV, YUV_BT601, YUV_LIMITED, 100, 10)),
+     "palette BT.601 limited 100% BPC=8"),
+    ("75% BT.709 limited build uses the 100% bars",
+     lambda: replaced_palette((YUV, YUV_BT709, YUV_LIMITED, 75, 10),
+                              (YUV, YUV_BT709, YUV_LIMITED, 100, 10)),
+     "SMPTE RP 219"),
+    ("RGB 75% red off by one LSB at 8 bits",
+     lambda: mutated_palette((model.MODE_RGB, YUV_BT601, YUV_FULL, 75, 8),
+                             5, 0, 16),
+     "palette RGB 75% BPC=8 bar 'red'"),
     ("limited-range luma map dropped",
      dropped_luma_map,
      "leaves 64..940"),
     ("colour registers wrongly rescaled",
      scaled_color_registers,
      "must pass through as a raw code value"),
+    ("image converter ignores --matrix",
+     converter_wrong_matrix,
+     "image_to_hex BT.709 limited"),
 ]
 
 
