@@ -74,6 +74,17 @@ Together with `all_modes`, this is what carries the spec through to RTL: the
 model is checked against the standard, and the RTL is checked byte-for-byte
 against the model.
 
+One case the model cannot reach is a pattern stripped at build time, since
+the model has no `EN_*` flags. A stripped slot is documented to read as
+black, and in YUV black is `{Y_black, 0x800, 0x800}` — the all-zero triple is
+saturated green. `tb/tb_black.v` builds the core with COLORBAR, SOLID and
+IMAGE stripped and checks those slots plus slot 5 are exactly black on every
+lane, at PPC 1/2/4/8 in both ranges:
+
+```sh
+python sim/run_iverilog_black.py
+```
+
 The C++ harness runs **7 phases** for full coverage:
 
 1. **Register sweep** — write `0xFFFFFFFF`/`0x00000000`/`0xAAAAAAAA`/`0x55555555`
@@ -279,10 +290,12 @@ the same parity. That is a property of the demo sink, not of the core — see
 A complete reference design under `hw/arty_a7_100t/` instantiates the VTPGZ
 core, the [fpgacapZero](https://github.com/lcapossio/fpgacapZero)
 JTAG-to-AXI4 bridge, and a small AXI-Stream → BRAM frame-capture sink.
-The host sweeps all 108 (pattern × format × bpp) combinations through the
-FPGA over JTAG, captures each frame, and asserts byte-exact equality
-against a Python reference model that mirrors the RTL pipeline
-register-by-register.
+The host runs all 9 patterns through the FPGA over JTAG, captures each
+frame, and asserts byte-exact equality against a Python reference model that
+mirrors the RTL pipeline register-by-register. Output format, bit depth and
+pixels per clock are build-time, so the host reads them back from the loaded
+bitstream; covering another format means building another bitstream (see
+[Other output formats on silicon](#other-output-formats-on-silicon)).
 
 Requirements:
 - Vivado 2025.x (`vivado` and `xsdb` on `PATH`)
@@ -296,14 +309,14 @@ Build the bitstream:
 python hw/arty_a7_100t/scripts/build.py
 ```
 
-Run the full sweep (programs the bitstream + 108 captures + byte-exact
-compare):
+Run the test (programs the bitstream, captures each of the 9 patterns,
+byte-exact compare):
 
 ```sh
 python hw/arty_a7_100t/python/run_hw_test.py
 ```
 
-Expected: `Ran 108 combinations, 0 failures` / `HW PASS - byte-exact across all combinations`.
+Expected: `Ran 9 patterns, 0 failures` / `HW PASS — byte-exact across all patterns`.
 
 Architecture and address map are documented in
 [hw/arty_a7_100t/README.md](../hw/arty_a7_100t/README.md).
@@ -326,18 +339,20 @@ checker and grid background all mismatch.
 
 YUV 4:4:4, 10 bpc, limited range, BT.709 is verified byte-exact across all
 patterns on the board (0 DSPs, timing met). As a negative control, the same
-bitstream checked against full-range BT.601 fails 7 of 9 patterns, with the
+bitstream checked against full-range BT.601 fails 8 of 9 patterns, with the
 board showing gradient white at 940 and black at 64: the limited-range map is
-active on silicon, not just matching by coincidence.
+active on silicon, not just matching by coincidence. Only SOLID matches both
+ways, because colour registers are raw code values by design.
 
 ### Pixels-per-clock on silicon
 
-The demo builds at `PIXELS_PER_CLOCK=1` by default. To validate packed-pixel
-output on hardware, set `VTPGZ_PIXELS_PER_CLOCK` in
-[demo_top.v](../hw/arty_a7_100t/rtl/demo_top.v) (2/4/8), rebuild, and re-run —
-`frame_capture` serializes each wide beat into `ceil(TDATA_WIDTH/32)`
-little-endian words and `run_hw_test.py` reads back the configured PPC and
-checks byte-exact. PPC>1 builds run the demo at a lower clock (`clk_gen`'s
-`CLKOUT0_DIVIDE`): the per-lane counter-chain patterns (checker/grid) do not
-close 130 MHz, and the demo targets correctness rather than throughput.
-PPC=4 is verified byte-exact across all patterns on the board.
+The demo builds at `PIXELS_PER_CLOCK=4` by default. For another width, pass
+it to the build, e.g. `build.py VTPGZ_PIXELS_PER_CLOCK=1` (1/2/4/8), and
+re-run — `frame_capture` serializes each wide beat into
+`ceil(TDATA_WIDTH/32)` little-endian words and `run_hw_test.py` reads back
+the configured PPC and checks byte-exact. PPC>1 builds run the demo at
+50 MHz instead of 130 MHz (`clk_gen`'s `CLKOUT0_DIVIDE`): the per-lane
+counter-chain patterns (checker/grid) do not close 130 MHz, and the demo
+targets correctness rather than throughput. `build.tcl` prints the clock the
+build was actually constrained at. PPC=4 is verified byte-exact across all
+patterns on the board.

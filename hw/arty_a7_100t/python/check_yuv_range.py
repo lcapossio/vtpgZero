@@ -196,6 +196,22 @@ def check_color_registers_unscaled() -> None:
              "through as a raw code value")
 
 
+def check_black_slot() -> None:
+    """Pattern slot 5 is documented as black. In YUV that means neutral
+    chroma and range-correct Y -- the all-zero triple is saturated green.
+    (Stripped-pattern stubs are the same constant; the model has no EN_*
+    flags, so tb/tb_black.v covers those in RTL.)"""
+    for rng, label, y_black in ((YUV_FULL, "FULL", 0x000),
+                                (YUV_LIMITED, "LIMITED", 0x100)):
+        want = (y_black, CHROMA_NEUTRAL, CHROMA_NEUTRAL)
+        px = frame_native(5, rng, YUV_BT601)
+        bad = [p for p in px if p != want]
+        if bad:
+            fail(f"{label} slot 5: {len(bad)} pixels are not black; first is "
+                 f"{tuple(hex(v) for v in bad[0])}, black is "
+                 f"{tuple(hex(v) for v in want)}")
+
+
 def check_neutral_chroma() -> None:
     """3. Grey patterns keep chroma exactly neutral in both ranges."""
     for rng, label in ((YUV_FULL, "FULL"), (YUV_LIMITED, "LIMITED")):
@@ -215,6 +231,7 @@ def main() -> int:
     check_palette_exact()
     check_range_bounds()
     check_color_registers_unscaled()
+    check_black_slot()
     check_neutral_chroma()
 
     if failures:

@@ -315,7 +315,10 @@ def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int,
                 (g8 << 4) | (g8 >> 4),
                 (b8 << 4) | (b8 >> 4))
 
-    return (0, 0, 0)
+    # Slot 5 and any unused code: black for THIS build. In YUV that is
+    # neutral chroma (and limited-range Y in a LIMITED build), not {0,0,0},
+    # which would be saturated green. gray(0) is exactly that triple.
+    return gray(0)
 
 
 # ============================================================================

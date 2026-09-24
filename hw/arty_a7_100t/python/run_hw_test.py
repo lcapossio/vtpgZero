@@ -315,8 +315,9 @@ def main() -> int:
         bayer = _override("raw-bayer", args.raw_bayer, rb_bayer, BAYER_MAP)
         order = _override("rgb-order", args.rgb_order, rb_order, ORDER_MAP)
 
-        print(f"YUV colorimetry (from CLI): range={args.yuv_range} "
-              f"matrix={args.yuv_matrix}")
+        if mode == MODE_YUV:
+            print(f"YUV colorimetry (from CLI): range={args.yuv_range} "
+                  f"matrix={args.yuv_matrix}")
         pats = [args.only] if args.only is not None else list(range(9))
 
         for pat in pats:

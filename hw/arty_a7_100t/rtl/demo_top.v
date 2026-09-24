@@ -44,7 +44,9 @@ module demo_top #(
     parameter VTPGZ_RAW_BAYER     = 1,
     parameter VTPGZ_RGB_ORDER     = 0, // 0=Xilinx, 1=legacy
     parameter VTPGZ_YUV_RANGE     = 0, // 0=full 1=limited (YUV only)
-    parameter VTPGZ_YUV_MATRIX    = 0  // 0=BT.601 1=BT.709 (YUV only)
+    parameter VTPGZ_YUV_MATRIX    = 0, // 0=BT.601 1=BT.709 (YUV only)
+    // Pixels per clock (1/2/4/8). PPC>1 also slows the demo clock, below.
+    parameter VTPGZ_PIXELS_PER_CLOCK = 4
 ) (
     input  wire CLK100MHZ,
     input  wire btn0,           // active-high reset
@@ -53,10 +55,6 @@ module demo_top #(
     output wire led2,
     output wire led3
 );
-
-    // Pixels-per-clock for this demo build (1/2/4/8). Declared here so the
-    // clock generator can slow down for PPC>1 (see DEMO_CLK_DIV below).
-    localparam VTPGZ_PIXELS_PER_CLOCK = 4;
 
     // ---------------- clock & reset ----------------
     // PPC=1 runs 130 MHz (650/5). At PPC>1 the per-lane counter-chain patterns
@@ -243,7 +241,7 @@ module demo_top #(
 
     // ---------------- VTPGZ core ----------------
     // Build configuration comes from the module parameters above.
-    // VTPGZ_PIXELS_PER_CLOCK is declared near the clock generator above.
+    // VTPGZ_PIXELS_PER_CLOCK is a module parameter, like the rest.
     // Match vtpgz_axilite_top's auto-derived TDATA_WIDTH formula (per pixel),
     // then widen by PIXELS_PER_CLOCK for the packed beat. frame_capture
     // serializes each wide beat into ceil(width/32) 32-bit BRAM words.

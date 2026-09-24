@@ -229,6 +229,20 @@ module vtpgz_core #(
     // ---------------- pixels-per-clock shorthands ----------------
     localparam integer NPPC = PIXELS_PER_CLOCK;
 
+    // ---------------- black, for this build ----------------
+    // What "black" means depends on the build, and it is not always zero:
+    //   RGB / RAW          {0, 0, 0}
+    //   YUV, full range    {Y=0,     Cb=0x800, Cr=0x800}
+    //   YUV, limited range {Y=0x100, Cb=0x800, Cr=0x800}  (64/512/512 @10b)
+    // In YUV the all-zero triple is saturated GREEN, so every place that
+    // emits a constant black (pattern slot 5, stripped-pattern stubs, the
+    // grid background) must use these rather than 12'h000.
+    localparam YUV_LIMITED_BUILD =
+        (OUTPUT_MODE == `VTPGZ_MODE_YUV) && (YUV_RANGE == `VTPGZ_YUV_LIMITED);
+    localparam [11:0] Y_BLACK_LIM = YUV_LIMITED_BUILD ? 12'h100 : 12'h000;
+    localparam [11:0] BLACK_C0    = Y_BLACK_LIM;
+    localparam [11:0] BLACK_C12   = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
+
     // ---------------- elaboration guards ----------------
     // PIXELS_PER_CLOCK must be one of 1/2/4/8. As of M3 every pattern (and
     // the box + box-image overlays) is supported at PPC>1, so there is no
@@ -674,12 +688,13 @@ module vtpgz_core #(
         assign cb_g = cb_g_bus[11:0];
         assign cb_b = cb_b_bus[11:0];
     end else begin : g_colorbar_off
-        assign cb_r = 12'h000;
-        assign cb_g = 12'h000;
-        assign cb_b = 12'h000;
-        assign cb_r_bus = {(12*NPPC){1'b0}};
-        assign cb_g_bus = {(12*NPPC){1'b0}};
-        assign cb_b_bus = {(12*NPPC){1'b0}};
+        // Stripped: the slot still exists and must read as black.
+        assign cb_r = BLACK_C0;
+        assign cb_g = BLACK_C12;
+        assign cb_b = BLACK_C12;
+        assign cb_r_bus = {NPPC{BLACK_C0}};
+        assign cb_g_bus = {NPPC{BLACK_C12}};
+        assign cb_b_bus = {NPPC{BLACK_C12}};
     end endgenerate
 
     // ---- Horizontal gradient ----
@@ -850,9 +865,9 @@ module vtpgz_core #(
         assign solid_g = {cfg_solid_color[15:8],  4'h0};
         assign solid_b = {cfg_solid_color[7:0],   4'h0};
     end else begin : g_solid_off
-        assign solid_r = 12'h000;
-        assign solid_g = 12'h000;
-        assign solid_b = 12'h000;
+        assign solid_r = BLACK_C0;
+        assign solid_g = BLACK_C12;
+        assign solid_b = BLACK_C12;
     end endgenerate
 
     // ---- Moving box (bouncing overlay) ----
@@ -1238,12 +1253,12 @@ module vtpgz_core #(
         end
         // verilator coverage_on
     end else begin : g_image_off
-        assign image_r = 12'h000;
-        assign image_g = 12'h000;
-        assign image_b = 12'h000;
-        assign image_r_bus = {(12*NPPC){1'b0}};
-        assign image_g_bus = {(12*NPPC){1'b0}};
-        assign image_b_bus = {(12*NPPC){1'b0}};
+        assign image_r = BLACK_C0;
+        assign image_g = BLACK_C12;
+        assign image_b = BLACK_C12;
+        assign image_r_bus = {NPPC{BLACK_C0}};
+        assign image_g_bus = {NPPC{BLACK_C12}};
+        assign image_b_bus = {NPPC{BLACK_C12}};
     end endgenerate
 
     // ---- BOX-image overlay ----
@@ -1416,10 +1431,8 @@ module vtpgz_core #(
     //     handled by a constant select in g_grid rather than this multiply.
     // Chroma is untouched: these patterns emit neutral 0x800, already legal
     // in both ranges.
-    localparam YUV_LIMITED_BUILD =
-        (OUTPUT_MODE == `VTPGZ_MODE_YUV) && (YUV_RANGE == `VTPGZ_YUV_LIMITED);
-    // Limited-range black, for the constant-valued backgrounds.
-    localparam [11:0] Y_BLACK_LIM = YUV_LIMITED_BUILD ? 12'h100 : 12'h000;
+    // YUV_LIMITED_BUILD and Y_BLACK_LIM are declared near the top of the
+    // module, with the other build-dependent black constants.
 
     // coverage_off: in any build that is not YUV+LIMITED, YUV_LIMITED_BUILD
     // is an elaboration constant 0, limit_luma_now folds to 0 and this whole
@@ -1466,7 +1479,8 @@ module vtpgz_core #(
             `VTPGZ_PAT_NOISE     : begin pat_c0_raw = noise_v; pat_c1 = nz_c1;   pat_c2 = nz_c2;   end
             `VTPGZ_PAT_IMAGE     : begin pat_c0_raw = image_r; pat_c1 = image_g; pat_c2 = image_b; end
             // verilator coverage_off
-            default              : begin pat_c0_raw = 12'h0;   pat_c1 = 12'h0;   pat_c2 = 12'h0;   end
+            // Slot 5 (the box is an overlay, not a pattern) and unused codes.
+            default              : begin pat_c0_raw = BLACK_C0; pat_c1 = BLACK_C12; pat_c2 = BLACK_C12; end
             // verilator coverage_on
         endcase
     end
@@ -1526,7 +1540,7 @@ module vtpgz_core #(
                 `VTPGZ_PAT_IMAGE   : begin p0 = image_r_bus[12*gpl +: 12];
                                            p1 = image_g_bus[12*gpl +: 12];
                                            p2 = image_b_bus[12*gpl +: 12]; end
-                default            : begin p0 = 12'h0;   p1 = 12'h0;   p2 = 12'h0;   end
+                default            : begin p0 = BLACK_C0; p1 = BLACK_C12; p2 = BLACK_C12; end
             endcase
         end
         // Same limited-range compression as the scalar path, per lane.

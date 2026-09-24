@@ -150,11 +150,22 @@ if {[llength $bitsrc] > 0} {
 }
 
 # ─── report WNS ───────────────────────────────────────────────────
+# The demo clock is not fixed: demo_top slows clk_gen for PPC>1 builds (130
+# MHz at PPC=1, 50 MHz at PPC>1). Report the frequency the design was actually
+# constrained at, read from the clock on demo_top's `clk` net, rather than a
+# hard-coded figure that is wrong for half the builds.
 set wns [get_property SLACK [get_timing_paths -max_paths 1 -setup]]
+set demo_clk [get_clocks -quiet -of_objects [get_nets -quiet clk]]
+if {[llength $demo_clk] == 1} {
+    set mhz [format %.1f [expr {1000.0 / [get_property PERIOD $demo_clk]}]]
+    set clk_msg "demo clock $demo_clk = $mhz MHz"
+} else {
+    set clk_msg "demo clock not identified"
+}
 if {$wns ne "" && $wns ne "NONE"} {
-    puts "WNS = $wns ns"
-    if {$wns >= 0} { puts "TIMING MET at 130 MHz" } \
-    else           { puts "TIMING VIOLATION" }
+    puts "WNS = $wns ns ($clk_msg)"
+    if {$wns >= 0} { puts "TIMING MET ($clk_msg)" } \
+    else           { puts "TIMING VIOLATION ($clk_msg)" }
 }
 
 puts "DONE."

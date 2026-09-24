@@ -633,13 +633,15 @@ python sim/run_sim.py all_modes    # byte-exact sim↔model gate across every mo
 python sim/cocotb/run_ppc.py       # beat-exact pixels-per-clock data path (1/2/4/8)
 python sim/run_iverilog_interlace.py  # interlaced field ID (fid) semantics
 python sim/run_iverilog_flvdval.py    # FVAL/LVAL/DVAL adapter + gap-free source
+python sim/run_iverilog_black.py      # empty/stripped pattern slots are real black in YUV
 python hw/arty_a7_100t/python/check_yuv_range.py            # YUV colorimetry vs the standards
 python hw/arty_a7_100t/python/check_yuv_range_mutations.py  # ...and proof those checks bite
 ```
 
-There is also an Icarus smoke test, a cocotb control-plane suite, and a full
-hardware regression on the Arty A7-100T (108 pattern×format×bpp combinations,
-byte-exact vs the Python model, verified on silicon). Setup, expected output,
+There is also an Icarus smoke test, a cocotb control-plane suite, and a
+hardware regression on the Arty A7-100T (all 9 patterns byte-exact vs the
+Python model, verified on silicon in the default RGB build and in a YUV
+limited-range BT.709 build). Setup, expected output,
 the 7-phase coverage harness, and the hardware flow are documented in
 **[docs/testing.md](docs/testing.md)**.
 
@@ -653,12 +655,12 @@ Measured on the full Arty A7-100T demo (Vivado 2025.2, default strategies):
 | Metric | Value |
 |---|---|
 | Target | Digilent Arty A7-100T (XC7A100TCSG324-1, speed grade -1) |
-| Clock | 130 MHz (on-board 100 MHz osc via MMCM) |
-| WNS | +5.252 ns (timing met, 0 failing endpoints) |
+| Clock | 50 MHz at 4 pixels/clock = 200 Mpixel/s (on-board 100 MHz osc via MMCM) |
+| WNS | +5.252 ns at 50 MHz (timing met, 0 failing endpoints) |
 | LUTs | 3529 / 63400 = 5.57% |
 | FFs | 3229 / 126800 = 2.55% |
 | BRAM36 | 8 / 135 = 5.93% |
-| Hardware test | **108/108 byte-exact** vs Python model |
+| Hardware test | **9/9 patterns byte-exact** vs Python model |
 
 That row includes the whole demo (core + `frame_capture` + fpgacapZero
 JTAG-AXI bridge + BRAM frame buffer + MMCM), and now also the

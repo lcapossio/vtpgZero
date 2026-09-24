@@ -37,6 +37,7 @@ def run_checks() -> list[str]:
     chk.check_palette_exact()
     chk.check_range_bounds()
     chk.check_color_registers_unscaled()
+    chk.check_black_slot()
     chk.check_neutral_chroma()
     return list(chk.failures)
 
