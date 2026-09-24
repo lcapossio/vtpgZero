@@ -107,12 +107,15 @@ DEFAULT_BIT = HERE.parent / "build" / "demo_top.bit"
 
 
 def cfg_for(pat: int, mode: int, bpc: int, sub: int,
-            bayer: int, order: int, ppc: int = 1) -> VtpgzConfig:
+            bayer: int, order: int, ppc: int = 1,
+            yuv_range: int = 0, yuv_matrix: int = 0,
+            bar_level: int = 100) -> VtpgzConfig:
     return VtpgzConfig(
         width=WIDTH, height=HEIGHT,
         pattern=pat,
         output_mode=mode, yuv_subsample=sub, raw_bayer=bayer,
         rgb_order=order, bpc=bpc, pixels_per_clock=ppc,
+        yuv_range=yuv_range, yuv_matrix=yuv_matrix, bar_level=bar_level,
         bar_width=WIDTH // 8,
         hg_step=0xFFF // (WIDTH - 1),
         vg_step=0xFFF // (HEIGHT - 1),
@@ -226,6 +229,13 @@ def main() -> int:
     ap.add_argument("--yuv-sub", choices=list(SUB_MAP.keys()), default=None)
     ap.add_argument("--raw-bayer", choices=list(BAYER_MAP.keys()), default=None)
     ap.add_argument("--rgb-order", choices=list(ORDER_MAP.keys()), default=None)
+    # YUV colorimetry is NOT in the COLOR_FORMAT read-back, so it must be
+    # stated to match the bitstream. A mismatch fails loudly (the colorbar
+    # and gradient codes differ), it cannot pass silently.
+    ap.add_argument("--yuv-range", choices=["full", "limited"], default="full")
+    ap.add_argument("--yuv-matrix", choices=["601", "709"], default="601")
+    # Nor is the colour-bar level; state it too (VTPGZ_BAR_LEVEL).
+    ap.add_argument("--bar-level", type=int, choices=[100, 75], default=100)
     args = ap.parse_args()
 
     if not args.skip_program and not args.bit.exists():
@@ -308,11 +318,17 @@ def main() -> int:
         bayer = _override("raw-bayer", args.raw_bayer, rb_bayer, BAYER_MAP)
         order = _override("rgb-order", args.rgb_order, rb_order, ORDER_MAP)
 
+        if mode == MODE_YUV:
+            print(f"YUV colorimetry (from CLI): range={args.yuv_range} "
+                  f"matrix={args.yuv_matrix}")
         pats = [args.only] if args.only is not None else list(range(9))
 
         for pat in pats:
             n += 1
-            cfg = cfg_for(pat, mode, bpc, sub, bayer, order, ppc=rb_ppc)
+            cfg = cfg_for(pat, mode, bpc, sub, bayer, order, ppc=rb_ppc,
+                          yuv_range=1 if args.yuv_range == "limited" else 0,
+                          yuv_matrix=1 if args.yuv_matrix == "709" else 0,
+                          bar_level=args.bar_level)
             ok, err = run_one(bridge, cfg, verbose=(args.only is not None))
             tag = "OK  " if ok else "FAIL"
             print(f"  {tag}  pat={pat}" + (f"  {err}" if err else ""))

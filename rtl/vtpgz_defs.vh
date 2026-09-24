@@ -97,6 +97,19 @@
 `define VTPGZ_YUV_444     0
 `define VTPGZ_YUV_422     1
 
+// ----- YUV_RANGE parameter values (only meaningful for MODE_YUV) -----
+// FULL    = codes 0..full scale. The default and the historical behaviour.
+// LIMITED = Y 64..940, C 64..960 at 10 bits (16..235 / 16..240 at 8), which
+//           is what HDMI, SDI and most video IP actually carry.
+`define VTPGZ_YUV_FULL    0
+`define VTPGZ_YUV_LIMITED 1
+
+// ----- YUV_MATRIX parameter values (only meaningful for MODE_YUV) -----
+// Selects the colour-bar palette only; no run-time conversion is performed.
+// BT.601 is correct for SD, BT.709 for HD and UHD.
+`define VTPGZ_YUV_BT601   0
+`define VTPGZ_YUV_BT709   1
+
 // ----- RAW_BAYER parameter values (only meaningful for MODE_RAW) -----
 // Tile names follow the standard convention: row-by-row, left to right,
 // top to bottom. RGGB = row0:[R,G] / row1:[G,B], etc.

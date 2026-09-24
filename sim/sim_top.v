@@ -14,6 +14,9 @@ module sim_top #(
     parameter RAW_BAYER     = 1,
     parameter RGB_ORDER     = 0,
     parameter BPC           = 8,
+    parameter YUV_RANGE     = 0,
+    parameter YUV_MATRIX    = 0,
+    parameter BAR_LEVEL     = 100,
     parameter integer PIXELS_PER_CLOCK = 1,
     parameter LINE_GAP_CYCLES = 1,
     // Derived per-pixel width, then packed by PIXELS_PER_CLOCK (must match
@@ -92,6 +95,9 @@ module sim_top #(
         .RAW_BAYER    (RAW_BAYER),
         .RGB_ORDER    (RGB_ORDER),
         .BPC          (BPC),
+        .YUV_RANGE    (YUV_RANGE),
+        .YUV_MATRIX   (YUV_MATRIX),
+        .BAR_LEVEL    (BAR_LEVEL),
         .PIXELS_PER_CLOCK(PIXELS_PER_CLOCK),
         .LINE_GAP_CYCLES(LINE_GAP_CYCLES)
     ) u_vtpgz (

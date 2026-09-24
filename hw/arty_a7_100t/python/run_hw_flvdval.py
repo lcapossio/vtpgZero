@@ -55,7 +55,7 @@ from fcapz.transport import XilinxHwServerTransport  # noqa: E402
 from fcapz.ejtagaxi import EjtagAxiController  # noqa: E402
 from run_hw_test import (  # noqa: E402
     VTPGZ_BASE, FC_BASE,
-    VTPGZ_CORE_ID, VTPGZ_CONTROL, VTPGZ_VERSION,
+    VTPGZ_CORE_ID, VTPGZ_CONTROL, VTPGZ_VERSION, VTPGZ_STATUS,
     VTPGZ_IMG_WIDTH, VTPGZ_IMG_HEIGHT, VTPGZ_PATTERN_SEL,
     VTPGZ_FRAME_RATE, VTPGZ_PIXELS_PER_CLOCK, VTPGZ_BAR_WIDTH,
     VTPGZ_CORE_ID_MAGIC, DEFAULT_BIT,
@@ -119,11 +119,38 @@ def read_stats(axi: EjtagAxiController) -> dict:
     }
 
 
+STATUS_BUSY = 0x1
+
+
+def quiesce(axi: EjtagAxiController) -> None:
+    """Disable the core and let any in-flight frame drain before reprogramming.
+
+    This is the core's documented reconfiguration contract: CONTROL=0, wait
+    for the in-flight frame to finish, then reprogram. Skipping the wait is
+    not harmless here. A test that ran before this one (run_hw_interlace, or
+    run_hw_test) can leave a frame stalled mid-line, because frame_capture
+    drops TREADY once its capture is done. Reprogramming over that frame and
+    re-enabling makes the monitor measure its remainder -- on the board that
+    read as a 14-beat line and a 36911-cycle blanking gap, a false failure.
+
+    The drain needs TREADY, so hand it to the adapter (which ties it high)
+    for the duration.
+    """
+    axi.axi_write(VTPGZ_BASE + VTPGZ_CONTROL, 0)
+    axi.axi_write(FC_BASE + FC_FLV_MODE, FLV_MODE_PARALLEL)
+    for _ in range(100):
+        if not (axi.axi_read(VTPGZ_BASE + VTPGZ_STATUS) & STATUS_BUSY):
+            return
+        time.sleep(0.01)
+    raise RuntimeError("core still busy 1 s after disable with TREADY high; "
+                       "the in-flight frame never drained")
+
+
 def run_case(axi: EjtagAxiController, name: str, width: int, height: int,
              ppc: int, rate: int, interlaced: bool,
              failures: list[str]) -> None:
     """Emit frames in parallel mode and check the measured raster."""
-    axi.axi_write(VTPGZ_BASE + VTPGZ_CONTROL, 0)
+    quiesce(axi)
     axi.axi_write(VTPGZ_BASE + VTPGZ_IMG_WIDTH, width)
     axi.axi_write(VTPGZ_BASE + VTPGZ_IMG_HEIGHT, height)
     axi.axi_write(VTPGZ_BASE + VTPGZ_PATTERN_SEL, 0)      # colorbar

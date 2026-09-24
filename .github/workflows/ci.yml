@@ -25,6 +25,15 @@ jobs:
       - name: YUV spec test (model-side property gate)
         run: python hw/arty_a7_100t/python/check_yuv_spec.py
 
+      - name: Colour-bar palettes in the RTL match the generator
+        run: python scripts/gen_yuv_palettes.py --check
+
+      - name: YUV range/matrix/bar-level spec test
+        run: python hw/arty_a7_100t/python/check_yuv_range.py
+
+      - name: YUV range/matrix mutation check (the spec test must bite)
+        run: python hw/arty_a7_100t/python/check_yuv_range_mutations.py
+
   fcapz-submodule:
     name: fcapz submodule RTL lint
     runs-on: ubuntu-24.04
@@ -74,6 +83,12 @@ jobs:
 
       - name: Parallel video adapter (FVAL/LVAL/DVAL)
         run: python sim/run_iverilog_flvdval.py
+
+      - name: Black is black in YUV builds (Icarus)
+        run: python sim/run_iverilog_black.py
+
+      - name: YUV builds refuse the RGB default images (Icarus)
+        run: python sim/check_image_guard.py
 
       - name: Multi-pixel sweep (RTL vs model beat-exact, PPC 1/2/4/8)
         run: python sim/check_ppc_vs_model.py

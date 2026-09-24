@@ -10,6 +10,15 @@ Each output line is one pixel as a 6-hex-digit value, packed
 expands 8 bits per component to its internal 12-bit pipeline by
 MSB-replicating the upper 4 bits.
 
+For a YUV build (OUTPUT_MODE=2) pass --yuv with the build's --matrix and
+--range: each line is then {Y[7:0], Cb[7:0], Cr[7:0]}, 8-bit codes in the
+build's colorimetry, which the core widens by a plain shift and passes
+through untouched. The conversion is the one the colour-bar palettes use
+(scripts/gen_yuv_palettes.py). The file starts with a `//` comment
+recording the colorimetry; $readmemh skips comments. Converting for the
+wrong matrix or range cannot be caught by the core, so keep the two in step
+(the build's YUV_MATRIX / YUV_RANGE).
+
 Width and height MUST be powers of two -- the RTL uses bit-mask wrap-
 around (tile) for sub-frame images, which costs no logic only at
 powers of two.
@@ -24,6 +33,11 @@ Usage:
     python scripts/image_to_hex.py --fetch-mandrill --width 128 --height 128 \\
         --out tests/images/mandrill_128x128.mem
 
+    # For a YUV limited-range BT.709 build
+    python scripts/image_to_hex.py tests/images/baboon.jpg --width 128 \\
+        --height 128 --yuv --matrix 709 --range limited \\
+        --out build/mandrill_128x128_709lim.mem
+
 Requires: Pillow (`pip install Pillow`).
 """
 from __future__ import annotations
@@ -32,12 +46,38 @@ import argparse
 import io
 import sys
 import urllib.request
+from fractions import Fraction
 from pathlib import Path
 
-try:
-    from PIL import Image
-except ImportError:
-    sys.exit("ERROR: Pillow not installed. Run: pip install Pillow")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gen_yuv_palettes import MATRICES, ycbcr_code  # noqa: E402
+
+
+def rgb_to_ycbcr8(r: int, g: int, b: int, matrix: str, limited: bool):
+    """One 8-bit R'G'B' pixel -> 8-bit {Y, Cb, Cr} codes.
+
+    Exactly the conversion the colour-bar palettes use, so an image of the
+    bars converts to the bars.
+    """
+    kr, kb = MATRICES[matrix]
+    return ycbcr_code((Fraction(r, 255), Fraction(g, 255), Fraction(b, 255)),
+                      kr, kb, limited, 8)
+
+
+def pixel_word(r: int, g: int, b: int, yuv: bool, matrix: str = "601",
+               limited: bool = False) -> int:
+    """The 24-bit memory word for one pixel."""
+    if yuv:
+        r, g, b = rgb_to_ycbcr8(r, g, b, matrix, limited)
+    return (r << 16) | (g << 8) | b
+
+
+def _pil():
+    try:
+        from PIL import Image
+    except ImportError:
+        sys.exit("ERROR: Pillow not installed. Run: pip install Pillow")
+    return Image
 
 
 # Stable public mirrors of the canonical baboon/mandrill test image.
@@ -61,7 +101,8 @@ def fetch_url(url: str, timeout: int = 30) -> bytes:
         return r.read()
 
 
-def load_image(args: argparse.Namespace) -> Image.Image:
+def load_image(args: argparse.Namespace):
+    Image = _pil()
     if args.fetch_mandrill:
         last_err = None
         for url in MANDRILL_URLS:
@@ -100,12 +141,22 @@ def main() -> int:
     ap.add_argument("--resample", default="lanczos",
                     choices=["nearest", "bilinear", "lanczos"],
                     help="Resize filter (default: lanczos).")
+    ap.add_argument("--yuv", action="store_true",
+                    help="Write YCbCr codes, for a YUV build (OUTPUT_MODE=2).")
+    ap.add_argument("--matrix", choices=sorted(MATRICES), default="601",
+                    help="With --yuv: the build's YUV_MATRIX (default 601).")
+    ap.add_argument("--range", dest="yuv_range", default="full",
+                    choices=["full", "limited"],
+                    help="With --yuv: the build's YUV_RANGE (default full).")
     args = ap.parse_args()
+    if not args.yuv and (args.matrix != "601" or args.yuv_range != "full"):
+        sys.exit("ERROR: --matrix/--range only apply with --yuv")
 
     if not is_pow2(args.width) or not is_pow2(args.height):
         sys.exit(f"ERROR: --width and --height must be powers of two "
                  f"(got {args.width}x{args.height})")
 
+    Image = _pil()
     img = load_image(args)
     print(f"[input] {img.size[0]}x{img.size[1]} {img.mode}")
 
@@ -118,11 +169,17 @@ def main() -> int:
     out_path = Path(args.out).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    limited = args.yuv_range == "limited"
     with open(out_path, "w") as f:
+        if args.yuv:
+            f.write(f"// YCbCr BT.{args.matrix} {args.yuv_range} range, "
+                    f"8-bit codes {{Y, Cb, Cr}} -- for YUV_MATRIX/YUV_RANGE "
+                    f"builds to match\n")
         for y in range(args.height):
             for x in range(args.width):
                 r, g, b = img.getpixel((x, y))
-                f.write(f"{r:02x}{g:02x}{b:02x}\n")
+                w = pixel_word(r, g, b, args.yuv, args.matrix, limited)
+                f.write(f"{w:06x}\n")
 
     pixels = args.width * args.height
     print(f"[out] {out_path}  ({pixels} pixels, {pixels * 3} bytes raw)")

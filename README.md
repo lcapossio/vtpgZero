@@ -75,8 +75,9 @@ A third, optional module sits *after* either of them:
   - **RAW** — single-component: plain monochrome, or any of the 4 standard
     Bayer mosaics (RGGB / BGGR / GRBG / GBRG). Smallest configuration, useful
     as an image-sensor emulator.
-  - **YUV** — native BT.601-style 4:4:4 or 4:2:2 (patterns produce
-    `{Y,Cb,Cr}` directly, no runtime color conversion).
+  - **YUV** — native 4:4:4 or 4:2:2 (patterns produce `{Y,Cb,Cr}` directly,
+    no runtime color conversion). Selectable colorimetry: BT.601 or BT.709,
+    full or limited (studio) range.
 - **5 bit depths** (build-time): 8 / 10 / 12 / 14 / 16 bits per component.
   Patterns render at 12-bit precision; the pack stage truncates LSBs for
   `BPC<12` and zero-extends for `BPC>12`.
@@ -176,6 +177,9 @@ The AXI-Lite flavor adds the other two files.
 | `BOX_IMAGE_W` / `BOX_IMAGE_H` | 32 | Box-image source size. Plus `BOX_IMAGE_HEX_FILE`. |
 | `OUTPUT_MODE` | 0 (RGB) | **0** = RGB; **1** = RAW; **2** = YUV. See [Output modes](#output-modes). |
 | `YUV_SUBSAMPLE` | 0 (444) | Only for `OUTPUT_MODE=2`. **0** = 4:4:4; **1** = 4:2:2. |
+| `YUV_RANGE` | 0 (full) | Only for `OUTPUT_MODE=2`. **0** = full range (0..max); **1** = limited/studio range (Y 64..940, C 64..960 at 10 bits). See [Output modes](#output-modes). |
+| `YUV_MATRIX` | 0 (BT.601) | Only for `OUTPUT_MODE=2`. **0** = BT.601 (Kr=0.299, Kb=0.114); **1** = BT.709 (Kr=0.2126, Kb=0.0722). Selects the colorbar palette. |
+| `BAR_LEVEL` | 100 | Colorbar level in percent, any output mode: **100** or **75** (in YUV, the SMPTE RP 219 bars). Selects the colorbar palette. |
 | `RAW_BAYER` | 1 (RGGB) | Only for `OUTPUT_MODE=1`. **0** = plain monochrome; **1** = RGGB; **2** = BGGR; **3** = GRBG; **4** = GBRG. |
 | `RGB_ORDER` | 0 (Xilinx) | Component order in `tdata`. **0** = `{pad,B,G,R}` (Xilinx PG044); **1** = `{R,G,B,pad}` legacy MSB-first. |
 | `BPC` | 8 | Bits per component: 8, 10, 12, 14, or 16. |
@@ -567,12 +571,58 @@ source memory per lane — see [Image patterns](#image-patterns).
   monochrome (G channel); `1..4` are the RGGB / BGGR / GRBG / GBRG Bayer
   mosaics (standard row-major naming). The smallest configuration (~50 LUT
   smaller than RGB), useful as an image-sensor emulator.
-- **YUV** (`OUTPUT_MODE=2`) — BT.601-style YCbCr emitted **directly** from the
-  pattern generators, no runtime color-space conversion. The colorbar uses a
-  precomputed BT.601 palette; grayscale-style patterns put their value in Y
-  and hold Cb=Cr=0x800 (neutral chroma). Color *registers* are interpreted as
+- **YUV** (`OUTPUT_MODE=2`) — YCbCr emitted **directly** from the pattern
+  generators, no runtime color-space conversion. The colorbar uses a
+  precomputed palette; grayscale-style patterns put their value in Y and hold
+  Cb=Cr=0x800 (neutral chroma). Color *registers* are interpreted as
   `{Y,Cb,Cr}` triples in YUV builds. `YUV_SUBSAMPLE=0` → 4:4:4 (`{V,U,Y}`);
   `=1` → 4:2:2 (`{C,Y}`, C alternates Cb on even-x and Cr on odd-x).
+
+  `YUV_MATRIX` picks the colorbar colorimetry — BT.601 (SD) or BT.709 (HD) —
+  and `YUV_RANGE` picks full or limited (studio) range. `BAR_LEVEL=75` gives
+  75% bars in any mode (in YUV BT.709 limited at 10 bpc, exactly SMPTE
+  RP 219). Every combination is a build-time constant palette, and none of
+  them costs logic, since only one is ever elaborated.
+
+  Each palette holds the exact code **for the build's bit depth**. An 8-bit
+  limited code is not the 10-bit one truncated (BT.601 cyan Y is 170 at 8
+  bits, but 678 >> 2 = 169), so 8-, 10- and 12-bit builds each get their own
+  constants, and all of them equal the published tables. BPC 14/16 use the
+  12-bit codes. Full range follows H.273 / BT.2100 at every depth. The
+  palettes are generated from the colorimetry by
+  `scripts/gen_yuv_palettes.py`, which writes them into `vtpgz_core.v`; CI
+  fails if the two drift apart. The one exception is the shipped default,
+  BT.601 full range 100%, which is kept bit-for-bit as it always was (two
+  chroma values sit one LSB off the formula).
+
+  In a limited-range build the patterns whose luma is a runtime value
+  (gradients, checker, ramp, noise) are compressed onto the legal range by
+
+  ```
+  Y_lim = 256 + ((Y * 3505) >> 12)        0 -> 256, 4095 -> 3760
+  ```
+
+  which lands exactly on 64..940 at 10 bits and 16..235 at 8. The scale is
+  implemented as shifts and adds, not as a multiply: Vivado infers a DSP48
+  for the multiply form even with a constant operand, and no mode in this
+  core is meant to cost a DSP. Verified by synthesis, not assumed.
+
+  **Color registers are not rescaled**, in either range. `SOLID_COLOR`,
+  `GRID_COLOR` and the box colors are raw code values that pass through
+  untouched, so a host that writes an exact code reads that exact code back.
+  In a limited-range build it is the host's job to write legal values — the
+  core will happily emit `0x3FF` if you ask it to. The grid *background* does
+  follow the range, because its luma is a build-time constant.
+
+  **IMAGE in YUV builds** is converted at build time, not in the core.
+  Generate the image memory with `scripts/image_to_hex.py --yuv --matrix
+  {601,709} --range {full,limited}`, matching the build's `YUV_MATRIX` and
+  `YUV_RANGE`, and the core passes those codes through untouched (widened by
+  a shift, so 8-bit 128 is exactly 10-bit 512). A YUV build that enables an
+  image but still points at the shipped RGB mandrill files fails at
+  elaboration; any other RGB memory comes out as the wrong colours, and the
+  core cannot tell, so keep the two in step. The padding around a centred image is the build's black. See
+  [docs/images.md](docs/images.md#yuv-builds).
 
 A pattern stripped at build time still has its `PATTERN_SEL` slot, but
 selecting it at runtime produces a black frame. At least one pattern must
@@ -600,11 +650,16 @@ python sim/run_sim.py all_modes    # byte-exact sim↔model gate across every mo
 python sim/cocotb/run_ppc.py       # beat-exact pixels-per-clock data path (1/2/4/8)
 python sim/run_iverilog_interlace.py  # interlaced field ID (fid) semantics
 python sim/run_iverilog_flvdval.py    # FVAL/LVAL/DVAL adapter + gap-free source
+python sim/run_iverilog_black.py      # empty/stripped pattern slots are real black in YUV
+python sim/check_image_guard.py       # YUV builds refuse the RGB default images
+python hw/arty_a7_100t/python/check_yuv_range.py            # YUV colorimetry vs the standards
+python hw/arty_a7_100t/python/check_yuv_range_mutations.py  # ...and proof those checks bite
 ```
 
-There is also an Icarus smoke test, a cocotb control-plane suite, and a full
-hardware regression on the Arty A7-100T (108 pattern×format×bpp combinations,
-byte-exact vs the Python model, verified on silicon). Setup, expected output,
+There is also an Icarus smoke test, a cocotb control-plane suite, and a
+hardware regression on the Arty A7-100T (all 9 patterns byte-exact vs the
+Python model, verified on silicon in the default RGB build and in a YUV
+limited-range BT.709 build). Setup, expected output,
 the 7-phase coverage harness, and the hardware flow are documented in
 **[docs/testing.md](docs/testing.md)**.
 
@@ -618,12 +673,12 @@ Measured on the full Arty A7-100T demo (Vivado 2025.2, default strategies):
 | Metric | Value |
 |---|---|
 | Target | Digilent Arty A7-100T (XC7A100TCSG324-1, speed grade -1) |
-| Clock | 130 MHz (on-board 100 MHz osc via MMCM) |
-| WNS | +5.252 ns (timing met, 0 failing endpoints) |
-| LUTs | 3529 / 63400 = 5.57% |
+| Clock | 50 MHz at 4 pixels/clock = 200 Mpixel/s (on-board 100 MHz osc via MMCM) |
+| WNS | +6.637 ns at 50 MHz (timing met, 0 failing endpoints) |
+| LUTs | 3494 / 63400 = 5.51% |
 | FFs | 3229 / 126800 = 2.55% |
 | BRAM36 | 8 / 135 = 5.93% |
-| Hardware test | **108/108 byte-exact** vs Python model |
+| Hardware test | **9/9 patterns byte-exact** vs Python model |
 
 That row includes the whole demo (core + `frame_capture` + fpgacapZero
 JTAG-AXI bridge + BRAM frame buffer + MMCM), and now also the

@@ -28,6 +28,7 @@ HERE = Path(__file__).resolve().parent
 RTL = (HERE / ".." / "rtl").resolve()
 HW_PY = (HERE / ".." / "hw" / "arty_a7_100t" / "python").resolve()
 sys.path.insert(0, str(HW_PY))
+sys.path.insert(0, str((HERE / ".." / "scripts").resolve()))
 
 from vtpgz_model import (  # noqa: E402
     VtpgzConfig, render_frame_beats,
@@ -36,7 +37,9 @@ from vtpgz_model import (  # noqa: E402
     RGB_ORDER_XILINX, RGB_ORDER_LEGACY,
     PAT_SOLID, PAT_GRID, PAT_CHECKER,
     PAT_COLORBAR, PAT_HGRAD, PAT_VGRAD, PAT_RAMP, PAT_NOISE, PAT_IMAGE,
+    YUV_FULL, YUV_LIMITED, YUV_BT601, YUV_BT709,
 )
+from image_to_hex import pixel_word  # noqa: E402
 
 # ---- IMAGE test config: a 16x16 source scaled to an 8x8 window (exercises
 # the per-lane Q16 scaler at PPC>1). Deterministic RGB888 so the model and
@@ -95,12 +98,16 @@ def need(tool: str) -> str:
 
 
 def build(ppc: int, mode: int, sub: int, bayer: int, order: int, bpc: int,
-          out_vvp: Path) -> None:
+          out_vvp: Path, colorimetry: dict | None = None) -> None:
     iverilog = need("iverilog")
     top = "tb_ppc_capture"
+    col = colorimetry or {}
     params = {
         "PIXELS_PER_CLOCK": ppc, "OUTPUT_MODE": mode, "YUV_SUBSAMPLE": sub,
         "RAW_BAYER": bayer, "RGB_ORDER": order, "BPC": bpc,
+        "YUV_RANGE": col.get("yuv_range", YUV_FULL),
+        "YUV_MATRIX": col.get("yuv_matrix", YUV_BT601),
+        "BAR_LEVEL": col.get("bar_level", 100),
         # M2/M3 patterns are legal at PPC>1 now; enable them for the sweep.
         "EN_COLORBAR": 1, "EN_HGRAD": 1, "EN_VGRAD": 1, "EN_RAMP": 1,
         "EN_NOISE": 1,
@@ -135,49 +142,71 @@ def load_beats(path: Path) -> list[int]:
 
 
 def model_beats(pat: int, ppc: int, mode: int, sub: int, bayer: int,
-                order: int, bpc: int, width: int, height: int) -> list[int]:
+                order: int, bpc: int, width: int, height: int,
+                colorimetry: dict | None = None) -> list[int]:
     cfg = VtpgzConfig(width=width, height=height, pattern=pat,
                       output_mode=mode, yuv_subsample=sub, raw_bayer=bayer,
                       rgb_order=order, bpc=bpc, pixels_per_clock=ppc,
                       image_w=IMG_W_T, image_h=IMG_H_T,
                       image_out_w=IMG_OUT_T, image_out_h=IMG_OUT_T,
                       image_rgb888=IMAGE_DATA,
-                      **HARNESS_CFG)
+                      **(colorimetry or {}), **HARNESS_CFG)
     return render_frame_beats(cfg)
 
 
 def check_one(ppc: int, mode_name: str, bpc: int, sub_name: str,
               bayer_name: str, order_name: str, width: int, height: int,
-              tmp: Path) -> list[str]:
+              tmp: Path, colorimetry: dict | None = None) -> list[str]:
     mode = MODE_MAP[mode_name]
     sub = SUB_MAP[sub_name]
     bayer = BAYER_MAP[bayer_name]
     order = ORDER_MAP[order_name]
-    vvp_bin = tmp / f"ppc{ppc}_{mode_name}_{bpc}.vvp"
-    build(ppc, mode, sub, bayer, order, bpc, vvp_bin)
+    ctag = "".join(f"_{k[0]}{v}" for k, v in (colorimetry or {}).items())
+    vvp_bin = tmp / f"ppc{ppc}_{mode_name}_{bpc}{ctag}.vvp"
+    build(ppc, mode, sub, bayer, order, bpc, vvp_bin, colorimetry)
     fails: list[str] = []
-    # At PPC=1 the IMAGE pattern keeps its registered-read 1-px horizontal
-    # shift (unchanged from prior releases and never model-gated), so it is
-    # not beat-comparable to the shift-free model. The PPC>1 path is
-    # combinational/shift-free and IS compared. Skip image only at PPC=1.
-    patterns = [p for p in PPC_PATTERNS if not (ppc == 1 and p[0] == "image")]
-    for pname, pat in patterns:
-        hexf = tmp / f"cap_{ppc}_{mode_name}_{bpc}_{pname}.hex"
+    label = f"ppc={ppc} mode={mode_name} bpc={bpc}" + (
+        " " + " ".join(f"{k}={v}" for k, v in colorimetry.items())
+        if colorimetry else "")
+    for pname, pat in PPC_PATTERNS:
+        hexf = tmp / f"cap_{ppc}_{mode_name}_{bpc}{ctag}_{pname}.hex"
         run_capture(vvp_bin, pat, width, height, hexf)
         sim = load_beats(hexf)
-        mod = model_beats(pat, ppc, mode, sub, bayer, order, bpc, width, height)
+        mod = model_beats(pat, ppc, mode, sub, bayer, order, bpc, width,
+                          height, colorimetry)
+        if ppc == 1 and pname == "image":
+            # At PPC=1 the IMAGE pattern keeps its registered-read 1-px
+            # horizontal shift (unchanged from prior releases), so the frame
+            # is not beat-comparable to the shift-free model. The rows above
+            # the image window are, though, and they are all padding -- which
+            # must be the build's black (0x800 chroma in YUV, not zero).
+            n_pad = (height - IMG_OUT_T) // 2 * width
+            sim, mod = sim[:n_pad], mod[:n_pad]
+            pname = "image(padding rows)"
         if sim != mod:
             first = next((i for i, (a, b) in enumerate(zip(sim, mod)) if a != b),
                          min(len(sim), len(mod)))
             fails.append(
-                f"ppc={ppc} mode={mode_name} bpc={bpc} pat={pname}: "
+                f"{label} pat={pname}: "
                 f"len sim={len(sim)} mod={len(mod)} first_diff@{first} "
                 f"sim=0x{(sim[first] if first < len(sim) else 0):X} "
                 f"mod=0x{(mod[first] if first < len(mod) else 0):X}")
         else:
-            print(f"  OK  ppc={ppc} mode={mode_name} bpc={bpc} pat={pname} "
-                  f"({len(sim)} beats)")
+            print(f"  OK  {label} pat={pname} ({len(sim)} beats)")
     return fails
+
+
+# Non-default YUV colorimetry and bar level, at the depths where the palette
+# differs (8 and 10) and the widths where the per-lane paths differ. Covers
+# the per-BPC palettes, limited-range black padding around the IMAGE window,
+# and the limiter on the runtime-luma patterns, all lane by lane.
+COLORIMETRY_CONFIGS = [
+    # (ppc, bpc, colorimetry)
+    (1, 8,  dict(yuv_range=YUV_LIMITED, yuv_matrix=YUV_BT709, bar_level=75)),
+    (2, 10, dict(yuv_range=YUV_LIMITED, yuv_matrix=YUV_BT709, bar_level=75)),
+    (4, 8,  dict(yuv_range=YUV_LIMITED, yuv_matrix=YUV_BT601, bar_level=100)),
+    (4, 10, dict(yuv_range=YUV_FULL,    yuv_matrix=YUV_BT709, bar_level=75)),
+]
 
 
 # ---- BOX-IMAGE test: an 8x8 source scaled into the 12x8 moving box. ----
@@ -197,49 +226,91 @@ def gen_box_image() -> list[int]:
 BIMG_DATA = gen_box_image()
 
 
+# The box image again, converted for a YUV limited BT.709 build by the same
+# code image_to_hex.py --yuv uses, and written with that script's `//`
+# colorimetry header -- so the RTL's $readmemh is shown to skip it.
+BIMG_YUV_DATA = [pixel_word((w >> 16) & 0xFF, (w >> 8) & 0xFF, w & 0xFF,
+                            True, "709", True) for w in BIMG_DATA]
+BIMG_YUV_HEADER = "// YCbCr BT.709 limited range, 8-bit codes {Y, Cb, Cr}\n"
+
+
 def check_box_image(tmp: Path) -> list[str]:
     """Box-image overlay at PPC>1: build with EN_BOX_IMAGE + non-zero runtime
     steps so the box interior shows the scaled image, capture a couple of
     patterns, and compare to the model (which applies the same box overlay).
-    PPC=1 is skipped -- its registered read keeps the legacy 1-px shift."""
+    Run in RGB, and in YUV limited BT.709 with a converted image. PPC=1 is
+    skipped -- its registered read keeps the legacy 1-px shift."""
+    fails: list[str] = []
+    mem_rgb = tmp / "ppc_boximg.mem"
+    mem_rgb.write_text("\n".join(f"{w:06x}" for w in BIMG_DATA) + "\n")
+    mem_yuv = tmp / "ppc_boximg_yuv.mem"
+    mem_yuv.write_text(BIMG_YUV_HEADER +
+                       "\n".join(f"{w:06x}" for w in BIMG_YUV_DATA) + "\n")
+    for ppc in (2, 4, 8):
+        fails += _check_box_image_one(tmp, ppc, MODE_RGB, {}, mem_rgb,
+                                      BIMG_DATA)
+    for ppc in (2, 4):
+        fails += _check_box_image_one(
+            tmp, ppc, MODE_YUV,
+            dict(yuv_range=YUV_LIMITED, yuv_matrix=YUV_BT709),
+            mem_yuv, BIMG_YUV_DATA)
+    # Runtime steps. X step 0 is the documented "solid box" sentinel; a
+    # zero Y step is NOT -- the image stays on and repeats source row 0.
+    # The model once treated a zero Y step as the sentinel too.
+    for xs, ys in ((BIMG_X_STEP, 0), (0, BIMG_Y_STEP)):
+        fails += _check_box_image_one(tmp, 4, MODE_RGB, {}, mem_rgb,
+                                      BIMG_DATA, xs, ys)
+    fails += _check_box_image_one(
+        tmp, 4, MODE_YUV, dict(yuv_range=YUV_LIMITED, yuv_matrix=YUV_BT709),
+        mem_yuv, BIMG_YUV_DATA, BIMG_X_STEP, 0)
+    return fails
+
+
+def _check_box_image_one(tmp: Path, ppc: int, mode: int, col: dict,
+                         mem: Path, data: list[int],
+                         x_step: int = BIMG_X_STEP,
+                         y_step: int = BIMG_Y_STEP) -> list[str]:
     iverilog = need("iverilog")
     top = "tb_ppc_capture"
-    mem = tmp / "ppc_boximg.mem"
-    mem.write_text("\n".join(f"{w:06x}" for w in BIMG_DATA) + "\n")
     fails: list[str] = []
-    for ppc in (2, 4, 8):
-        vvp_bin = tmp / f"boximg_ppc{ppc}.vvp"
-        cmd = [iverilog, "-g2001", "-Wall", "-I", str(RTL), "-s", top,
-               "-o", str(vvp_bin),
-               "-P", f"{top}.PIXELS_PER_CLOCK={ppc}",
-               "-P", f"{top}.OUTPUT_MODE={MODE_RGB}", "-P", f"{top}.BPC=8",
-               "-P", f"{top}.EN_BOX_IMAGE=1",
-               "-P", f"{top}.BOX_IMAGE_W={BIMG_W_T}", "-P", f"{top}.BOX_IMAGE_H={BIMG_H_T}",
-               "-P", f'{top}.BOX_IMAGE_HEX_FILE="{mem.as_posix()}"',
-               "-P", f"{top}.BOX_IMG_X_STEP={BIMG_X_STEP}",
-               "-P", f"{top}.BOX_IMG_Y_STEP={BIMG_Y_STEP}",
-               str(RTL / "vtpgz_core.v"), str(HERE / "tb_ppc_capture.v")]
-        r = subprocess.run(cmd, capture_output=True, text=True)
-        if r.returncode != 0:
-            fails.append(f"box-image ppc={ppc} build: {r.stdout}{r.stderr}")
-            continue
-        for pname, pat in (("solid", PAT_SOLID), ("checker", PAT_CHECKER)):
-            hexf = tmp / f"boximg_{ppc}_{pname}.hex"
-            run_capture(vvp_bin, pat, 32, 12, hexf)
-            sim = load_beats(hexf)
-            cfg = VtpgzConfig(width=32, height=12, pattern=pat,
-                              output_mode=MODE_RGB, bpc=8, pixels_per_clock=ppc,
-                              box_image_w=BIMG_W_T, box_image_h=BIMG_H_T,
-                              box_img_x_step=BIMG_X_STEP, box_img_y_step=BIMG_Y_STEP,
-                              box_image_rgb888=BIMG_DATA, **HARNESS_CFG)
-            mod = render_frame_beats(cfg)
-            if sim != mod:
-                first = next((i for i, (a, b) in enumerate(zip(sim, mod)) if a != b),
-                             min(len(sim), len(mod)))
-                fails.append(f"box-image ppc={ppc} pat={pname}: first_diff@{first} "
-                             f"sim=0x{sim[first]:X} mod=0x{mod[first]:X}")
-            else:
-                print(f"  OK  box-image ppc={ppc} pat={pname} ({len(sim)} beats)")
+    mname = {MODE_RGB: "rgb", MODE_YUV: "yuv"}[mode]
+    if (x_step, y_step) != (BIMG_X_STEP, BIMG_Y_STEP):
+        mname += f" xstep={x_step} ystep={y_step}"
+    vvp_bin = tmp / f"boximg_{mode}_ppc{ppc}_{x_step}_{y_step}.vvp"
+    cmd = [iverilog, "-g2001", "-Wall", "-I", str(RTL), "-s", top,
+           "-o", str(vvp_bin),
+           "-P", f"{top}.PIXELS_PER_CLOCK={ppc}",
+           "-P", f"{top}.OUTPUT_MODE={mode}", "-P", f"{top}.BPC=8",
+           "-P", f"{top}.YUV_RANGE={col.get('yuv_range', YUV_FULL)}",
+           "-P", f"{top}.YUV_MATRIX={col.get('yuv_matrix', YUV_BT601)}",
+           "-P", f"{top}.EN_BOX_IMAGE=1",
+           "-P", f"{top}.BOX_IMAGE_W={BIMG_W_T}", "-P", f"{top}.BOX_IMAGE_H={BIMG_H_T}",
+           "-P", f'{top}.BOX_IMAGE_HEX_FILE="{mem.as_posix()}"',
+           "-P", f"{top}.BOX_IMG_X_STEP={x_step}",
+           "-P", f"{top}.BOX_IMG_Y_STEP={y_step}",
+           str(RTL / "vtpgz_core.v"), str(HERE / "tb_ppc_capture.v")]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        return [f"box-image {mname} ppc={ppc} build: {r.stdout}{r.stderr}"]
+    for pname, pat in (("solid", PAT_SOLID), ("checker", PAT_CHECKER)):
+        hexf = tmp / f"boximg_{mode}_{ppc}_{x_step}_{y_step}_{pname}.hex"
+        run_capture(vvp_bin, pat, 32, 12, hexf)
+        sim = load_beats(hexf)
+        cfg = VtpgzConfig(width=32, height=12, pattern=pat,
+                          output_mode=mode, bpc=8, pixels_per_clock=ppc,
+                          box_image_w=BIMG_W_T, box_image_h=BIMG_H_T,
+                          box_img_x_step=x_step, box_img_y_step=y_step,
+                          box_image_rgb888=data, **col, **HARNESS_CFG)
+        mod = render_frame_beats(cfg)
+        if sim != mod:
+            first = next((i for i, (a, b) in enumerate(zip(sim, mod)) if a != b),
+                         min(len(sim), len(mod)))
+            fails.append(f"box-image {mname} ppc={ppc} pat={pname}: "
+                         f"first_diff@{first} "
+                         f"sim=0x{sim[first]:X} mod=0x{mod[first]:X}")
+        else:
+            print(f"  OK  box-image {mname} ppc={ppc} pat={pname} "
+                  f"({len(sim)} beats)")
     return fails
 
 
@@ -283,7 +354,18 @@ def main() -> int:
                     except RuntimeError as e:
                         all_fails.append(f"ppc={ppc} mode={mode} bpc={bpc}: {e}")
 
-        # Dedicated box-image overlay check (only when sweeping all ppc).
+        # Colorimetry / bar level, and the box-image overlay (only on a full
+        # sweep).
+        if not (args.ppc or args.mode or args.bpc):
+            for ppc, bpc, col in COLORIMETRY_CONFIGS:
+                n += 1
+                width = (args.width // ppc) * ppc
+                try:
+                    all_fails += check_one(ppc, "yuv", bpc, args.yuv_sub,
+                                           args.raw_bayer, args.rgb_order,
+                                           width, args.height, tmp, col)
+                except RuntimeError as e:
+                    all_fails.append(f"ppc={ppc} yuv bpc={bpc} {col}: {e}")
         if not args.ppc:
             try:
                 all_fails += check_box_image(tmp)

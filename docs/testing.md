@@ -44,6 +44,87 @@ sim↔model gate on each:
 python sim/run_sim.py all_modes
 ```
 
+The sweep also covers the three non-default YUV colorimetry builds
+(`YUV_MATRIX` × `YUV_RANGE`, minus the default BT.601/full which is already
+in the mode sweep) at 8, 10 and 12 bpc, which are the three palette depths.
+It adds six `BAR_LEVEL=75` builds as well: BT.709 limited at 8, 10 and 12
+bpc, plus one each of YUV BT.601 full, RGB and RAW.
+
+### YUV range, matrix and bar level
+
+The colour-bar palettes are generated from the colorimetry by
+`scripts/gen_yuv_palettes.py`, which writes them into `vtpgz_core.v`. CI
+checks that the RTL is up to date with the generator:
+
+```sh
+python scripts/gen_yuv_palettes.py --check
+```
+
+The colorimetry itself is asserted against the Python model, which takes its
+palettes from the same generator rather than copying the RTL constants:
+
+```sh
+python hw/arty_a7_100t/python/check_yuv_range.py
+python hw/arty_a7_100t/python/check_yuv_range_mutations.py
+```
+
+The first checks five properties:
+
+- Every build's colour bars equal the standard codes exactly, at 8, 10 and
+  12 bpc. That covers RGB and YUV, both matrices, both ranges, and 100% and
+  75% bars. It renders a real frame through the model, so palette selection
+  is under test too. The expected values are the published tables where
+  one exists: the classic 8-bit and 10-bit limited tables, and SMPTE RP 219
+  for 75% BT.709. Otherwise they come from an exact-arithmetic
+  implementation of BT.601/BT.709/H.273, written separately from the
+  generator.
+- A limited build keeps every runtime-valued pattern inside Y 64..940 /
+  C 64..960, *and actually reaches both ends* on the gradients.
+- Neutral chroma stays exactly `0x800`.
+- The shipped RGB and BT.601 full-range 100% palettes are unchanged bit for
+  bit.
+- `image_to_hex.py --yuv` converts the eight bar colours to the published
+  8-bit codes.
+
+The second is the reason to believe the first. It mutates the model and
+asserts that the check which *owns* that bug is the one that fires. The
+mutations are:
+
+- move a palette constant by one LSB;
+- give an 8-bit build the 10-bit codes truncated (the bug the per-depth
+  palettes fix);
+- give a 75% build the 100% bars;
+- drop the limited-range luma map;
+- rescale the raw colour registers;
+- make the image converter ignore `--matrix`.
+
+A spec test nobody has seen fail is not evidence.
+
+Together with `all_modes`, this is what carries the spec through to RTL: the
+model is checked against the standard, and the RTL is checked byte-for-byte
+against the model.
+
+One case the model cannot reach is a pattern stripped at build time, since
+the model has no `EN_*` flags. A stripped slot is documented to read as
+black, and in YUV black is `{Y_black, 0x800, 0x800}` — the all-zero triple is
+saturated green. `tb/tb_black.v` builds the core with every pattern but HGRAD
+stripped, and checks each stripped slot plus slot 5 is exactly black on every
+lane, at PPC 1/2/4/8 in both ranges:
+
+```sh
+python sim/run_iverilog_black.py
+```
+
+A YUV build's image memories must hold YCbCr codes, so the core refuses at
+elaboration a YUV build that enables IMAGE or BOX_IMAGE while pointing at the
+shipped RGB mandrill files. `check_image_guard.py` elaborates eight builds and
+checks that the guard fires where it should (default path, absolute path, box
+image) and nowhere else (converted file, short path, image off, RGB, RAW):
+
+```sh
+python sim/check_image_guard.py
+```
+
 The C++ harness runs **7 phases** for full coverage:
 
 1. **Register sweep** — write `0xFFFFFFFF`/`0x00000000`/`0xAAAAAAAA`/`0x55555555`
@@ -249,10 +330,12 @@ the same parity. That is a property of the demo sink, not of the core — see
 A complete reference design under `hw/arty_a7_100t/` instantiates the VTPGZ
 core, the [fpgacapZero](https://github.com/lcapossio/fpgacapZero)
 JTAG-to-AXI4 bridge, and a small AXI-Stream → BRAM frame-capture sink.
-The host sweeps all 108 (pattern × format × bpp) combinations through the
-FPGA over JTAG, captures each frame, and asserts byte-exact equality
-against a Python reference model that mirrors the RTL pipeline
-register-by-register.
+The host runs all 9 patterns through the FPGA over JTAG, captures each
+frame, and asserts byte-exact equality against a Python reference model that
+mirrors the RTL pipeline register-by-register. Output format, bit depth and
+pixels per clock are build-time, so the host reads them back from the loaded
+bitstream; covering another format means building another bitstream (see
+[Other output formats on silicon](#other-output-formats-on-silicon)).
 
 Requirements:
 - Vivado 2025.x (`vivado` and `xsdb` on `PATH`)
@@ -266,26 +349,67 @@ Build the bitstream:
 python hw/arty_a7_100t/scripts/build.py
 ```
 
-Run the full sweep (programs the bitstream + 108 captures + byte-exact
-compare):
+Run the test (programs the bitstream, captures each of the 9 patterns,
+byte-exact compare):
 
 ```sh
 python hw/arty_a7_100t/python/run_hw_test.py
 ```
 
-Expected: `Ran 108 combinations, 0 failures` / `HW PASS - byte-exact across all combinations`.
+Expected: `Ran 9 patterns, 0 failures` / `HW PASS — byte-exact across all patterns`.
 
 Architecture and address map are documented in
 [hw/arty_a7_100t/README.md](../hw/arty_a7_100t/README.md).
 
+### Other output formats on silicon
+
+The demo's core build configuration is a set of `demo_top` parameters, so a
+RAW or YUV bitstream needs no source edit. Pass them to `build.py`:
+
+```sh
+python hw/arty_a7_100t/scripts/build.py VTPGZ_OUTPUT_MODE=2 VTPGZ_BPC=10     VTPGZ_YUV_RANGE=1 VTPGZ_YUV_MATRIX=1
+python hw/arty_a7_100t/python/run_hw_test.py --yuv-range limited --yuv-matrix 709
+```
+
+`run_hw_test.py` reads mode, BPC, subsampling, Bayer order and PPC back from
+the bitstream, but YUV range, matrix and bar level are not in
+`COLOR_FORMAT`, so they must be given on the command line to match the build.
+Getting them wrong cannot pass quietly: against the wrong colorimetry the
+colorbar, gradients, checker and grid background all mismatch, and against
+the wrong bar level the colorbar does.
+
+YUV 4:4:4, 10 bpc, limited range, BT.709 is verified byte-exact across all
+patterns on the board (0 DSPs, timing met). As a negative control, the same
+bitstream checked against full-range BT.601 fails 8 of 9 patterns, with the
+board showing gradient white at 940 and black at 64: the limited-range map is
+active on silicon, not just matching by coincidence. Only SOLID matches both
+ways, because colour registers are raw code values by design.
+
+Two more colorimetry builds are verified byte-exact across all patterns on
+the board, each with a negative control:
+
+- BT.709 limited, **75% bars** (`VTPGZ_BAR_LEVEL=75`), 10 bpc: SMPTE RP 219.
+  Checked against 100% bars instead, the colour bars fail and nothing else
+  does.
+- BT.709 limited, 100% bars, **8 bpc**: the classic 8-bit table. Checked
+  against the 10-bit codes truncated (what the core emitted before each
+  bit depth got its own palette), the colour bars fail: the board sends cyan
+  Cb 154, the published code, where truncation gives 615 >> 2 = 153.
+
+```sh
+python hw/arty_a7_100t/scripts/build.py VTPGZ_OUTPUT_MODE=2 VTPGZ_BPC=10     VTPGZ_YUV_RANGE=1 VTPGZ_YUV_MATRIX=1 VTPGZ_BAR_LEVEL=75
+python hw/arty_a7_100t/python/run_hw_test.py --yuv-range limited     --yuv-matrix 709 --bar-level 75
+```
+
 ### Pixels-per-clock on silicon
 
-The demo builds at `PIXELS_PER_CLOCK=1` by default. To validate packed-pixel
-output on hardware, set `VTPGZ_PIXELS_PER_CLOCK` in
-[demo_top.v](../hw/arty_a7_100t/rtl/demo_top.v) (2/4/8), rebuild, and re-run —
-`frame_capture` serializes each wide beat into `ceil(TDATA_WIDTH/32)`
-little-endian words and `run_hw_test.py` reads back the configured PPC and
-checks byte-exact. PPC>1 builds run the demo at a lower clock (`clk_gen`'s
-`CLKOUT0_DIVIDE`): the per-lane counter-chain patterns (checker/grid) do not
-close 130 MHz, and the demo targets correctness rather than throughput.
-PPC=4 is verified byte-exact across all patterns on the board.
+The demo builds at `PIXELS_PER_CLOCK=4` by default. For another width, pass
+it to the build, e.g. `build.py VTPGZ_PIXELS_PER_CLOCK=1` (1/2/4/8), and
+re-run — `frame_capture` serializes each wide beat into
+`ceil(TDATA_WIDTH/32)` little-endian words and `run_hw_test.py` reads back
+the configured PPC and checks byte-exact. PPC>1 builds run the demo at
+50 MHz instead of 130 MHz (`clk_gen`'s `CLKOUT0_DIVIDE`): the per-lane
+counter-chain patterns (checker/grid) do not close 130 MHz, and the demo
+targets correctness rather than throughput. `build.tcl` prints the clock the
+build was actually constrained at. PPC=4 is verified byte-exact across all
+patterns on the board.

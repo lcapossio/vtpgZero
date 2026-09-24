@@ -42,6 +42,12 @@ MODE_YUV = 2
 YUV_444 = 0
 YUV_422 = 1
 
+# YUV quantisation range / matrix (must match vtpgz_defs.vh)
+YUV_FULL    = 0
+YUV_LIMITED = 1
+YUV_BT601   = 0
+YUV_BT709   = 1
+
 RAW_PLAIN = 0
 RAW_RGGB  = 1
 RAW_BGGR  = 2
@@ -76,6 +82,9 @@ class VtpgzConfig:
     # Build-time output mode (was: runtime fmt)
     output_mode: int = MODE_RGB
     yuv_subsample: int = YUV_444
+    yuv_range: int = YUV_FULL
+    yuv_matrix: int = YUV_BT601
+    bar_level: int = 100          # colour-bar level, percent: 100 or 75
     raw_bayer: int = RAW_RGGB
     rgb_order: int = RGB_ORDER_XILINX
     bpc: int = 8
@@ -167,30 +176,75 @@ class VtpgzRegs:
 # Combinational pattern outputs (read current registers, return RGB12)
 # ============================================================================
 
-# RGB palette (build OUTPUT_MODE in {RGB, RAW}): {R, G, B}
-PALETTE_RGB = [
-    (0xFFF, 0xFFF, 0xFFF),  # 0 white
-    (0xFFF, 0xFFF, 0x000),  # 1 yellow
-    (0x000, 0xFFF, 0xFFF),  # 2 cyan
-    (0x000, 0xFFF, 0x000),  # 3 green
-    (0xFFF, 0x000, 0xFFF),  # 4 magenta
-    (0xFFF, 0x000, 0x000),  # 5 red
-    (0x000, 0x000, 0xFFF),  # 6 blue
-    (0x000, 0x000, 0x000),  # 7 black
-]
-# YUV palette (build OUTPUT_MODE = YUV): {Y, Cb, Cr}, 12-bit, BT.601 full-range
-# Constants must match the case statement in vtpgz_top.v g_yuv_pal.
-PALETTE_YUV = [
-    (0xFFF, 0x800, 0x800),  # 0 white
-    (0xE2C, 0x000, 0x94D),  # 1 yellow
-    (0xB37, 0xAB3, 0x000),  # 2 cyan
-    (0x964, 0x2B4, 0x14E),  # 3 green
-    (0x69B, 0xD4C, 0xEB2),  # 4 magenta
-    (0x4C8, 0x54D, 0xFFF),  # 5 red
-    (0x1D3, 0xFFF, 0x6B3),  # 6 blue
-    (0x000, 0x800, 0x800),  # 7 black
-]
+# Colour-bar palettes, one per build: 12-bit {R,G,B} (RGB/RAW) or {Y,Cb,Cr}
+# (YUV), chosen by output mode, YUV matrix and range, bar level and palette
+# bit depth (BPC capped at 12). DERIVED from the colorimetry by
+# scripts/gen_yuv_palettes.py, deliberately NOT transcribed from the RTL.
+#
+# This matters more than it looks. The byte-exact sim<->model gate only proves
+# the two agree; if the model held a copy of the RTL constants, a wrong
+# constant would agree with itself and the gate would pass. Computing them
+# here from Kr/Kb means the gate actually checks the numbers.
+#
+# (RGB 100% and BT.601 full 100% are the exceptions the generator documents:
+# they return the frozen shipped constants, so the default builds stay
+# bit-exact.)
+import sys as _sys
+from pathlib import Path as _Path
+
+_SCRIPTS = _Path(__file__).resolve().parents[3] / "scripts"
+if str(_SCRIPTS) not in _sys.path:
+    _sys.path.insert(0, str(_SCRIPTS))
+from gen_yuv_palettes import palette as _gen_palette  # noqa: E402
+from gen_yuv_palettes import pal_bits as _pal_bits    # noqa: E402
+
+_PALETTES: dict = {}
+
+
+def bar_palette(output_mode: int, yuv_matrix: int = YUV_BT601,
+                yuv_range: int = YUV_FULL, bar_level: int = 100,
+                bpc: int = 8) -> list:
+    """The colour-bar palette of one build, as a list of 8 triples.
+
+    The same list object is returned for the same build, so a test can
+    perturb it in place (and must put it back).
+    """
+    yuv = (output_mode == MODE_YUV)
+    key = ((yuv, yuv_matrix, yuv_range) if yuv else (False, 0, 0),
+           bar_level, _pal_bits(bpc))
+    if key not in _PALETTES:
+        _PALETTES[key] = [t for _, t in _gen_palette(
+            yuv, "709" if yuv_matrix == YUV_BT709 else "601",
+            yuv_range == YUV_LIMITED, bar_level, _pal_bits(bpc))]
+    return _PALETTES[key]
+
+
+# Back-compat aliases: the default builds' palettes.
+PALETTE_RGB = bar_palette(MODE_RGB)
+PALETTE_YUV = bar_palette(MODE_YUV)
+
 CHROMA_NEUTRAL = 0x800  # 12-bit Q12 neutral chroma (0.5)
+
+
+def img_expand(v8: int, output_mode: int) -> int:
+    """8-bit image component -> 12 bits. Mirrors img_expand() in RTL.
+
+    RGB/RAW: an intensity, widened by bit replication (0xFF -> 0xFFF).
+    YUV: already a YCbCr code (scripts/image_to_hex.py --yuv), widened by a
+    plain shift, so 8-bit 128 is exactly 0x800 and 16 is exactly 0x100.
+    """
+    if output_mode == MODE_YUV:
+        return v8 << 4
+    return (v8 << 4) | (v8 >> 4)
+
+
+def y_to_limited(y: int) -> int:
+    """Full-scale 12-bit luma -> limited range. Mirrors y_to_limited() in RTL.
+
+    Y_lim = 256 + ((Y * 3505) >> 12), exact at both ends at every BPC:
+    0 -> 256 (64 @10b, 16 @8b) and 4095 -> 3760 (940 @10b, 235 @8b).
+    """
+    return 256 + ((y * 3505) >> 12)
 
 
 def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int, int, int]:
@@ -198,15 +252,23 @@ def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int,
     RGB/RAW modes return {R,G,B}; YUV mode returns {Y,Cb,Cr}.
     """
     is_yuv = (cfg.output_mode == MODE_YUV)
+    yuv_limited = is_yuv and (cfg.yuv_range == YUV_LIMITED)
     pat = cfg.pattern
 
     def gray(v: int) -> tuple[int, int, int]:
+        # Every caller of gray() is a pattern whose luma the RTL compresses in
+        # a LIMITED build: HGRAD, VGRAD, CHECKER, RAMP, NOISE, and the GRID
+        # background. The background passes 0, and y_to_limited(0) == 0x100 ==
+        # the Y_BLACK_LIM constant the RTL selects there, so the two agree
+        # without a special case.
         if is_yuv:
-            return (v, CHROMA_NEUTRAL, CHROMA_NEUTRAL)
+            return (y_to_limited(v) if yuv_limited else v,
+                    CHROMA_NEUTRAL, CHROMA_NEUTRAL)
         return (v, v, v)
 
     if pat == PAT_COLORBAR:
-        pal = PALETTE_YUV if is_yuv else PALETTE_RGB
+        pal = bar_palette(cfg.output_mode, cfg.yuv_matrix, cfg.yuv_range,
+                          cfg.bar_level, cfg.bpc)
         return pal[regs.bar_idx & 0x7]
 
     if pat == PAT_HGRAD:
@@ -252,15 +314,16 @@ def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int,
         # Centred, scaled with Q16 nearest-neighbour. Source pixel index
         # for output pixel k (0..image_out_w - 1) is (k * step) >> 16,
         # where step = (image_w << 16) // image_out_w, mirroring the RTL.
+        # No image, or outside its window: the build's black, like slot 5.
         if cfg.image_w == 0 or cfg.image_h == 0 or not cfg.image_rgb888:
-            return (0, 0, 0)
+            return gray(0)
         out_w = cfg.image_out_w or cfg.image_w
         out_h = cfg.image_out_h or cfg.image_h
         x_off = (cfg.width  - out_w) // 2 if cfg.width  > out_w else 0
         y_off = (cfg.height - out_h) // 2 if cfg.height > out_h else 0
         if not (x_off <= x < x_off + out_w and
                 y_off <= y < y_off + out_h):
-            return (0, 0, 0)
+            return gray(0)
         step_x = (cfg.image_w << 16) // out_w
         step_y = (cfg.image_h << 16) // out_h
         ix = (((x - x_off) * step_x) >> 16) & (cfg.image_w - 1)
@@ -269,11 +332,13 @@ def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int,
         r8 = (word >> 16) & 0xFF
         g8 = (word >> 8)  & 0xFF
         b8 =  word        & 0xFF
-        return ((r8 << 4) | (r8 >> 4),
-                (g8 << 4) | (g8 >> 4),
-                (b8 << 4) | (b8 >> 4))
+        m = cfg.output_mode
+        return (img_expand(r8, m), img_expand(g8, m), img_expand(b8, m))
 
-    return (0, 0, 0)
+    # Slot 5 and any unused code: black for THIS build. In YUV that is
+    # neutral chroma (and limited-range Y in a LIMITED build), not {0,0,0},
+    # which would be saturated green. gray(0) is exactly that triple.
+    return gray(0)
 
 
 # ============================================================================
@@ -510,17 +575,18 @@ def _box_overlay(c0: int, c1: int, c2: int, x: int, y: int,
     # Inside the box (not border). If a box-image is configured, the
     # source rectangle is the box: src_x walks 0..BOX_IMAGE_W-1 with the
     # Q16 box_img_x_step accumulator, same for y. Otherwise solid color.
+    # As in the RTL, only box_img_x_step == 0 is the "solid box" sentinel;
+    # a zero Y step is a real (degenerate) step that repeats source row 0.
     if cfg.box_image_w and cfg.box_image_h and cfg.box_image_rgb888 \
-            and cfg.box_img_x_step and cfg.box_img_y_step:
+            and cfg.box_img_x_step:
         ix = (((x - bx) * cfg.box_img_x_step) >> 16) & (cfg.box_image_w - 1)
         iy = (((y - by) * cfg.box_img_y_step) >> 16) & (cfg.box_image_h - 1)
         word = cfg.box_image_rgb888[iy * cfg.box_image_w + ix]
         r8 = (word >> 16) & 0xFF
         g8 = (word >> 8)  & 0xFF
         b8 =  word        & 0xFF
-        return ((r8 << 4) | (r8 >> 4),
-                (g8 << 4) | (g8 >> 4),
-                (b8 << 4) | (b8 >> 4))
+        m = cfg.output_mode
+        return (img_expand(r8, m), img_expand(g8, m), img_expand(b8, m))
     col = cfg.box_color
     r = ((col >> 16) & 0xFF) << 4
     g = ((col >> 8)  & 0xFF) << 4
@@ -566,6 +632,36 @@ def render_frame(cfg: VtpgzConfig, regs: VtpgzRegs | None = None) -> list[int]:
                 c0_12, c1_12, c2_12, x_reg, y_reg, cfg, regs)
         out.append(_pack_tdata(c0_12, c1_12, c2_12, x_reg, y_reg, cfg))
 
+        _tick(cfg, regs, x_reg, y_reg, last_x, pix_sof, end_of_frame)
+
+    return out
+
+
+def render_frame_native(cfg: VtpgzConfig,
+                        regs: VtpgzRegs | None = None
+                        ) -> list[tuple[int, int, int]]:
+    """Render one frame as native 12-bit triples, BEFORE the pack stage.
+
+    Same stepping and register ticking as render_frame -- it is the packing
+    and the box overlay that are skipped, nothing else -- so a caller sees the
+    values the RTL carries at the pattern-mux output. Used by the YUV range
+    checks, which need to reason about luma/chroma in the internal domain
+    rather than about packed tdata.
+    """
+    if regs is None:
+        regs = VtpgzRegs()
+
+    out: list[tuple[int, int, int]] = []
+    W, H = cfg.width, cfg.height
+
+    for K in range(W * H):
+        x_reg = K % W
+        y_reg = K // W
+        last_x = (x_reg == W - 1)
+        pix_sof = (x_reg == 0 and y_reg == 0)
+        end_of_frame = last_x and (y_reg == H - 1)
+
+        out.append(_comb_pixel(cfg, regs, x_reg, y_reg))
         _tick(cfg, regs, x_reg, y_reg, last_x, pix_sof, end_of_frame)
 
     return out

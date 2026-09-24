@@ -71,6 +71,8 @@ MODE_NAMES   = {0: "rgb", 1: "raw", 2: "yuv"}
 SUB_NAMES    = {0: "444", 1: "422"}
 BAYER_NAMES  = {0: "plain", 1: "rggb", 2: "bggr", 3: "grbg", 4: "gbrg"}
 ORDER_NAMES  = {0: "xilinx", 1: "legacy"}
+RANGE_NAMES  = {0: "full", 1: "limited"}
+MATRIX_NAMES = {0: "601", 1: "709"}
 
 
 # ---------- helpers ----------
@@ -101,6 +103,12 @@ def generics(args: argparse.Namespace) -> list[str]:
         # all_modes / check_seq_modes build per-config Namespaces that don't
         # carry ppc (those sweeps are always PPC=1); default via getattr.
         f"-GPIXELS_PER_CLOCK={getattr(args, 'ppc', 1)}",
+        # Build-time YUV colorimetry; defaulted the same way as ppc, since
+        # most per-config Namespaces predate these and mean "the shipped
+        # default", which is FULL/BT.601.
+        f"-GYUV_RANGE={getattr(args, 'yuv_range', 0)}",
+        f"-GYUV_MATRIX={getattr(args, 'yuv_matrix', 0)}",
+        f"-GBAR_LEVEL={getattr(args, 'bar_level', 100)}",
     ]
 
 
@@ -110,11 +118,37 @@ def lint_flags(args: argparse.Namespace) -> list[str]:
             "-I" + str(RTL_DIR), "--top-module", TOP] + generics(args)
 
 
+def _image_files(args: argparse.Namespace) -> tuple[Path, Path]:
+    """The IMAGE / BOX_IMAGE memories for this build.
+
+    The shipped mandrill files are RGB. A YUV build refuses them at
+    elaboration, so convert them for its colorimetry the way
+    scripts/image_to_hex.py --yuv would.
+    """
+    if args.mode != 2:
+        return IMAGE_HEX_FILE_DEFAULT, BOX_IMAGE_HEX_FILE_DEFAULT
+    sys.path.insert(0, str(HERE.parent / "scripts"))
+    from image_to_hex import pixel_word
+    matrix = MATRIX_NAMES[getattr(args, 'yuv_matrix', 0)]
+    limited = getattr(args, 'yuv_range', 0) == 1
+    out = []
+    for src in (IMAGE_HEX_FILE_DEFAULT, BOX_IMAGE_HEX_FILE_DEFAULT):
+        words = [int(w, 16) for w in src.read_text().split()]
+        dst = OBJ_DIR / f"{src.stem}_yuv{matrix}{'lim' if limited else 'full'}.mem"
+        dst.parent.mkdir(exist_ok=True)
+        dst.write_text("".join(
+            f"{pixel_word(w >> 16, (w >> 8) & 0xFF, w & 0xFF, True, matrix, limited):06x}\n"
+            for w in words))
+        out.append(dst)
+    return out[0], out[1]
+
+
 def build_flags(args: argparse.Namespace) -> list[str]:
     # Coverage build also enables EN_IMAGE/EN_BOX_IMAGE so the new generate
     # blocks, the PAT_IMAGE case, and the box-image step input ports get
     # exercised in the coverage sim (sim_main.cpp drives pattern 9 and
     # writes the two step regs).
+    img, bimg = _image_files(args)
     return ["--cc", "--exe", "--build", "--trace",
             "--coverage", "--coverage-line", "--coverage-toggle",
             "--coverage-user",
@@ -123,8 +157,8 @@ def build_flags(args: argparse.Namespace) -> list[str]:
             "-GLINE_GAP_CYCLES=2",
             "-GEN_IMAGE=1",
             "-GEN_BOX_IMAGE=1",
-            f'-GIMAGE_HEX_FILE="{IMAGE_HEX_FILE_DEFAULT.as_posix()}"',
-            f'-GBOX_IMAGE_HEX_FILE="{BOX_IMAGE_HEX_FILE_DEFAULT.as_posix()}"']
+            f'-GIMAGE_HEX_FILE="{img.as_posix()}"',
+            f'-GBOX_IMAGE_HEX_FILE="{bimg.as_posix()}"']
 
 
 def capture_flags(args: argparse.Namespace) -> list[str]:
@@ -210,7 +244,10 @@ def _config_obj_dir(args: argparse.Namespace) -> Path:
     """Per-config capture obj dir, so multiple configs can coexist /
     build in parallel without stomping on each other."""
     tag = (f"m{args.mode}_b{args.bpc}_s{args.yuv_sub}"
-           f"_y{args.raw_bayer}_o{args.rgb_order}")
+           f"_y{args.raw_bayer}_o{args.rgb_order}"
+           f"_r{getattr(args, 'yuv_range', 0)}"
+           f"_x{getattr(args, 'yuv_matrix', 0)}"
+           f"_l{getattr(args, 'bar_level', 100)}")
     return HERE / f"obj_capture_{tag}"
 
 
@@ -265,7 +302,10 @@ def _build_and_check_one(cfg: dict) -> tuple[dict, bool, str]:
                  "--bpc",       str(args.bpc),
                  "--yuv-sub",   SUB_NAMES[args.yuv_sub],
                  "--raw-bayer", BAYER_NAMES[args.raw_bayer],
-                 "--rgb-order", ORDER_NAMES[args.rgb_order]]
+                 "--rgb-order", ORDER_NAMES[args.rgb_order],
+                 "--yuv-range", RANGE_NAMES[getattr(args, 'yuv_range', 0)],
+                 "--yuv-matrix", MATRIX_NAMES[getattr(args, 'yuv_matrix', 0)],
+                 "--bar-level", str(getattr(args, 'bar_level', 100))]
     r = subprocess.run(check_cmd, cwd=str(HERE),
                        capture_output=True, text=True)
     return cfg, r.returncode == 0, (r.stdout + r.stderr)[-2000:]
@@ -340,6 +380,33 @@ def cmd_all_modes(args):
             configs.append(dict(mode=mode, bpc=bpc, yuv_sub=0,
                                 raw_bayer=1, rgb_order=0))
     configs.append(dict(mode=2, bpc=16, yuv_sub=1, raw_bayer=1, rgb_order=0))
+    # YUV colorimetry: the three non-default {matrix, range} builds, at the
+    # BPCs where the limited-range map's endpoints are exact by different
+    # truncations (8 and 10) plus the untruncated 12. FULL/BT.601 is already
+    # covered above as mode=2.
+    for matrix in (0, 1):
+        for yrange in (0, 1):
+            if (matrix, yrange) == (0, 0):
+                continue            # the default, already swept
+            for bpc in (8, 10, 12):
+                configs.append(dict(mode=2, bpc=bpc, yuv_sub=0, raw_bayer=1,
+                                    rgb_order=0, yuv_range=yrange,
+                                    yuv_matrix=matrix))
+    # 75% bars. Each palette is the exact code for its bit depth, so sweep
+    # the three palette depths in the most-used broadcast build (BT.709
+    # limited, where 10 bits is SMPTE RP 219), then one of each other
+    # colour space: RGB and RAW share the RGB palette, BT.601 full is the
+    # one computed full-range 601 palette (the 100% one is frozen).
+    for bpc in (8, 10, 12):
+        configs.append(dict(mode=2, bpc=bpc, yuv_sub=0, raw_bayer=1,
+                            rgb_order=0, yuv_range=1, yuv_matrix=1,
+                            bar_level=75))
+    configs.append(dict(mode=2, bpc=10, yuv_sub=0, raw_bayer=1, rgb_order=0,
+                        bar_level=75))
+    configs.append(dict(mode=0, bpc=10, yuv_sub=0, raw_bayer=1, rgb_order=0,
+                        bar_level=75))
+    configs.append(dict(mode=1, bpc=8, yuv_sub=0, raw_bayer=1, rgb_order=0,
+                        bar_level=75))
     # RAW mode: also sweep every Bayer tile (PLAIN/RGGB/BGGR/GRBG/GBRG)
     # at 8bpc to exercise the full 4-way Bayer mux.
     for bayer in (0, 2, 3, 4):  # 1 already covered above
@@ -360,7 +427,10 @@ def cmd_all_modes(args):
             cfg, ok, log_tail = fut.result()
             done += 1
             tag = (f"mode={cfg['mode']} bpc={cfg['bpc']} "
-                   f"sub={cfg['yuv_sub']} bayer={cfg['raw_bayer']}")
+                   f"sub={cfg['yuv_sub']} bayer={cfg['raw_bayer']} "
+                   f"range={RANGE_NAMES[cfg.get('yuv_range', 0)]} "
+                   f"matrix={MATRIX_NAMES[cfg.get('yuv_matrix', 0)]} "
+                   f"level={cfg.get('bar_level', 100)}")
             mark = "OK  " if ok else "FAIL"
             print(f"  [{done:2d}/{len(configs)}] {mark}  {tag}")
             if not ok:

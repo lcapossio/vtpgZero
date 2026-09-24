@@ -66,6 +66,25 @@ add_files -fileset constrs_1 $hw_dir/constraints/arty_a7_100t.xdc
 
 set_property top $top_module [current_fileset]
 
+# ─── optional build configuration ─────────────────────────────────
+# KEY:VALUE (or KEY=VALUE) pairs after -tclargs become top-level generics
+# on demo_top, e.g.
+#   vivado -mode batch -source build.tcl -tclargs VTPGZ_OUTPUT_MODE:2 VTPGZ_BPC:10
+# build.py passes the ':' form because on Windows vivado is a .bat, and cmd
+# splits arguments on '=' before Tcl ever sees them.
+# With none, the demo builds with demo_top's defaults (RGB 8bpc).
+set generics {}
+foreach arg $argv {
+    if {![regexp {^(VTPGZ_[A-Z_]+)[:=]([0-9]+)$} $arg -> key val]} {
+        error "Unrecognised build argument '$arg' (expected VTPGZ_<NAME>:<int>)"
+    }
+    lappend generics "$key=$val"
+}
+if {[llength $generics] > 0} {
+    set_property generic $generics [current_fileset]
+    puts "INFO: demo_top generics: $generics"
+}
+
 # ─── synthesis ────────────────────────────────────────────────────
 # synth_1 and impl_1 run with Vivado defaults; the demo meets timing
 # at 130 MHz without a non-default strategy.
@@ -131,11 +150,22 @@ if {[llength $bitsrc] > 0} {
 }
 
 # ─── report WNS ───────────────────────────────────────────────────
+# The demo clock is not fixed: demo_top slows clk_gen for PPC>1 builds (130
+# MHz at PPC=1, 50 MHz at PPC>1). Report the frequency the design was actually
+# constrained at, read from the clock on demo_top's `clk` net, rather than a
+# hard-coded figure that is wrong for half the builds.
 set wns [get_property SLACK [get_timing_paths -max_paths 1 -setup]]
+set demo_clk [get_clocks -quiet -of_objects [get_nets -quiet clk]]
+if {[llength $demo_clk] == 1} {
+    set mhz [format %.1f [expr {1000.0 / [get_property PERIOD $demo_clk]}]]
+    set clk_msg "demo clock $demo_clk = $mhz MHz"
+} else {
+    set clk_msg "demo clock not identified"
+}
 if {$wns ne "" && $wns ne "NONE"} {
-    puts "WNS = $wns ns"
-    if {$wns >= 0} { puts "TIMING MET at 130 MHz" } \
-    else           { puts "TIMING VIOLATION" }
+    puts "WNS = $wns ns ($clk_msg)"
+    if {$wns >= 0} { puts "TIMING MET ($clk_msg)" } \
+    else           { puts "TIMING VIOLATION ($clk_msg)" }
 }
 
 puts "DONE."

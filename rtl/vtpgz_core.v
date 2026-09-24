@@ -63,12 +63,35 @@ module vtpgz_core #(
     // ----- output mode -----
     // OUTPUT_MODE = 0  RGB only, no DSPs
     //               1  RAW (single-component, see RAW_BAYER), no DSPs
-    //               2  YUV (full BT.601 matrix, see YUV_SUBSAMPLE), uses DSPs
+    //               2  YUV (see YUV_SUBSAMPLE / YUV_RANGE / YUV_MATRIX)
+    // No mode uses DSPs: patterns are generated directly in the build's
+    // colour space, so there is no run-time colour-conversion multiplier.
     parameter OUTPUT_MODE   = `VTPGZ_MODE_RGB,
     // ----- YUV sub-mode (only meaningful when OUTPUT_MODE=2) -----
     // 0 = 4:4:4 (3 components per pixel)
     // 1 = 4:2:2 ({Y,C} pairs, C alternates Cb/Cr by x[0])
     parameter YUV_SUBSAMPLE = `VTPGZ_YUV_444,
+    // ----- YUV quantisation range (only meaningful when OUTPUT_MODE=2) -----
+    // 0 = FULL    codes 0..full scale. Default; historical behaviour.
+    // 1 = LIMITED Y 64..940, C 64..960 at 10 bits (16..235 / 16..240 at 8).
+    // HDMI, SDI and most video IP carry YCbCr as limited range, so a FULL
+    // stream is clipped at both ends by a conforming sink. LIMITED affects
+    // the colour-bar palette and compresses the runtime-valued grey patterns;
+    // it deliberately does NOT rescale the colour registers (SOLID_COLOR,
+    // BOX_COLOR, GRID_COLOR), which stay raw code values the host owns.
+    parameter YUV_RANGE     = `VTPGZ_YUV_FULL,
+    // ----- YUV matrix (only meaningful when OUTPUT_MODE=2) -----
+    // 0 = BT.601 default, correct for SD.
+    // 1 = BT.709 correct for HD and UHD, which HDMI and SDI assume there.
+    // Selects the colour-bar palette only -- no run-time conversion.
+    parameter YUV_MATRIX    = `VTPGZ_YUV_BT601,
+    // ----- colour-bar level, percent (every output mode) -----
+    // 100 (default) 100% bars, as always.
+    // 75            75% bars (RGB 0.75 of full scale; in YUV the bars of
+    //               SMPTE RP 219 / EG 1), the level most broadcast gear
+    //               expects so the bars stay inside the legal gamut.
+    // Selects the colour-bar palette only.
+    parameter BAR_LEVEL     = 100,
     // ----- RAW sub-mode (only meaningful when OUTPUT_MODE=1) -----
     // 0 = plain (monochrome, take G channel)
     // 1 = RGGB Bayer
@@ -213,7 +236,74 @@ module vtpgz_core #(
     // ---------------- pixels-per-clock shorthands ----------------
     localparam integer NPPC = PIXELS_PER_CLOCK;
 
+    // ---------------- black, for this build ----------------
+    // What "black" means depends on the build, and it is not always zero:
+    //   RGB / RAW          {0, 0, 0}
+    //   YUV, full range    {Y=0,     Cb=0x800, Cr=0x800}
+    //   YUV, limited range {Y=0x100, Cb=0x800, Cr=0x800}  (64/512/512 @10b)
+    // In YUV the all-zero triple is saturated GREEN, so every place that
+    // emits a constant black (pattern slot 5, stripped-pattern stubs, the
+    // grid background) must use these rather than 12'h000.
+    localparam YUV_LIMITED_BUILD =
+        (OUTPUT_MODE == `VTPGZ_MODE_YUV) && (YUV_RANGE == `VTPGZ_YUV_LIMITED);
+    localparam [11:0] Y_BLACK_LIM = YUV_LIMITED_BUILD ? 12'h100 : 12'h000;
+    localparam [11:0] BLACK_C0    = Y_BLACK_LIM;
+    localparam [11:0] BLACK_C12   = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
+
+    // ---------------- image bytes -> 12 bits ----------------
+    // IMAGE and BOX_IMAGE memories hold 8-bit components. In RGB/RAW they
+    // are intensities, widened by bit replication so 0xFF stays full scale.
+    // In YUV they are already YCbCr CODES, converted at build time by
+    // scripts/image_to_hex.py --yuv for this build's matrix and range, and
+    // codes widen by a plain shift: 8-bit 128 is 10-bit 512 (0x800 here),
+    // where replication would give 514. No limiter is applied -- the
+    // converter already produced codes in the build's range.
+    function [11:0] img_expand;
+        input [7:0] v;
+        img_expand = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? {v, 4'h0} : {v, v[7:4]};
+    endfunction
+
+    // ---------------- colour-bar palette selectors ----------------
+    // One palette per build, chosen at elaboration (see the generated table
+    // above bar_palette). PAL_BITS is the build's BPC capped at 12: each
+    // palette holds the exact PAL_BITS-bit code, left-aligned in 12 bits, so
+    // the pack stage's truncation lands on it (an 8-bit limited code is not
+    // the 10-bit one truncated). BPC 14/16 zero-extend the 12-bit code.
+    localparam PAL_YUV   = (OUTPUT_MODE == `VTPGZ_MODE_YUV);
+    localparam PAL_709   = (YUV_MATRIX  == `VTPGZ_YUV_BT709);
+    localparam PAL_LIM   = (YUV_RANGE   == `VTPGZ_YUV_LIMITED);
+    localparam integer PAL_LEVEL = BAR_LEVEL;
+    localparam integer PAL_BITS  = (BPC <= 8) ? 8 : (BPC <= 10) ? 10 : 12;
+
     // ---------------- elaboration guards ----------------
+    generate
+        if (!(BAR_LEVEL == 100 || BAR_LEVEL == 75)) begin : g_bar_level_bad
+            VTPGZ_BAR_LEVEL_MUST_BE_100_OR_75 guard();
+        end
+    endgenerate
+
+    // A YUV build's image memories must hold YCbCr codes, converted for the
+    // build by scripts/image_to_hex.py --yuv. The shipped mandrill files --
+    // the IMAGE_HEX_FILE / BOX_IMAGE_HEX_FILE defaults -- are RGB, so a YUV
+    // build that enables an image without pointing it at a converted file
+    // would show wrong colours with no other sign. Refuse it here. The
+    // check is on the file NAME's tail, so it also catches the RGB mandrill
+    // passed by absolute path; assigning the path to a fixed-width
+    // localparam keeps its last N characters (a shorter path zero-pads and
+    // cannot match).
+    localparam [8*20-1:0] IMG_FILE_TAIL  = IMAGE_HEX_FILE;
+    localparam [8*18-1:0] BIMG_FILE_TAIL = BOX_IMAGE_HEX_FILE;
+    generate
+        if ((OUTPUT_MODE == `VTPGZ_MODE_YUV) && EN_IMAGE &&
+            (IMG_FILE_TAIL == "mandrill_128x128.mem")) begin : g_yuv_rgb_image
+            VTPGZ_YUV_IMAGE_NEEDS_YCBCR_HEX_FILE_SEE_IMAGE_TO_HEX_YUV guard();
+        end
+        if ((OUTPUT_MODE == `VTPGZ_MODE_YUV) && EN_BOX_IMAGE &&
+            (BIMG_FILE_TAIL == "mandrill_32x32.mem")) begin : g_yuv_rgb_box_image
+            VTPGZ_YUV_BOX_IMAGE_NEEDS_YCBCR_HEX_FILE_SEE_IMAGE_TO_HEX_YUV guard();
+        end
+    endgenerate
+
     // PIXELS_PER_CLOCK must be one of 1/2/4/8. As of M3 every pattern (and
     // the box + box-image overlays) is supported at PPC>1, so there is no
     // longer a per-pattern restriction -- only the legal-value check remains.
@@ -458,43 +548,86 @@ module vtpgz_core #(
     // Counter-based: increment bar index every cfg_bar_width pixels.
     // Host writes BAR_WIDTH = img_width/8 once per resolution change.
     //
-    // Mode-aware palette as a function so each lane can look up its own bar
-    // index. In RGB/RAW the triple is {R,G,B}; in YUV it is {Y,Cb,Cr}.
-    // Returns {c0[12], c1[12], c2[12]}. Constants only -- no DSPs.
-    // verilator coverage_off
-    // Only the build's OUTPUT_MODE arm is reachable (YUV vs RGB/RAW palette);
-    // the other arm is dead code in any single-mode build. Cross-mode
-    // correctness is the byte-exact all_modes model gate's job, not this
-    // single-config coverage sim.
+    // Palette as a function so each lane can look up its own bar index. In
+    // RGB/RAW the triple is {R,G,B}; in YUV it is {Y,Cb,Cr}. Returns
+    // {c0[12], c1[12], c2[12]}. Constants only -- no DSPs.
+    //
+    // The palettes are generated by scripts/gen_yuv_palettes.py from the
+    // colorimetry, NOT transcribed -- the Python model derives its tables
+    // from the same script, so neither side is a copy of the other and a
+    // wrong constant cannot agree with itself. Every selector is an
+    // elaboration constant, so exactly one palette survives synthesis.
+    //
+    // Two palettes are frozen rather than computed: RGB 100% and YUV BT.601
+    // full-range 100%, the shipped defaults. The BT.601 one has green and
+    // magenta chroma one LSB from what the formula gives (the original used
+    // a different rounding), and that LSB survives to the output at BPC>=10,
+    // so regenerating it would change every existing 10- and 12-bit build.
+    // The generator keeps it verbatim and asserts the difference stays
+    // within one LSB.
+    // BEGIN GENERATED PALETTES (scripts/gen_yuv_palettes.py --write-rtl)
+    // Each palette is 8 bars x {c0, c1, c2} x 12 bits, bar 7 (black)
+    // in the MSBs down to bar 0 (white) in the LSBs. Do not edit by
+    // hand; change the generator and re-run it.
+    localparam [287:0] PAL_RGB_100        = 288'h000000000_000000FFF_FFF000000_FFF000FFF_000FFF000_000FFFFFF_FFFFFF000_FFFFFFFFF;
+    localparam [287:0] PAL_RGB_75_8       = 288'h000000000_000000BF0_BF0000000_BF0000BF0_000BF0000_000BF0BF0_BF0BF0000_BF0BF0BF0;
+    localparam [287:0] PAL_RGB_75_10      = 288'h000000000_000000BFC_BFC000000_BFC000BFC_000BFC000_000BFCBFC_BFCBFC000_BFCBFCBFC;
+    localparam [287:0] PAL_RGB_75_12      = 288'h000000000_000000BFF_BFF000000_BFF000BFF_000BFF000_000BFFBFF_BFFBFF000_BFFBFFBFF;
+    localparam [287:0] PAL_601_FULL_100   = 288'h000800800_1D3FFF6B3_4C854DFFF_69BD4CEB2_9642B414E_B37AB3000_E2C00094D_FFF800800;
+    localparam [287:0] PAL_601_FULL_75_8  = 288'h000800800_160E00700_390600E00_4F0BF0D00_700410300_860A00200_A90200900_BF0800800;
+    localparam [287:0] PAL_601_FULL_75_10 = 288'h000800800_15CE00708_3945FCE00_4F4BF8D04_7084082FC_868A04200_AA02008F8_BFC800800;
+    localparam [287:0] PAL_601_FULL_75_12 = 288'h000800800_15EE00706_3965FAE00_4F4BF9D06_70B4072FA_869A06200_AA12008FA_BFF800800;
+    localparam [287:0] PAL_601_LIM_100_8  = 288'h100800800_290F006E0_5105A0F00_6A0CA0DE0_910360220_AA0A60100_D20100920_EB0800800;
+    localparam [287:0] PAL_601_LIM_100_10 = 288'h100800800_290F006DC_5185A4F00_6A8CA4DDC_90835C224_A98A5C100_D20100924_EB0800800;
+    localparam [287:0] PAL_601_LIM_100_12 = 288'h100800800_28FF006DD_5185A3F00_6A7CA3DDD_90935D223_A98A5D100_D21100923_EB0800800;
+    localparam [287:0] PAL_601_LIM_75_8   = 288'h100800800_230D40720_410640D40_540B80C60_7004803A0_8309C02C0_A202C08E0_B40800800;
+    localparam [287:0] PAL_601_LIM_75_10  = 288'h100800800_22CD40724_41063CD40_53CB7CC64_70848439C_8349C42C0_A182C08DC_B44800800;
+    localparam [287:0] PAL_601_LIM_75_12  = 288'h100800800_22CD40725_41263AD40_53DB7AC65_70748639B_8329C62C0_A182C08DB_B44800800;
+    localparam [287:0] PAL_709_FULL_100_8 = 288'h000800800_120FF0740_360630FF0_490E20F40_B601E00C0_C909D0010_ED00108C0_FF0800800;
+    localparam [287:0] PAL_709_FULL_100_10 = 288'h000800800_128FFC744_36462CFFC_48CE28F44_B701D80BC_C989D4004_ED40048BC_FFC800800;
+    localparam [287:0] PAL_709_FULL_100_12 = 288'h000800800_128FFF744_36762BFFF_48EE2AF44_B711D60BC_C989D5001_ED70018BC_FFF800800;
+    localparam [287:0] PAL_709_FULL_75_8  = 288'h000800800_0E0E00770_2906A0E00_360CA0D70_890360290_970960200_B10200890_BF0800800;
+    localparam [287:0] PAL_709_FULL_75_10 = 288'h000800800_0DCE00774_28C6A0E00_36CCA0D70_894360290_970960200_B2020088C_BFC800800;
+    localparam [287:0] PAL_709_FULL_75_12 = 288'h000800800_0DEE00773_28D6A0E00_36BCA0D73_89536028D_972960200_B2220088D_BFF800800;
+    localparam [287:0] PAL_709_LIM_100_8  = 288'h100800800_200F00760_3F0660F00_4E0D60E60_AD02A01A0_BC09A0100_DB01008A0_EB0800800;
+    localparam [287:0] PAL_709_LIM_100_10 = 288'h100800800_1FCF0075C_3E8664F00_4E4D64E5C_ACC29C1A4_BC899C100_DB41008A4_EB0800800;
+    localparam [287:0] PAL_709_LIM_100_12 = 288'h100800800_1FDF0075C_3E9665F00_4E6D65E5C_ACA29B1A4_BC799B100_DB31008A4_EB0800800;
+    localparam [287:0] PAL_709_LIM_75_8   = 288'h100800800_1C0D40780_3306D0D40_3F0C10CC0_8503F0340_9109302C0_A802C0880_B40800800;
+    localparam [287:0] PAL_709_LIM_75_10  = 288'h100800800_1BCD40784_3306CCD40_3ECC0CCC4_8583F433C_9149342C0_A882C087C_B44800800;
+    localparam [287:0] PAL_709_LIM_75_12  = 288'h100800800_1BED40785_32F6CCD40_3ECC0CCC5_8583F433B_9159342C0_A862C087B_B44800800;
+    localparam [287:0] PAL_TABLE =
+        (!PAL_YUV && PAL_LEVEL == 100) ? PAL_RGB_100 :
+        (!PAL_YUV && PAL_LEVEL == 75 && PAL_BITS == 8) ? PAL_RGB_75_8 :
+        (!PAL_YUV && PAL_LEVEL == 75 && PAL_BITS == 10) ? PAL_RGB_75_10 :
+        (!PAL_YUV && PAL_LEVEL == 75 && PAL_BITS == 12) ? PAL_RGB_75_12 :
+        (PAL_YUV && !PAL_709 && !PAL_LIM && PAL_LEVEL == 100) ? PAL_601_FULL_100 :
+        (PAL_YUV && !PAL_709 && !PAL_LIM && PAL_LEVEL == 75 && PAL_BITS == 8) ? PAL_601_FULL_75_8 :
+        (PAL_YUV && !PAL_709 && !PAL_LIM && PAL_LEVEL == 75 && PAL_BITS == 10) ? PAL_601_FULL_75_10 :
+        (PAL_YUV && !PAL_709 && !PAL_LIM && PAL_LEVEL == 75 && PAL_BITS == 12) ? PAL_601_FULL_75_12 :
+        (PAL_YUV && !PAL_709 && PAL_LIM && PAL_LEVEL == 100 && PAL_BITS == 8) ? PAL_601_LIM_100_8 :
+        (PAL_YUV && !PAL_709 && PAL_LIM && PAL_LEVEL == 100 && PAL_BITS == 10) ? PAL_601_LIM_100_10 :
+        (PAL_YUV && !PAL_709 && PAL_LIM && PAL_LEVEL == 100 && PAL_BITS == 12) ? PAL_601_LIM_100_12 :
+        (PAL_YUV && !PAL_709 && PAL_LIM && PAL_LEVEL == 75 && PAL_BITS == 8) ? PAL_601_LIM_75_8 :
+        (PAL_YUV && !PAL_709 && PAL_LIM && PAL_LEVEL == 75 && PAL_BITS == 10) ? PAL_601_LIM_75_10 :
+        (PAL_YUV && !PAL_709 && PAL_LIM && PAL_LEVEL == 75 && PAL_BITS == 12) ? PAL_601_LIM_75_12 :
+        (PAL_YUV && PAL_709 && !PAL_LIM && PAL_LEVEL == 100 && PAL_BITS == 8) ? PAL_709_FULL_100_8 :
+        (PAL_YUV && PAL_709 && !PAL_LIM && PAL_LEVEL == 100 && PAL_BITS == 10) ? PAL_709_FULL_100_10 :
+        (PAL_YUV && PAL_709 && !PAL_LIM && PAL_LEVEL == 100 && PAL_BITS == 12) ? PAL_709_FULL_100_12 :
+        (PAL_YUV && PAL_709 && !PAL_LIM && PAL_LEVEL == 75 && PAL_BITS == 8) ? PAL_709_FULL_75_8 :
+        (PAL_YUV && PAL_709 && !PAL_LIM && PAL_LEVEL == 75 && PAL_BITS == 10) ? PAL_709_FULL_75_10 :
+        (PAL_YUV && PAL_709 && !PAL_LIM && PAL_LEVEL == 75 && PAL_BITS == 12) ? PAL_709_FULL_75_12 :
+        (PAL_YUV && PAL_709 && PAL_LIM && PAL_LEVEL == 100 && PAL_BITS == 8) ? PAL_709_LIM_100_8 :
+        (PAL_YUV && PAL_709 && PAL_LIM && PAL_LEVEL == 100 && PAL_BITS == 10) ? PAL_709_LIM_100_10 :
+        (PAL_YUV && PAL_709 && PAL_LIM && PAL_LEVEL == 100 && PAL_BITS == 12) ? PAL_709_LIM_100_12 :
+        (PAL_YUV && PAL_709 && PAL_LIM && PAL_LEVEL == 75 && PAL_BITS == 8) ? PAL_709_LIM_75_8 :
+        (PAL_YUV && PAL_709 && PAL_LIM && PAL_LEVEL == 75 && PAL_BITS == 10) ? PAL_709_LIM_75_10 :
+        PAL_709_LIM_75_12;  // PAL_YUV && PAL_709 && PAL_LIM && PAL_LEVEL == 75 && PAL_BITS == 12
+    // END GENERATED PALETTES
+
     function [35:0] bar_palette;
         input [2:0] idx;
-        begin
-            if (OUTPUT_MODE == `VTPGZ_MODE_YUV) begin
-                case (idx)
-                    3'd0: bar_palette = {12'hFFF, 12'h800, 12'h800}; // white
-                    3'd1: bar_palette = {12'hE2C, 12'h000, 12'h94D}; // yellow
-                    3'd2: bar_palette = {12'hB37, 12'hAB3, 12'h000}; // cyan
-                    3'd3: bar_palette = {12'h964, 12'h2B4, 12'h14E}; // green
-                    3'd4: bar_palette = {12'h69B, 12'hD4C, 12'hEB2}; // magenta
-                    3'd5: bar_palette = {12'h4C8, 12'h54D, 12'hFFF}; // red
-                    3'd6: bar_palette = {12'h1D3, 12'hFFF, 12'h6B3}; // blue
-                    default: bar_palette = {12'h000, 12'h800, 12'h800}; // black
-                endcase
-            end else begin
-                case (idx)
-                    3'd0: bar_palette = {12'hFFF, 12'hFFF, 12'hFFF};  // white
-                    3'd1: bar_palette = {12'hFFF, 12'hFFF, 12'h000};
-                    3'd2: bar_palette = {12'h000, 12'hFFF, 12'hFFF};
-                    3'd3: bar_palette = {12'h000, 12'hFFF, 12'h000};
-                    3'd4: bar_palette = {12'hFFF, 12'h000, 12'hFFF};
-                    3'd5: bar_palette = {12'hFFF, 12'h000, 12'h000};
-                    3'd6: bar_palette = {12'h000, 12'h000, 12'hFFF};
-                    default: bar_palette = {12'h000, 12'h000, 12'h000};
-                endcase
-            end
-        end
+        bar_palette = PAL_TABLE[36*idx +: 36];
     endfunction
-    // verilator coverage_on
 
     generate if (EN_COLORBAR) begin : g_colorbar
         // Down-counter + parallel-threshold recurrence. bar_left is the count
@@ -597,12 +730,13 @@ module vtpgz_core #(
         assign cb_g = cb_g_bus[11:0];
         assign cb_b = cb_b_bus[11:0];
     end else begin : g_colorbar_off
-        assign cb_r = 12'h000;
-        assign cb_g = 12'h000;
-        assign cb_b = 12'h000;
-        assign cb_r_bus = {(12*NPPC){1'b0}};
-        assign cb_g_bus = {(12*NPPC){1'b0}};
-        assign cb_b_bus = {(12*NPPC){1'b0}};
+        // Stripped: the slot still exists and must read as black.
+        assign cb_r = BLACK_C0;
+        assign cb_g = BLACK_C12;
+        assign cb_b = BLACK_C12;
+        assign cb_r_bus = {NPPC{BLACK_C0}};
+        assign cb_g_bus = {NPPC{BLACK_C12}};
+        assign cb_b_bus = {NPPC{BLACK_C12}};
     end endgenerate
 
     // ---- Horizontal gradient ----
@@ -773,9 +907,9 @@ module vtpgz_core #(
         assign solid_g = {cfg_solid_color[15:8],  4'h0};
         assign solid_b = {cfg_solid_color[7:0],   4'h0};
     end else begin : g_solid_off
-        assign solid_r = 12'h000;
-        assign solid_g = 12'h000;
-        assign solid_b = 12'h000;
+        assign solid_r = BLACK_C0;
+        assign solid_g = BLACK_C12;
+        assign solid_b = BLACK_C12;
     end endgenerate
 
     // ---- Moving box (bouncing overlay) ----
@@ -956,7 +1090,10 @@ module vtpgz_core #(
         wire [11:0] bg_c2 = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
         for (gl = 0; gl < NPPC; gl = gl + 1) begin : g_grid_lane
             wire on_grid_l = g_on_col[gl] || (gy_cnt == 16'h0);
-            assign grid_r_bus[12*gl +: 12] = on_grid_l ? {cfg_grid_color[23:16],4'h0} : 12'h000;
+            // Background luma is a constant, so LIMITED costs a constant
+            // select here rather than a pass through y_to_limited. On-grid
+            // pixels carry cfg_grid_color unscaled, by design.
+            assign grid_r_bus[12*gl +: 12] = on_grid_l ? {cfg_grid_color[23:16],4'h0} : Y_BLACK_LIM;
             assign grid_g_bus[12*gl +: 12] = on_grid_l ? {cfg_grid_color[15:8], 4'h0} : bg_c1;
             assign grid_b_bus[12*gl +: 12] = on_grid_l ? {cfg_grid_color[7:0],  4'h0} : bg_c2;
         end
@@ -964,16 +1101,13 @@ module vtpgz_core #(
         assign grid_g = grid_g_bus[11:0];
         assign grid_b = grid_b_bus[11:0];
     end else begin : g_grid_off
-        assign grid_r = 12'h000;
-        assign grid_g = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
-        assign grid_b = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
-        // Off-lanes replicate the lane-0 background across the bus.
-        genvar gof;
-        for (gof = 0; gof < NPPC; gof = gof + 1) begin : g_grid_off_bus
-            assign grid_r_bus[12*gof +: 12] = 12'h000;
-            assign grid_g_bus[12*gof +: 12] = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
-            assign grid_b_bus[12*gof +: 12] = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : 12'h000;
-        end
+        // The build's black on every lane (see BLACK_C0).
+        assign grid_r = BLACK_C0;
+        assign grid_g = BLACK_C12;
+        assign grid_b = BLACK_C12;
+        assign grid_r_bus = {NPPC{BLACK_C0}};
+        assign grid_g_bus = {NPPC{BLACK_C12}};
+        assign grid_b_bus = {NPPC{BLACK_C12}};
     end endgenerate
 
     // ---- Ramp ----
@@ -1104,9 +1238,10 @@ module vtpgz_core #(
             wire [7:0] img_r8 = image_word_q[23:16];
             wire [7:0] img_g8 = image_word_q[15:8];
             wire [7:0] img_b8 = image_word_q[7:0];
-            assign image_r = in_image_q ? {img_r8, img_r8[7:4]} : 12'h000;
-            assign image_g = in_image_q ? {img_g8, img_g8[7:4]} : 12'h000;
-            assign image_b = in_image_q ? {img_b8, img_b8[7:4]} : 12'h000;
+            // Outside the image window: the build's black (see BLACK_C0).
+            assign image_r = in_image_q ? img_expand(img_r8) : BLACK_C0;
+            assign image_g = in_image_q ? img_expand(img_g8) : BLACK_C12;
+            assign image_b = in_image_q ? img_expand(img_b8) : BLACK_C12;
             assign image_r_bus = image_r;   // NPPC==1: bus == lane 0
             assign image_g_bus = image_g;
             assign image_b_bus = image_b;
@@ -1141,9 +1276,9 @@ module vtpgz_core #(
                 wire [7:0] r8 = word_l[23:16];
                 wire [7:0] g8 = word_l[15:8];
                 wire [7:0] b8 = word_l[7:0];
-                assign image_r_bus[12*il +: 12] = in_img_l ? {r8, r8[7:4]} : 12'h000;
-                assign image_g_bus[12*il +: 12] = in_img_l ? {g8, g8[7:4]} : 12'h000;
-                assign image_b_bus[12*il +: 12] = in_img_l ? {b8, b8[7:4]} : 12'h000;
+                assign image_r_bus[12*il +: 12] = in_img_l ? img_expand(r8) : BLACK_C0;
+                assign image_g_bus[12*il +: 12] = in_img_l ? img_expand(g8) : BLACK_C12;
+                assign image_b_bus[12*il +: 12] = in_img_l ? img_expand(b8) : BLACK_C12;
             end
             always @(posedge aclk) begin
                 if (!aresetn || frame_init) acc_x <= {ACC_X_W{1'b0}};
@@ -1158,12 +1293,12 @@ module vtpgz_core #(
         end
         // verilator coverage_on
     end else begin : g_image_off
-        assign image_r = 12'h000;
-        assign image_g = 12'h000;
-        assign image_b = 12'h000;
-        assign image_r_bus = {(12*NPPC){1'b0}};
-        assign image_g_bus = {(12*NPPC){1'b0}};
-        assign image_b_bus = {(12*NPPC){1'b0}};
+        assign image_r = BLACK_C0;
+        assign image_g = BLACK_C12;
+        assign image_b = BLACK_C12;
+        assign image_r_bus = {NPPC{BLACK_C0}};
+        assign image_g_bus = {NPPC{BLACK_C12}};
+        assign image_b_bus = {NPPC{BLACK_C12}};
     end endgenerate
 
     // ---- BOX-image overlay ----
@@ -1230,9 +1365,9 @@ module vtpgz_core #(
             wire [7:0] bimg_r8 = bimg_word_q[23:16];
             wire [7:0] bimg_g8 = bimg_word_q[15:8];
             wire [7:0] bimg_b8 = bimg_word_q[7:0];
-            assign box_img_r = {bimg_r8, bimg_r8[7:4]};
-            assign box_img_g = {bimg_g8, bimg_g8[7:4]};
-            assign box_img_b = {bimg_b8, bimg_b8[7:4]};
+            assign box_img_r = img_expand(bimg_r8);
+            assign box_img_g = img_expand(bimg_g8);
+            assign box_img_b = img_expand(bimg_b8);
             assign box_img_r_bus = box_img_r;
             assign box_img_g_bus = box_img_g;
             assign box_img_b_bus = box_img_b;
@@ -1261,9 +1396,9 @@ module vtpgz_core #(
                 wire [7:0] r8 = word_l[23:16];
                 wire [7:0] g8 = word_l[15:8];
                 wire [7:0] b8 = word_l[7:0];
-                assign box_img_r_bus[12*bil +: 12] = {r8, r8[7:4]};
-                assign box_img_g_bus[12*bil +: 12] = {g8, g8[7:4]};
-                assign box_img_b_bus[12*bil +: 12] = {b8, b8[7:4]};
+                assign box_img_r_bus[12*bil +: 12] = img_expand(r8);
+                assign box_img_g_bus[12*bil +: 12] = img_expand(g8);
+                assign box_img_b_bus[12*bil +: 12] = img_expand(b8);
             end
             always @(posedge aclk) begin
                 if (!aresetn || frame_init) bimg_acc_x <= {BIMG_ACC_X_W{1'b0}};
@@ -1309,20 +1444,84 @@ module vtpgz_core #(
     wire [11:0] nz_c1   = is_yuv_build ? CHROMA_NEUTRAL : noise_v;
     wire [11:0] nz_c2   = is_yuv_build ? CHROMA_NEUTRAL : noise_v;
 
-    reg [11:0] pat_c0, pat_c1, pat_c2;
+    // ---- LIMITED-range luma compression (YUV_RANGE=1 only) ----
+    // Maps a full-scale 12-bit luma onto the limited range:
+    //
+    //     Y_lim = 256 + ((Y * 3505) >> 12)      0 -> 256, 4095 -> 3760
+    //
+    // Exact at both ends at every BPC, because the pack stage truncates:
+    // 256>>2 = 64 and 3760>>2 = 940 at 10 bits, 256>>4 = 16 and 3760>>4 = 235
+    // at 8.
+    //
+    // The scale factor is written out as shifts and adds rather than as a
+    // multiply. Vivado 2025.2 infers a DSP48E1 for `yf * 3505` even though
+    // one operand is constant, which would make a LIMITED build the only
+    // mode in this core that costs a DSP -- measured, not assumed. 3505 is
+    // 0xDB1 = bits 11,10,8,7,5,4,0, so the sum below is exactly equal to
+    // the multiply for every 12-bit input, and is plain LUT logic in any
+    // tool rather than relying on a synthesis attribute being honoured.
+    //
+    // Applied ONLY to the patterns whose luma is a runtime value. It must not
+    // touch:
+    //   * COLORBAR -- the palette constants are already in range;
+    //   * SOLID / GRID line colour / BOX -- raw code values the host writes,
+    //     documented as the host's responsibility in a LIMITED build;
+    //   * IMAGE / BOX_IMAGE -- in YUV the memories already hold codes in the
+    //     build's range, converted at build time by image_to_hex.py --yuv;
+    //   * the GRID background, whose luma is the constant 12'h000 and is
+    //     handled by a constant select in g_grid rather than this multiply.
+    // Chroma is untouched: these patterns emit neutral 0x800, already legal
+    // in both ranges.
+    // YUV_LIMITED_BUILD and Y_BLACK_LIM are declared near the top of the
+    // module, with the other build-dependent black constants.
+
+    // coverage_off: in any build that is not YUV+LIMITED, YUV_LIMITED_BUILD
+    // is an elaboration constant 0, limit_luma_now folds to 0 and this whole
+    // block is stripped -- it can never toggle. The coverage gate builds
+    // OUTPUT_MODE=0 (RGB), so it would always sit at 0%. Functional coverage
+    // of the limiter comes from the LIMITED-range bounds tests instead.
+    // verilator coverage_off
+    function [11:0] y_to_limited;
+        input [11:0] yf;
+        reg [24:0] prod;
+        reg [24:0] y25;
+        begin
+            if (YUV_LIMITED_BUILD) begin
+                y25  = {13'h0, yf};
+                prod = (y25 << 11) + (y25 << 10) + (y25 << 8) +
+                       (y25 <<  7) + (y25 <<  5) + (y25 <<  4) + y25;
+                y_to_limited = 12'd256 + prod[23:12];
+            end else begin
+                y_to_limited = yf;
+            end
+        end
+    endfunction
+
+    // Patterns whose c0 is a runtime-valued luma.
+    wire pat_is_runtime_luma = (cfg_pattern == `VTPGZ_PAT_HGRAD)   ||
+                               (cfg_pattern == `VTPGZ_PAT_VGRAD)   ||
+                               (cfg_pattern == `VTPGZ_PAT_CHECKER) ||
+                               (cfg_pattern == `VTPGZ_PAT_RAMP)    ||
+                               (cfg_pattern == `VTPGZ_PAT_NOISE);
+    wire limit_luma_now = YUV_LIMITED_BUILD && pat_is_runtime_luma;
+    // verilator coverage_on
+
+    reg [11:0] pat_c0_raw, pat_c1, pat_c2;
+    wire [11:0] pat_c0 = limit_luma_now ? y_to_limited(pat_c0_raw) : pat_c0_raw;
     always @* begin
         case (cfg_pattern)
-            `VTPGZ_PAT_COLORBAR  : begin pat_c0 = cb_r;    pat_c1 = cb_g;    pat_c2 = cb_b;    end
-            `VTPGZ_PAT_HGRAD     : begin pat_c0 = hg_val;  pat_c1 = hg_c1;   pat_c2 = hg_c2;   end
-            `VTPGZ_PAT_VGRAD     : begin pat_c0 = vg_val;  pat_c1 = vg_c1;   pat_c2 = vg_c2;   end
-            `VTPGZ_PAT_CHECKER   : begin pat_c0 = chk_v;   pat_c1 = chk_c1;  pat_c2 = chk_c2;  end
-            `VTPGZ_PAT_SOLID     : begin pat_c0 = solid_r; pat_c1 = solid_g; pat_c2 = solid_b; end
-            `VTPGZ_PAT_GRID      : begin pat_c0 = grid_r;  pat_c1 = grid_g;  pat_c2 = grid_b;  end
-            `VTPGZ_PAT_RAMP      : begin pat_c0 = ramp_v;  pat_c1 = ramp_c1; pat_c2 = ramp_c2; end
-            `VTPGZ_PAT_NOISE     : begin pat_c0 = noise_v; pat_c1 = nz_c1;   pat_c2 = nz_c2;   end
-            `VTPGZ_PAT_IMAGE     : begin pat_c0 = image_r; pat_c1 = image_g; pat_c2 = image_b; end
+            `VTPGZ_PAT_COLORBAR  : begin pat_c0_raw = cb_r;    pat_c1 = cb_g;    pat_c2 = cb_b;    end
+            `VTPGZ_PAT_HGRAD     : begin pat_c0_raw = hg_val;  pat_c1 = hg_c1;   pat_c2 = hg_c2;   end
+            `VTPGZ_PAT_VGRAD     : begin pat_c0_raw = vg_val;  pat_c1 = vg_c1;   pat_c2 = vg_c2;   end
+            `VTPGZ_PAT_CHECKER   : begin pat_c0_raw = chk_v;   pat_c1 = chk_c1;  pat_c2 = chk_c2;  end
+            `VTPGZ_PAT_SOLID     : begin pat_c0_raw = solid_r; pat_c1 = solid_g; pat_c2 = solid_b; end
+            `VTPGZ_PAT_GRID      : begin pat_c0_raw = grid_r;  pat_c1 = grid_g;  pat_c2 = grid_b;  end
+            `VTPGZ_PAT_RAMP      : begin pat_c0_raw = ramp_v;  pat_c1 = ramp_c1; pat_c2 = ramp_c2; end
+            `VTPGZ_PAT_NOISE     : begin pat_c0_raw = noise_v; pat_c1 = nz_c1;   pat_c2 = nz_c2;   end
+            `VTPGZ_PAT_IMAGE     : begin pat_c0_raw = image_r; pat_c1 = image_g; pat_c2 = image_b; end
             // verilator coverage_off
-            default              : begin pat_c0 = 12'h0;   pat_c1 = 12'h0;   pat_c2 = 12'h0;   end
+            // Slot 5 (the box is an overlay, not a pattern) and unused codes.
+            default              : begin pat_c0_raw = BLACK_C0; pat_c1 = BLACK_C12; pat_c2 = BLACK_C12; end
             // verilator coverage_on
         endcase
     end
@@ -1382,10 +1581,12 @@ module vtpgz_core #(
                 `VTPGZ_PAT_IMAGE   : begin p0 = image_r_bus[12*gpl +: 12];
                                            p1 = image_g_bus[12*gpl +: 12];
                                            p2 = image_b_bus[12*gpl +: 12]; end
-                default            : begin p0 = 12'h0;   p1 = 12'h0;   p2 = 12'h0;   end
+                default            : begin p0 = BLACK_C0; p1 = BLACK_C12; p2 = BLACK_C12; end
             endcase
         end
-        assign pat_c0_bus[12*gpl +: 12] = p0;
+        // Same limited-range compression as the scalar path, per lane.
+        assign pat_c0_bus[12*gpl +: 12] =
+            limit_luma_now ? y_to_limited(p0) : p0;
         assign pat_c1_bus[12*gpl +: 12] = p1;
         assign pat_c2_bus[12*gpl +: 12] = p2;
       end
