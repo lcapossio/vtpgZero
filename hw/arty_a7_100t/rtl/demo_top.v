@@ -33,7 +33,19 @@
 
 `timescale 1ns/1ps
 
-module demo_top (
+module demo_top #(
+    // Core build configuration. Default Arty demo build: RGB 8bpc, Xilinx
+    // PG044 packing order. These are real parameters (not localparams) so a
+    // RAW or YUV sensor-emulator build can be made without editing this file:
+    //   python hw/arty_a7_100t/scripts/build.py VTPGZ_OUTPUT_MODE=2 VTPGZ_BPC=10
+    parameter VTPGZ_OUTPUT_MODE   = 0, // 0=RGB 1=RAW 2=YUV
+    parameter VTPGZ_BPC           = 8,
+    parameter VTPGZ_YUV_SUBSAMPLE = 0,
+    parameter VTPGZ_RAW_BAYER     = 1,
+    parameter VTPGZ_RGB_ORDER     = 0, // 0=Xilinx, 1=legacy
+    parameter VTPGZ_YUV_RANGE     = 0, // 0=full 1=limited (YUV only)
+    parameter VTPGZ_YUV_MATRIX    = 0  // 0=BT.601 1=BT.709 (YUV only)
+) (
     input  wire CLK100MHZ,
     input  wire btn0,           // active-high reset
     output wire led0,
@@ -230,14 +242,7 @@ module demo_top (
     );
 
     // ---------------- VTPGZ core ----------------
-    // Default Arty demo build: RGB 8bpc, Xilinx PG044 packing order.
-    // Override these on the command line via Vivado generics if you want
-    // a RAW or YUV sensor-emulator build.
-    localparam VTPGZ_OUTPUT_MODE   = 0; // 0=RGB 1=RAW 2=YUV
-    localparam VTPGZ_BPC           = 8;
-    localparam VTPGZ_YUV_SUBSAMPLE = 0;
-    localparam VTPGZ_RAW_BAYER     = 1;
-    localparam VTPGZ_RGB_ORDER     = 0; // 0=Xilinx, 1=legacy
+    // Build configuration comes from the module parameters above.
     // VTPGZ_PIXELS_PER_CLOCK is declared near the clock generator above.
     // Match vtpgz_axilite_top's auto-derived TDATA_WIDTH formula (per pixel),
     // then widen by PIXELS_PER_CLOCK for the packed beat. frame_capture
@@ -265,6 +270,8 @@ module demo_top (
         .RAW_BAYER    (VTPGZ_RAW_BAYER),
         .RGB_ORDER    (VTPGZ_RGB_ORDER),
         .BPC          (VTPGZ_BPC),
+        .YUV_RANGE    (VTPGZ_YUV_RANGE),
+        .YUV_MATRIX   (VTPGZ_YUV_MATRIX),
         .PIXELS_PER_CLOCK(VTPGZ_PIXELS_PER_CLOCK),
         // Interlaced-video support: CONTROL[3] selects it at runtime, and the
         // capture sink reports the captured field at CAPTURE_STATUS[1].

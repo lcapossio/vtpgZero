@@ -308,6 +308,28 @@ Expected: `Ran 108 combinations, 0 failures` / `HW PASS - byte-exact across all 
 Architecture and address map are documented in
 [hw/arty_a7_100t/README.md](../hw/arty_a7_100t/README.md).
 
+### Other output formats on silicon
+
+The demo's core build configuration is a set of `demo_top` parameters, so a
+RAW or YUV bitstream needs no source edit. Pass them to `build.py`:
+
+```sh
+python hw/arty_a7_100t/scripts/build.py VTPGZ_OUTPUT_MODE=2 VTPGZ_BPC=10     VTPGZ_YUV_RANGE=1 VTPGZ_YUV_MATRIX=1
+python hw/arty_a7_100t/python/run_hw_test.py --yuv-range limited --yuv-matrix 709
+```
+
+`run_hw_test.py` reads mode, BPC, subsampling, Bayer order and PPC back from
+the bitstream, but YUV range and matrix are not in `COLOR_FORMAT`, so they
+must be given on the command line to match the build. Getting them wrong
+cannot pass quietly: against the wrong colorimetry the colorbar, gradients,
+checker and grid background all mismatch.
+
+YUV 4:4:4, 10 bpc, limited range, BT.709 is verified byte-exact across all
+patterns on the board (0 DSPs, timing met). As a negative control, the same
+bitstream checked against full-range BT.601 fails 7 of 9 patterns, with the
+board showing gradient white at 940 and black at 64: the limited-range map is
+active on silicon, not just matching by coincidence.
+
 ### Pixels-per-clock on silicon
 
 The demo builds at `PIXELS_PER_CLOCK=1` by default. To validate packed-pixel

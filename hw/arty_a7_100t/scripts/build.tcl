@@ -66,6 +66,25 @@ add_files -fileset constrs_1 $hw_dir/constraints/arty_a7_100t.xdc
 
 set_property top $top_module [current_fileset]
 
+# ─── optional build configuration ─────────────────────────────────
+# KEY:VALUE (or KEY=VALUE) pairs after -tclargs become top-level generics
+# on demo_top, e.g.
+#   vivado -mode batch -source build.tcl -tclargs VTPGZ_OUTPUT_MODE:2 VTPGZ_BPC:10
+# build.py passes the ':' form because on Windows vivado is a .bat, and cmd
+# splits arguments on '=' before Tcl ever sees them.
+# With none, the demo builds with demo_top's defaults (RGB 8bpc).
+set generics {}
+foreach arg $argv {
+    if {![regexp {^(VTPGZ_[A-Z_]+)[:=]([0-9]+)$} $arg -> key val]} {
+        error "Unrecognised build argument '$arg' (expected VTPGZ_<NAME>:<int>)"
+    }
+    lappend generics "$key=$val"
+}
+if {[llength $generics] > 0} {
+    set_property generic $generics [current_fileset]
+    puts "INFO: demo_top generics: $generics"
+}
+
 # ─── synthesis ────────────────────────────────────────────────────
 # synth_1 and impl_1 run with Vivado defaults; the demo meets timing
 # at 130 MHz without a non-default strategy.

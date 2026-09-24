@@ -10,6 +10,10 @@ for stdout so progress is visible.
 
 Usage:
     python hw/arty_a7_100t/scripts/build.py
+    python hw/arty_a7_100t/scripts/build.py VTPGZ_OUTPUT_MODE=2 VTPGZ_BPC=10         VTPGZ_YUV_RANGE=1 VTPGZ_YUV_MATRIX=1
+
+Any VTPGZ_<NAME>=<int> arguments are forwarded to build.tcl and applied as
+demo_top generics.
 """
 from __future__ import annotations
 
@@ -39,6 +43,10 @@ def main() -> int:
     print(f"Using vivado: {vivado}")
     print(f"Running: {tcl}")
     cmd = [vivado, "-mode", "batch", "-source", str(tcl), "-nojournal", "-nolog"]
+    if len(sys.argv) > 1:
+        # KEY=VAL -> KEY:VAL. On Windows vivado is vivado.bat, and cmd splits
+        # batch arguments on '=', so KEY=VAL would reach Tcl as two words.
+        cmd += ["-tclargs"] + [a.replace("=", ":", 1) for a in sys.argv[1:]]
     return subprocess.call(cmd)
 
 
