@@ -1461,8 +1461,17 @@ module vtpgz_core #(
     // the multiply for every 12-bit input, and is plain LUT logic in any
     // tool rather than relying on a synthesis attribute being honoured.
     //
-    // Applied ONLY to the patterns whose luma is a runtime value. It must not
-    // touch:
+    // Applied ONLY to the patterns whose luma is a runtime value -- HGRAD,
+    // VGRAD, CHECKER, RAMP and NOISE -- and applied to each of those SOURCES,
+    // before the pattern select, not to the selected value after it. The
+    // output is the same either way (the map is used only when one of those
+    // five is selected, and then the selected value IS that source), but
+    // mapping after the select put the whole select -- and the grid / bar
+    // compares feeding it -- in front of the adder chain on every lane.
+    // Per source, each adder sees only its own generator. Five small adders
+    // instead of one, still plain LUT logic, and in a build that is not
+    // YUV+LIMITED y_to_limited() is the identity, so they do not exist. It
+    // must not touch:
     //   * COLORBAR -- the palette constants are already in range;
     //   * SOLID / GRID line colour / BOX -- raw code values the host writes,
     //     documented as the host's responsibility in a LIMITED build;
@@ -1476,8 +1485,8 @@ module vtpgz_core #(
     // module, with the other build-dependent black constants.
 
     // coverage_off: in any build that is not YUV+LIMITED, YUV_LIMITED_BUILD
-    // is an elaboration constant 0, limit_luma_now folds to 0 and this whole
-    // block is stripped -- it can never toggle. The coverage gate builds
+    // is an elaboration constant 0, y_to_limited() folds to the identity and
+    // the adder branch is stripped -- it can never toggle. The coverage gate builds
     // OUTPUT_MODE=0 (RGB), so it would always sit at 0%. Functional coverage
     // of the limiter comes from the LIMITED-range bounds tests instead.
     // verilator coverage_off
@@ -1497,31 +1506,30 @@ module vtpgz_core #(
         end
     endfunction
 
-    // Patterns whose c0 is a runtime-valued luma.
-    wire pat_is_runtime_luma = (cfg_pattern == `VTPGZ_PAT_HGRAD)   ||
-                               (cfg_pattern == `VTPGZ_PAT_VGRAD)   ||
-                               (cfg_pattern == `VTPGZ_PAT_CHECKER) ||
-                               (cfg_pattern == `VTPGZ_PAT_RAMP)    ||
-                               (cfg_pattern == `VTPGZ_PAT_NOISE);
-    wire limit_luma_now = YUV_LIMITED_BUILD && pat_is_runtime_luma;
     // verilator coverage_on
 
-    reg [11:0] pat_c0_raw, pat_c1, pat_c2;
-    wire [11:0] pat_c0 = limit_luma_now ? y_to_limited(pat_c0_raw) : pat_c0_raw;
+    // The runtime-luma sources, mapped (identity unless YUV+LIMITED).
+    wire [11:0] hg_y    = y_to_limited(hg_val);
+    wire [11:0] vg_y    = y_to_limited(vg_val);
+    wire [11:0] chk_y   = y_to_limited(chk_v);
+    wire [11:0] ramp_y  = y_to_limited(ramp_v);
+    wire [11:0] noise_y = y_to_limited(noise_v);
+
+    reg [11:0] pat_c0, pat_c1, pat_c2;
     always @* begin
         case (cfg_pattern)
-            `VTPGZ_PAT_COLORBAR  : begin pat_c0_raw = cb_r;    pat_c1 = cb_g;    pat_c2 = cb_b;    end
-            `VTPGZ_PAT_HGRAD     : begin pat_c0_raw = hg_val;  pat_c1 = hg_c1;   pat_c2 = hg_c2;   end
-            `VTPGZ_PAT_VGRAD     : begin pat_c0_raw = vg_val;  pat_c1 = vg_c1;   pat_c2 = vg_c2;   end
-            `VTPGZ_PAT_CHECKER   : begin pat_c0_raw = chk_v;   pat_c1 = chk_c1;  pat_c2 = chk_c2;  end
-            `VTPGZ_PAT_SOLID     : begin pat_c0_raw = solid_r; pat_c1 = solid_g; pat_c2 = solid_b; end
-            `VTPGZ_PAT_GRID      : begin pat_c0_raw = grid_r;  pat_c1 = grid_g;  pat_c2 = grid_b;  end
-            `VTPGZ_PAT_RAMP      : begin pat_c0_raw = ramp_v;  pat_c1 = ramp_c1; pat_c2 = ramp_c2; end
-            `VTPGZ_PAT_NOISE     : begin pat_c0_raw = noise_v; pat_c1 = nz_c1;   pat_c2 = nz_c2;   end
-            `VTPGZ_PAT_IMAGE     : begin pat_c0_raw = image_r; pat_c1 = image_g; pat_c2 = image_b; end
+            `VTPGZ_PAT_COLORBAR  : begin pat_c0 = cb_r;    pat_c1 = cb_g;    pat_c2 = cb_b;    end
+            `VTPGZ_PAT_HGRAD     : begin pat_c0 = hg_y;    pat_c1 = hg_c1;   pat_c2 = hg_c2;   end
+            `VTPGZ_PAT_VGRAD     : begin pat_c0 = vg_y;    pat_c1 = vg_c1;   pat_c2 = vg_c2;   end
+            `VTPGZ_PAT_CHECKER   : begin pat_c0 = chk_y;   pat_c1 = chk_c1;  pat_c2 = chk_c2;  end
+            `VTPGZ_PAT_SOLID     : begin pat_c0 = solid_r; pat_c1 = solid_g; pat_c2 = solid_b; end
+            `VTPGZ_PAT_GRID      : begin pat_c0 = grid_r;  pat_c1 = grid_g;  pat_c2 = grid_b;  end
+            `VTPGZ_PAT_RAMP      : begin pat_c0 = ramp_y;  pat_c1 = ramp_c1; pat_c2 = ramp_c2; end
+            `VTPGZ_PAT_NOISE     : begin pat_c0 = noise_y; pat_c1 = nz_c1;   pat_c2 = nz_c2;   end
+            `VTPGZ_PAT_IMAGE     : begin pat_c0 = image_r; pat_c1 = image_g; pat_c2 = image_b; end
             // verilator coverage_off
             // Slot 5 (the box is an overlay, not a pattern) and unused codes.
-            default              : begin pat_c0_raw = BLACK_C0; pat_c1 = BLACK_C12; pat_c2 = BLACK_C12; end
+            default              : begin pat_c0 = BLACK_C0; pat_c1 = BLACK_C12; pat_c2 = BLACK_C12; end
             // verilator coverage_on
         endcase
     end
@@ -1563,30 +1571,34 @@ module vtpgz_core #(
         wire [11:0] vgl_c  = is_yuv_build ? CHROMA_NEUTRAL : vgl;
         wire [11:0] rmpl_c = is_yuv_build ? CHROMA_NEUTRAL : rmpl;
         wire [11:0] nzl_c  = is_yuv_build ? CHROMA_NEUTRAL : nzl;
+        // Same per-source limited-range map as the scalar path, per lane.
+        wire [11:0] hgl_y  = y_to_limited(hgl);
+        wire [11:0] vgl_y  = y_to_limited(vgl);
+        wire [11:0] chkl_y = y_to_limited(chkl);
+        wire [11:0] rmpl_y = y_to_limited(rmpl);
+        wire [11:0] nzl_y  = y_to_limited(nzl);
         reg [11:0] p0, p1, p2;
         always @* begin
             case (cfg_pattern)
                 `VTPGZ_PAT_COLORBAR: begin p0 = cb_r_bus[12*gpl +: 12];
                                            p1 = cb_g_bus[12*gpl +: 12];
                                            p2 = cb_b_bus[12*gpl +: 12]; end
-                `VTPGZ_PAT_HGRAD   : begin p0 = hgl;     p1 = hgl_c;   p2 = hgl_c;   end
-                `VTPGZ_PAT_VGRAD   : begin p0 = vgl;     p1 = vgl_c;   p2 = vgl_c;   end
-                `VTPGZ_PAT_CHECKER : begin p0 = chkl;    p1 = chkl_c;  p2 = chkl_c;  end
+                `VTPGZ_PAT_HGRAD   : begin p0 = hgl_y;   p1 = hgl_c;   p2 = hgl_c;   end
+                `VTPGZ_PAT_VGRAD   : begin p0 = vgl_y;   p1 = vgl_c;   p2 = vgl_c;   end
+                `VTPGZ_PAT_CHECKER : begin p0 = chkl_y;  p1 = chkl_c;  p2 = chkl_c;  end
                 `VTPGZ_PAT_SOLID   : begin p0 = solid_r; p1 = solid_g; p2 = solid_b; end
                 `VTPGZ_PAT_GRID    : begin p0 = grid_r_bus[12*gpl +: 12];
                                            p1 = grid_g_bus[12*gpl +: 12];
                                            p2 = grid_b_bus[12*gpl +: 12]; end
-                `VTPGZ_PAT_RAMP    : begin p0 = rmpl;    p1 = rmpl_c;  p2 = rmpl_c;  end
-                `VTPGZ_PAT_NOISE   : begin p0 = nzl;     p1 = nzl_c;   p2 = nzl_c;   end
+                `VTPGZ_PAT_RAMP    : begin p0 = rmpl_y;  p1 = rmpl_c;  p2 = rmpl_c;  end
+                `VTPGZ_PAT_NOISE   : begin p0 = nzl_y;   p1 = nzl_c;   p2 = nzl_c;   end
                 `VTPGZ_PAT_IMAGE   : begin p0 = image_r_bus[12*gpl +: 12];
                                            p1 = image_g_bus[12*gpl +: 12];
                                            p2 = image_b_bus[12*gpl +: 12]; end
                 default            : begin p0 = BLACK_C0; p1 = BLACK_C12; p2 = BLACK_C12; end
             endcase
         end
-        // Same limited-range compression as the scalar path, per lane.
-        assign pat_c0_bus[12*gpl +: 12] =
-            limit_luma_now ? y_to_limited(p0) : p0;
+        assign pat_c0_bus[12*gpl +: 12] = p0;
         assign pat_c1_bus[12*gpl +: 12] = p1;
         assign pat_c2_bus[12*gpl +: 12] = p2;
       end
