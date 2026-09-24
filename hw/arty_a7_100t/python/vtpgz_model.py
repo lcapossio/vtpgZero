@@ -575,8 +575,10 @@ def _box_overlay(c0: int, c1: int, c2: int, x: int, y: int,
     # Inside the box (not border). If a box-image is configured, the
     # source rectangle is the box: src_x walks 0..BOX_IMAGE_W-1 with the
     # Q16 box_img_x_step accumulator, same for y. Otherwise solid color.
+    # As in the RTL, only box_img_x_step == 0 is the "solid box" sentinel;
+    # a zero Y step is a real (degenerate) step that repeats source row 0.
     if cfg.box_image_w and cfg.box_image_h and cfg.box_image_rgb888 \
-            and cfg.box_img_x_step and cfg.box_img_y_step:
+            and cfg.box_img_x_step:
         ix = (((x - bx) * cfg.box_img_x_step) >> 16) & (cfg.box_image_w - 1)
         iy = (((y - by) * cfg.box_img_y_step) >> 16) & (cfg.box_image_h - 1)
         word = cfg.box_image_rgb888[iy * cfg.box_image_w + ix]

@@ -254,16 +254,29 @@ def check_box_image(tmp: Path) -> list[str]:
             tmp, ppc, MODE_YUV,
             dict(yuv_range=YUV_LIMITED, yuv_matrix=YUV_BT709),
             mem_yuv, BIMG_YUV_DATA)
+    # Runtime steps. X step 0 is the documented "solid box" sentinel; a
+    # zero Y step is NOT -- the image stays on and repeats source row 0.
+    # The model once treated a zero Y step as the sentinel too.
+    for xs, ys in ((BIMG_X_STEP, 0), (0, BIMG_Y_STEP)):
+        fails += _check_box_image_one(tmp, 4, MODE_RGB, {}, mem_rgb,
+                                      BIMG_DATA, xs, ys)
+    fails += _check_box_image_one(
+        tmp, 4, MODE_YUV, dict(yuv_range=YUV_LIMITED, yuv_matrix=YUV_BT709),
+        mem_yuv, BIMG_YUV_DATA, BIMG_X_STEP, 0)
     return fails
 
 
 def _check_box_image_one(tmp: Path, ppc: int, mode: int, col: dict,
-                         mem: Path, data: list[int]) -> list[str]:
+                         mem: Path, data: list[int],
+                         x_step: int = BIMG_X_STEP,
+                         y_step: int = BIMG_Y_STEP) -> list[str]:
     iverilog = need("iverilog")
     top = "tb_ppc_capture"
     fails: list[str] = []
     mname = {MODE_RGB: "rgb", MODE_YUV: "yuv"}[mode]
-    vvp_bin = tmp / f"boximg_{mname}_ppc{ppc}.vvp"
+    if (x_step, y_step) != (BIMG_X_STEP, BIMG_Y_STEP):
+        mname += f" xstep={x_step} ystep={y_step}"
+    vvp_bin = tmp / f"boximg_{mode}_ppc{ppc}_{x_step}_{y_step}.vvp"
     cmd = [iverilog, "-g2001", "-Wall", "-I", str(RTL), "-s", top,
            "-o", str(vvp_bin),
            "-P", f"{top}.PIXELS_PER_CLOCK={ppc}",
@@ -273,20 +286,20 @@ def _check_box_image_one(tmp: Path, ppc: int, mode: int, col: dict,
            "-P", f"{top}.EN_BOX_IMAGE=1",
            "-P", f"{top}.BOX_IMAGE_W={BIMG_W_T}", "-P", f"{top}.BOX_IMAGE_H={BIMG_H_T}",
            "-P", f'{top}.BOX_IMAGE_HEX_FILE="{mem.as_posix()}"',
-           "-P", f"{top}.BOX_IMG_X_STEP={BIMG_X_STEP}",
-           "-P", f"{top}.BOX_IMG_Y_STEP={BIMG_Y_STEP}",
+           "-P", f"{top}.BOX_IMG_X_STEP={x_step}",
+           "-P", f"{top}.BOX_IMG_Y_STEP={y_step}",
            str(RTL / "vtpgz_core.v"), str(HERE / "tb_ppc_capture.v")]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         return [f"box-image {mname} ppc={ppc} build: {r.stdout}{r.stderr}"]
     for pname, pat in (("solid", PAT_SOLID), ("checker", PAT_CHECKER)):
-        hexf = tmp / f"boximg_{mname}_{ppc}_{pname}.hex"
+        hexf = tmp / f"boximg_{mode}_{ppc}_{x_step}_{y_step}_{pname}.hex"
         run_capture(vvp_bin, pat, 32, 12, hexf)
         sim = load_beats(hexf)
         cfg = VtpgzConfig(width=32, height=12, pattern=pat,
                           output_mode=mode, bpc=8, pixels_per_clock=ppc,
                           box_image_w=BIMG_W_T, box_image_h=BIMG_H_T,
-                          box_img_x_step=BIMG_X_STEP, box_img_y_step=BIMG_Y_STEP,
+                          box_img_x_step=x_step, box_img_y_step=y_step,
                           box_image_rgb888=data, **col, **HARNESS_CFG)
         mod = render_frame_beats(cfg)
         if sim != mod:
