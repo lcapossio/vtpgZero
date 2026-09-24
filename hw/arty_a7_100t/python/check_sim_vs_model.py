@@ -66,12 +66,14 @@ def load_words(path: Path) -> list[int]:
 
 
 def model_words(pat: int, mode: int, bpc: int, sub: int,
-                bayer: int, order: int) -> list[int]:
+                bayer: int, order: int,
+                yuv_range: int = 0, yuv_matrix: int = 0) -> list[int]:
     cfg = VtpgzConfig(
         width=WIDTH, height=HEIGHT,
         pattern=pat,
         output_mode=mode, yuv_subsample=sub, raw_bayer=bayer,
         rgb_order=order, bpc=bpc,
+        yuv_range=yuv_range, yuv_matrix=yuv_matrix,
         bar_width=WIDTH // 8,
         hg_step=0xFFF // (WIDTH - 1),
         vg_step=0xFFF // (HEIGHT - 1),
@@ -92,6 +94,10 @@ def main() -> int:
     ap.add_argument("--yuv-sub", choices=list(SUB_MAP.keys()), default="444")
     ap.add_argument("--raw-bayer", choices=list(BAYER_MAP.keys()), default="rggb")
     ap.add_argument("--rgb-order", choices=list(ORDER_MAP.keys()), default="xilinx")
+    # Build-time YUV colorimetry. These only mean anything when mode=yuv;
+    # in RGB/RAW builds the RTL ignores the parameters and so does the model.
+    ap.add_argument("--yuv-range", choices=["full", "limited"], default="full")
+    ap.add_argument("--yuv-matrix", choices=["601", "709"], default="601")
     args = ap.parse_args()
 
     if not args.sim_binary.exists():
@@ -106,9 +112,12 @@ def main() -> int:
     sub   = SUB_MAP[args.yuv_sub]
     bayer = BAYER_MAP[args.raw_bayer]
     order = ORDER_MAP[args.rgb_order]
+    yrange  = 1 if args.yuv_range == "limited" else 0
+    ymatrix = 1 if args.yuv_matrix == "709" else 0
 
     print(f"Configuration: mode={args.mode} bpc={args.bpc} "
-          f"sub={args.yuv_sub} bayer={args.raw_bayer} order={args.rgb_order}")
+          f"sub={args.yuv_sub} bayer={args.raw_bayer} order={args.rgb_order} "
+          f"range={args.yuv_range} matrix={args.yuv_matrix}")
 
     fails = []
     n = 0
@@ -123,7 +132,8 @@ def main() -> int:
                 fails.append((pat, str(e)))
                 continue
             sim = load_words(out_file)
-            mod = model_words(pat, mode, args.bpc, sub, bayer, order)
+            mod = model_words(pat, mode, args.bpc, sub, bayer, order,
+                              yrange, ymatrix)
             if sim != mod:
                 first_diff = next(
                     (i for i, (a, b) in enumerate(zip(sim, mod)) if a != b),

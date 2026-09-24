@@ -44,6 +44,36 @@ sim↔model gate on each:
 python sim/run_sim.py all_modes
 ```
 
+The sweep also covers the three non-default YUV colorimetry builds
+(`YUV_MATRIX` × `YUV_RANGE`, minus the default BT.601/full which is already
+in the mode sweep) at 8, 10 and 12 bpc — the two BPCs where the limited-range
+endpoints land exactly by different truncations, plus the untruncated one.
+
+### YUV range and matrix
+
+The colorimetry itself is asserted against the Python model, which derives
+its palettes from Kr/Kb rather than copying the RTL constants:
+
+```sh
+python hw/arty_a7_100t/python/check_yuv_range.py
+python hw/arty_a7_100t/python/check_yuv_range_mutations.py
+```
+
+The first checks four properties: the limited palettes equal the published
+standard codes exactly at 8, 10 and 12 bpc; a limited build keeps every
+runtime-valued pattern inside Y 64..940 / C 64..960 *and actually reaches
+both ends* on the gradients; neutral chroma stays exactly `0x800`; and the
+shipped BT.601 full-range palette is unchanged bit for bit.
+
+The second is the reason to believe the first. It mutates the model — moves a
+palette constant by one LSB, drops the limited-range luma map, rescales the
+raw color registers — and asserts that the check which *owns* that bug is the
+one that fires. A spec test nobody has seen fail is not evidence.
+
+Together with `all_modes`, this is what carries the spec through to RTL: the
+model is checked against the standard, and the RTL is checked byte-for-byte
+against the model.
+
 The C++ harness runs **7 phases** for full coverage:
 
 1. **Register sweep** — write `0xFFFFFFFF`/`0x00000000`/`0xAAAAAAAA`/`0x55555555`

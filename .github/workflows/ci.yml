@@ -25,6 +25,12 @@ jobs:
       - name: YUV spec test (model-side property gate)
         run: python hw/arty_a7_100t/python/check_yuv_spec.py
 
+      - name: YUV range/matrix spec test
+        run: python hw/arty_a7_100t/python/check_yuv_range.py
+
+      - name: YUV range/matrix mutation check (the spec test must bite)
+        run: python hw/arty_a7_100t/python/check_yuv_range_mutations.py
+
   fcapz-submodule:
     name: fcapz submodule RTL lint
     runs-on: ubuntu-24.04

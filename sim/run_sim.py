@@ -71,6 +71,8 @@ MODE_NAMES   = {0: "rgb", 1: "raw", 2: "yuv"}
 SUB_NAMES    = {0: "444", 1: "422"}
 BAYER_NAMES  = {0: "plain", 1: "rggb", 2: "bggr", 3: "grbg", 4: "gbrg"}
 ORDER_NAMES  = {0: "xilinx", 1: "legacy"}
+RANGE_NAMES  = {0: "full", 1: "limited"}
+MATRIX_NAMES = {0: "601", 1: "709"}
 
 
 # ---------- helpers ----------
@@ -101,6 +103,11 @@ def generics(args: argparse.Namespace) -> list[str]:
         # all_modes / check_seq_modes build per-config Namespaces that don't
         # carry ppc (those sweeps are always PPC=1); default via getattr.
         f"-GPIXELS_PER_CLOCK={getattr(args, 'ppc', 1)}",
+        # Build-time YUV colorimetry; defaulted the same way as ppc, since
+        # most per-config Namespaces predate these and mean "the shipped
+        # default", which is FULL/BT.601.
+        f"-GYUV_RANGE={getattr(args, 'yuv_range', 0)}",
+        f"-GYUV_MATRIX={getattr(args, 'yuv_matrix', 0)}",
     ]
 
 
@@ -210,7 +217,9 @@ def _config_obj_dir(args: argparse.Namespace) -> Path:
     """Per-config capture obj dir, so multiple configs can coexist /
     build in parallel without stomping on each other."""
     tag = (f"m{args.mode}_b{args.bpc}_s{args.yuv_sub}"
-           f"_y{args.raw_bayer}_o{args.rgb_order}")
+           f"_y{args.raw_bayer}_o{args.rgb_order}"
+           f"_r{getattr(args, 'yuv_range', 0)}"
+           f"_x{getattr(args, 'yuv_matrix', 0)}")
     return HERE / f"obj_capture_{tag}"
 
 
@@ -265,7 +274,9 @@ def _build_and_check_one(cfg: dict) -> tuple[dict, bool, str]:
                  "--bpc",       str(args.bpc),
                  "--yuv-sub",   SUB_NAMES[args.yuv_sub],
                  "--raw-bayer", BAYER_NAMES[args.raw_bayer],
-                 "--rgb-order", ORDER_NAMES[args.rgb_order]]
+                 "--rgb-order", ORDER_NAMES[args.rgb_order],
+                 "--yuv-range", RANGE_NAMES[getattr(args, 'yuv_range', 0)],
+                 "--yuv-matrix", MATRIX_NAMES[getattr(args, 'yuv_matrix', 0)]]
     r = subprocess.run(check_cmd, cwd=str(HERE),
                        capture_output=True, text=True)
     return cfg, r.returncode == 0, (r.stdout + r.stderr)[-2000:]
@@ -340,6 +351,18 @@ def cmd_all_modes(args):
             configs.append(dict(mode=mode, bpc=bpc, yuv_sub=0,
                                 raw_bayer=1, rgb_order=0))
     configs.append(dict(mode=2, bpc=16, yuv_sub=1, raw_bayer=1, rgb_order=0))
+    # YUV colorimetry: the three non-default {matrix, range} builds, at the
+    # BPCs where the limited-range map's endpoints are exact by different
+    # truncations (8 and 10) plus the untruncated 12. FULL/BT.601 is already
+    # covered above as mode=2.
+    for matrix in (0, 1):
+        for yrange in (0, 1):
+            if (matrix, yrange) == (0, 0):
+                continue            # the default, already swept
+            for bpc in (8, 10, 12):
+                configs.append(dict(mode=2, bpc=bpc, yuv_sub=0, raw_bayer=1,
+                                    rgb_order=0, yuv_range=yrange,
+                                    yuv_matrix=matrix))
     # RAW mode: also sweep every Bayer tile (PLAIN/RGGB/BGGR/GRBG/GBRG)
     # at 8bpc to exercise the full 4-way Bayer mux.
     for bayer in (0, 2, 3, 4):  # 1 already covered above
@@ -360,7 +383,9 @@ def cmd_all_modes(args):
             cfg, ok, log_tail = fut.result()
             done += 1
             tag = (f"mode={cfg['mode']} bpc={cfg['bpc']} "
-                   f"sub={cfg['yuv_sub']} bayer={cfg['raw_bayer']}")
+                   f"sub={cfg['yuv_sub']} bayer={cfg['raw_bayer']} "
+                   f"range={RANGE_NAMES[cfg.get('yuv_range', 0)]} "
+                   f"matrix={MATRIX_NAMES[cfg.get('yuv_matrix', 0)]}")
             mark = "OK  " if ok else "FAIL"
             print(f"  [{done:2d}/{len(configs)}] {mark}  {tag}")
             if not ok:

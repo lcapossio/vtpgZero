@@ -1396,8 +1396,15 @@ module vtpgz_core #(
     //
     // Exact at both ends at every BPC, because the pack stage truncates:
     // 256>>2 = 64 and 3760>>2 = 940 at 10 bits, 256>>4 = 16 and 3760>>4 = 235
-    // at 8. 3505 is 0xDB1; synthesis reduces the constant multiply to shifts
-    // and adds, so a LIMITED build stays DSP-free like every other mode.
+    // at 8.
+    //
+    // The scale factor is written out as shifts and adds rather than as a
+    // multiply. Vivado 2025.2 infers a DSP48E1 for `yf * 3505` even though
+    // one operand is constant, which would make a LIMITED build the only
+    // mode in this core that costs a DSP -- measured, not assumed. 3505 is
+    // 0xDB1 = bits 11,10,8,7,5,4,0, so the sum below is exactly equal to
+    // the multiply for every 12-bit input, and is plain LUT logic in any
+    // tool rather than relying on a synthesis attribute being honoured.
     //
     // Applied ONLY to the patterns whose luma is a runtime value. It must not
     // touch:
@@ -1423,9 +1430,12 @@ module vtpgz_core #(
     function [11:0] y_to_limited;
         input [11:0] yf;
         reg [24:0] prod;
+        reg [24:0] y25;
         begin
             if (YUV_LIMITED_BUILD) begin
-                prod = {13'h0, yf} * 25'd3505;
+                y25  = {13'h0, yf};
+                prod = (y25 << 11) + (y25 << 10) + (y25 << 8) +
+                       (y25 <<  7) + (y25 <<  5) + (y25 <<  4) + y25;
                 y_to_limited = 12'd256 + prod[23:12];
             end else begin
                 y_to_limited = yf;

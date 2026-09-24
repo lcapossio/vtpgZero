@@ -42,6 +42,12 @@ MODE_YUV = 2
 YUV_444 = 0
 YUV_422 = 1
 
+# YUV quantisation range / matrix (must match vtpgz_defs.vh)
+YUV_FULL    = 0
+YUV_LIMITED = 1
+YUV_BT601   = 0
+YUV_BT709   = 1
+
 RAW_PLAIN = 0
 RAW_RGGB  = 1
 RAW_BGGR  = 2
@@ -76,6 +82,8 @@ class VtpgzConfig:
     # Build-time output mode (was: runtime fmt)
     output_mode: int = MODE_RGB
     yuv_subsample: int = YUV_444
+    yuv_range: int = YUV_FULL
+    yuv_matrix: int = YUV_BT601
     raw_bayer: int = RAW_RGGB
     rgb_order: int = RGB_ORDER_XILINX
     bpc: int = 8
@@ -178,19 +186,45 @@ PALETTE_RGB = [
     (0x000, 0x000, 0xFFF),  # 6 blue
     (0x000, 0x000, 0x000),  # 7 black
 ]
-# YUV palette (build OUTPUT_MODE = YUV): {Y, Cb, Cr}, 12-bit, BT.601 full-range
-# Constants must match the case statement in vtpgz_top.v g_yuv_pal.
-PALETTE_YUV = [
-    (0xFFF, 0x800, 0x800),  # 0 white
-    (0xE2C, 0x000, 0x94D),  # 1 yellow
-    (0xB37, 0xAB3, 0x000),  # 2 cyan
-    (0x964, 0x2B4, 0x14E),  # 3 green
-    (0x69B, 0xD4C, 0xEB2),  # 4 magenta
-    (0x4C8, 0x54D, 0xFFF),  # 5 red
-    (0x1D3, 0xFFF, 0x6B3),  # 6 blue
-    (0x000, 0x800, 0x800),  # 7 black
-]
+# YUV palettes (build OUTPUT_MODE = YUV): {Y, Cb, Cr}, 12-bit, one per
+# {matrix, range}. DERIVED from the colorimetry by scripts/gen_yuv_palettes.py,
+# deliberately NOT transcribed from the RTL.
+#
+# This matters more than it looks. The byte-exact sim<->model gate only proves
+# the two agree; if the model held a copy of the RTL constants, a wrong
+# constant would agree with itself and the gate would pass. Computing them
+# here from Kr/Kb means the gate actually checks the numbers.
+#
+# (BT.601 full is the one exception the generator itself documents: it returns
+# the frozen shipped constants, because regenerating them would move green and
+# magenta chroma by one LSB and change every existing 10- and 12-bit build.)
+import sys as _sys
+from pathlib import Path as _Path
+
+_SCRIPTS = _Path(__file__).resolve().parents[3] / "scripts"
+if str(_SCRIPTS) not in _sys.path:
+    _sys.path.insert(0, str(_SCRIPTS))
+from gen_yuv_palettes import palette as _gen_palette  # noqa: E402
+
+PALETTE_YUV_BY_BUILD = {
+    (YUV_BT601, YUV_FULL):    [t for _, t in _gen_palette("601", False)],
+    (YUV_BT601, YUV_LIMITED): [t for _, t in _gen_palette("601", True)],
+    (YUV_BT709, YUV_FULL):    [t for _, t in _gen_palette("709", False)],
+    (YUV_BT709, YUV_LIMITED): [t for _, t in _gen_palette("709", True)],
+}
+# Back-compat alias: the default build's palette.
+PALETTE_YUV = PALETTE_YUV_BY_BUILD[(YUV_BT601, YUV_FULL)]
+
 CHROMA_NEUTRAL = 0x800  # 12-bit Q12 neutral chroma (0.5)
+
+
+def y_to_limited(y: int) -> int:
+    """Full-scale 12-bit luma -> limited range. Mirrors y_to_limited() in RTL.
+
+    Y_lim = 256 + ((Y * 3505) >> 12), exact at both ends at every BPC:
+    0 -> 256 (64 @10b, 16 @8b) and 4095 -> 3760 (940 @10b, 235 @8b).
+    """
+    return 256 + ((y * 3505) >> 12)
 
 
 def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int, int, int]:
@@ -198,15 +232,23 @@ def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int,
     RGB/RAW modes return {R,G,B}; YUV mode returns {Y,Cb,Cr}.
     """
     is_yuv = (cfg.output_mode == MODE_YUV)
+    yuv_limited = is_yuv and (cfg.yuv_range == YUV_LIMITED)
     pat = cfg.pattern
 
     def gray(v: int) -> tuple[int, int, int]:
+        # Every caller of gray() is a pattern whose luma the RTL compresses in
+        # a LIMITED build: HGRAD, VGRAD, CHECKER, RAMP, NOISE, and the GRID
+        # background. The background passes 0, and y_to_limited(0) == 0x100 ==
+        # the Y_BLACK_LIM constant the RTL selects there, so the two agree
+        # without a special case.
         if is_yuv:
-            return (v, CHROMA_NEUTRAL, CHROMA_NEUTRAL)
+            return (y_to_limited(v) if yuv_limited else v,
+                    CHROMA_NEUTRAL, CHROMA_NEUTRAL)
         return (v, v, v)
 
     if pat == PAT_COLORBAR:
-        pal = PALETTE_YUV if is_yuv else PALETTE_RGB
+        pal = (PALETTE_YUV_BY_BUILD[(cfg.yuv_matrix, cfg.yuv_range)]
+               if is_yuv else PALETTE_RGB)
         return pal[regs.bar_idx & 0x7]
 
     if pat == PAT_HGRAD:
@@ -566,6 +608,36 @@ def render_frame(cfg: VtpgzConfig, regs: VtpgzRegs | None = None) -> list[int]:
                 c0_12, c1_12, c2_12, x_reg, y_reg, cfg, regs)
         out.append(_pack_tdata(c0_12, c1_12, c2_12, x_reg, y_reg, cfg))
 
+        _tick(cfg, regs, x_reg, y_reg, last_x, pix_sof, end_of_frame)
+
+    return out
+
+
+def render_frame_native(cfg: VtpgzConfig,
+                        regs: VtpgzRegs | None = None
+                        ) -> list[tuple[int, int, int]]:
+    """Render one frame as native 12-bit triples, BEFORE the pack stage.
+
+    Same stepping and register ticking as render_frame -- it is the packing
+    and the box overlay that are skipped, nothing else -- so a caller sees the
+    values the RTL carries at the pattern-mux output. Used by the YUV range
+    checks, which need to reason about luma/chroma in the internal domain
+    rather than about packed tdata.
+    """
+    if regs is None:
+        regs = VtpgzRegs()
+
+    out: list[tuple[int, int, int]] = []
+    W, H = cfg.width, cfg.height
+
+    for K in range(W * H):
+        x_reg = K % W
+        y_reg = K // W
+        last_x = (x_reg == W - 1)
+        pix_sof = (x_reg == 0 and y_reg == 0)
+        end_of_frame = last_x and (y_reg == H - 1)
+
+        out.append(_comb_pixel(cfg, regs, x_reg, y_reg))
         _tick(cfg, regs, x_reg, y_reg, last_x, pix_sof, end_of_frame)
 
     return out
