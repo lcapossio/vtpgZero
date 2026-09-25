@@ -47,7 +47,11 @@ module demo_top #(
     parameter VTPGZ_YUV_MATRIX    = 0, // 0=BT.601 1=BT.709 (YUV only)
     parameter VTPGZ_BAR_LEVEL     = 100, // colour-bar level: 100 or 75 (%)
     // Pixels per clock (1/2/4/8). PPC>1 also slows the demo clock, below.
-    parameter VTPGZ_PIXELS_PER_CLOCK = 4
+    parameter VTPGZ_PIXELS_PER_CLOCK = 4,
+    // Demo clock in MHz, from the 650 MHz VCO. 0 keeps the default below
+    // (130 at PPC=1, 50 at PPC>1). Must give a divider that is a multiple of
+    // 0.125 (5200 % MHz == 0), e.g. 50, 65, 100, 130.
+    parameter VTPGZ_CLK_MHZ = 0
 ) (
     input  wire CLK100MHZ,
     input  wire btn0,           // active-high reset
@@ -61,7 +65,14 @@ module demo_top #(
     // PPC=1 runs 130 MHz (650/5). At PPC>1 the per-lane counter-chain patterns
     // (checker/grid) don't close 130 MHz, so slow to 50 MHz (650/13) -- this
     // demo validates PPC correctness on silicon, not maximum throughput.
-    localparam real DEMO_CLK_DIV = (VTPGZ_PIXELS_PER_CLOCK > 1) ? 13.000 : 5.000;
+    localparam real DEMO_CLK_DIV =
+        (VTPGZ_CLK_MHZ != 0)         ? 650.0 / VTPGZ_CLK_MHZ :
+        (VTPGZ_PIXELS_PER_CLOCK > 1) ? 13.000 : 5.000;
+    generate
+        if ((VTPGZ_CLK_MHZ != 0) && ((5200 % VTPGZ_CLK_MHZ) != 0)) begin : g_bad_clk
+            VTPGZ_CLK_MHZ_MUST_DIVIDE_5200 guard();
+        end
+    endgenerate
     wire clk;
     wire rst_n;
     clk_gen #(.CLKOUT0_DIVIDE(DEMO_CLK_DIV)) u_clkgen (
