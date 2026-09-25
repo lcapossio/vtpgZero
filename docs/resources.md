@@ -7,60 +7,66 @@ of the main README.
 Standalone `vtpgz_axilite_top` (no demo wrapper, no frame_capture, no JTAG-AXI
 bridge, no MMCM), synthesized out-of-context against `xc7a100tcsg324-1`
 with Vivado 2025.2's default `synth_design` flow. Reproducible with
-`python synth/run_matrix.py`.
+`python synth/run_matrix.py`, which passes every top-level parameter
+explicitly and records the full parameter set of each row in
+`synth/results/matrix.csv`. Parameters a table does not mention are at their
+defaults: `EN_IMAGE=0`, `EN_BOX_IMAGE=0`, `EN_INTERLACE=0`, `YUV_RANGE=0`
+(full), `YUV_MATRIX=0` (BT.601), `BAR_LEVEL=100`, `TID_WIDTH=0`,
+`TDEST_WIDTH=0`, `PIXELS_PER_CLOCK=1`.
+
+No configuration below uses a BRAM or a DSP.
 
 ## All-patterns build, sweep over output mode and BPC
 
-| Config | LUT | FF | BRAM36 |
-|---|---:|---:|---:|
-| `full_rgb_8b`     | 1270 | 1212 | 0 |
-| `full_rgb_10b`    | 1270 | 1218 | 0 |
-| `full_rgb_12b`    | 1270 | 1224 | 0 |
-| `full_rgb_14b`    | 1270 | 1224 | 0 |
-| `full_rgb_16b`    | 1270 | 1224 | 0 |
-| `full_raw_8b`     | 1278 | 1200 | 0 |
-| `full_raw_10b`    | 1280 | 1202 | 0 |
-| `full_raw_12b`    | 1282 | 1204 | 0 |
-| `full_raw_14b`    | 1282 | 1204 | 0 |
-| `full_raw_16b`    | 1282 | 1204 | 0 |
-| `full_yuv_8b`     | 1232 | 1210 | 0 |
-| `full_yuv_10b`    | 1236 | 1216 | 0 |
-| `full_yuv_12b`    | 1236 | 1222 | 0 |
-| `full_yuv_14b`    | 1236 | 1222 | 0 |
-| `full_yuv_16b`    | 1232 | 1222 | 0 |
-| `full_yuv422_16b` | 1245 | 1212 | 0 |
+| Config | LUT | FF |
+|---|---:|---:|
+| `full_rgb_8b`     | 1380 | 1244 |
+| `full_rgb_10b`    | 1380 | 1250 |
+| `full_rgb_12b`    | 1380 | 1256 |
+| `full_rgb_14b`    | 1380 | 1256 |
+| `full_rgb_16b`    | 1380 | 1256 |
+| `full_raw_8b`     | 1388 | 1232 |
+| `full_raw_10b`    | 1390 | 1234 |
+| `full_raw_12b`    | 1392 | 1236 |
+| `full_raw_14b`    | 1392 | 1236 |
+| `full_raw_16b`    | 1392 | 1236 |
+| `full_yuv_8b`     | 1320 | 1242 |
+| `full_yuv_10b`    | 1318 | 1248 |
+| `full_yuv_12b`    | 1318 | 1254 |
+| `full_yuv_14b`    | 1318 | 1254 |
+| `full_yuv_16b`    | 1320 | 1254 |
+| `full_yuv422_16b` | 1330 | 1244 |
 
-The YUV path produces `{Y,Cb,Cr}` directly from the pattern generators
-(precomputed BT.601 palette for the colorbar, neutral chroma for
-grayscale-style patterns), so the output stage is just bit-shrink +
-reorder in every mode. YUV 444 is roughly the same size as RGB at the
-same BPC; the old RAW Bayer mux savings are offset by the extra
-YUV logic added in recent revisions.
+The YUV path produces `{Y,Cb,Cr}` directly from the pattern generators (a
+per-build colour-bar palette, neutral chroma for the grayscale-style
+patterns), so the output stage is just bit-shrink + reorder in every mode.
+The internal datapath is 12 bits wide whatever the BPC, which is why BPC
+barely moves the numbers.
 
 ## Pattern deltas (`OUTPUT_MODE=YUV` baseline)
 
 | Config | LUT | FF |
 |---|---:|---:|
-| `baseline_solid_yuv`  |  526 |  926 |
-| `only_colorbar_yuv`   |  549 |  955 |
-| `only_hgrad_yuv`      |  548 |  951 |
-| `only_vgrad_yuv`      |  558 |  951 |
-| `only_checker_yuv`    |  564 |  962 |
-| `only_moving_box_yuv` | 1054 | 1059 |
-| `only_grid_yuv`       |  569 |  959 |
-| `only_ramp_yuv`       |  548 |  951 |
-| `only_noise_yuv`      |  531 |  947 |
+| `baseline_solid_yuv`  |  538 |  958 |
+| `only_colorbar_yuv`   |  636 |  987 |
+| `only_hgrad_yuv`      |  560 |  983 |
+| `only_vgrad_yuv`      |  570 |  983 |
+| `only_checker_yuv`    |  601 |  994 |
+| `only_moving_box_yuv` | 1066 | 1091 |
+| `only_grid_yuv`       |  582 |  991 |
+| `only_ramp_yuv`       |  560 |  983 |
+| `only_noise_yuv`      |  543 |  979 |
 
-Per-feature deltas relative to `baseline_solid_yuv` (526 LUT / 926 FF):
+Per-feature deltas relative to `baseline_solid_yuv` (538 LUT / 958 FF):
 
 | Feature | ΔLUT | ΔFF |
 |---|---:|---:|
-| `EN_COLORBAR`   |  +23 | +29 |
+| `EN_COLORBAR`   |  +98 | +29 |
 | `EN_HGRAD`      |  +22 | +25 |
 | `EN_VGRAD`      |  +32 | +25 |
-| `EN_CHECKER`    |  +38 | +36 |
+| `EN_CHECKER`    |  +63 | +36 |
 | `EN_MOVING_BOX` | **+528** | +133 |
-| `EN_GRID`       |  +43 | +33 |
+| `EN_GRID`       |  +44 | +33 |
 | `EN_RAMP`       |  +22 | +25 |
 | `EN_NOISE`      |   +5 | +21 |
 
@@ -72,9 +78,9 @@ position arithmetic and per-pixel range comparators for the overlay).
 
 | Config | LUT | FF |
 |---|---:|---:|
-| `tiny_raw_8b` (only EN_SOLID, OUTPUT_MODE=RAW, BPC=8) | **534** | 914 |
+| `tiny_raw_8b` (only EN_SOLID, OUTPUT_MODE=RAW, BPC=8) | **546** | 946 |
 
-This is the absolute minimum: 1 pattern, RAW Bayer 8 bpc. ~534 LUTs total.
+This is the absolute minimum: 1 pattern, RAW Bayer 8 bpc. ~546 LUTs total.
 Useful as an image-sensor-emulator for camera/ISP bring-up where you only
 need a controllable raw stream.
 
@@ -83,26 +89,63 @@ need a controllable raw stream.
 All-patterns RGB-8b build swept over `PIXELS_PER_CLOCK` (the `ppc1` row is
 the same build as `full_rgb_8b` above). Mode/BPC/patterns are held fixed so
 the numbers isolate the cost of widening the per-lane datapath from 1 to N
-pixels per beat. Reproducible with `python synth/run_matrix.py ppc`.
+pixels per beat. Reproducible on its own with `python synth/run_matrix.py ppc`.
 
 | Config | LUT | FF | beat width | vs `ppc1` |
 |---|---:|---:|---:|---|
-| `ppc1_full_rgb_8b` | 1270 | 1212 |  24b | — |
-| `ppc2_full_rgb_8b` | 1338 | 1288 |  48b | +5% LUT / +6% FF |
-| `ppc4_full_rgb_8b` | 1554 | 1406 |  96b | +22% LUT / +16% FF |
-| `ppc8_full_rgb_8b` | 1980 | 1644 | 192b | +56% LUT / +36% FF |
+| `ppc1_full_rgb_8b` | 1380 | 1244 |  24b | — |
+| `ppc2_full_rgb_8b` | 1649 | 1358 |  48b | +19% LUT / +9% FF |
+| `ppc4_full_rgb_8b` | 2358 | 1552 |  96b | +71% LUT / +25% FF |
+| `ppc8_full_rgb_8b` | 4044 | 1943 | 192b | +193% LUT / +56% FF |
 
-Scaling is strongly sub-linear: 8× the per-clock pixel throughput costs only
-**+56% LUT / +36% FF**. The per-pixel packers and the single-step
-counter/accumulator chains replicate per lane, but the shared timing FSM,
-moving-box position arithmetic, and config registers do not.
-`PIXELS_PER_CLOCK=1` is the default and its netlist is unchanged from
-releases before the feature existed (verified: the pre-feature commit
-synthesizes to the identical 1270 LUT / 1212 FF). There is no BRAM or DSP
-cost at any PPC in this build; the `EN_IMAGE` patterns would add BRAM that
-scales with PPC via replication.
+8× the per-clock pixel throughput costs about 2.9× the LUTs. The pattern
+generators, colour-bar compares and packers replicate per lane; the shared
+timing FSM, moving-box position arithmetic and config registers do not.
+
+Versions of this table before September 2026 reported +56% LUT at PPC=8.
+Those numbers came from RTL where several lanes drove the same pipeline
+registers and Vivado silently kept only one driver, pruning the other lanes'
+logic. With that fixed, and with the later per-lane colour-bar pipeline that
+lets PPC>1 builds close timing, the table above is the real cost.
+
+## Interlace
+
+| Config | LUT | FF |
+|---|---:|---:|
+| `ppc1_full_rgb_8b_interlace` | 1369 | 1248 |
+| `ppc4_full_rgb_8b_interlace` | 2311 | 1556 |
+
+`EN_INTERLACE=1` costs 4 FF. The LUT counts land a little below the
+progressive builds (−11 at PPC=1, −47 at PPC=4), which is synthesis
+variation rather than a saving. `ppc4_full_rgb_8b_interlace` is the core
+build of the Arty A7 demo: 2301 LUT when synthesized in the demo, 2264 after
+place and route.
+
+## YUV colorimetry
+
+All patterns, YUV 4:4:4.
+
+| Config | PPC | LUT | FF |
+|---|---:|---:|---:|
+| `yuv_10b_601full`   | 1 | 1318 | 1248 |
+| `yuv_10b_709full`   | 1 | 1310 | 1246 |
+| `yuv_10b_709lim`    | 1 | 1549 | 1246 |
+| `yuv_10b_709lim_75` | 1 | 1545 | 1246 |
+| `yuv_8b_709lim`     | 1 | 1535 | 1236 |
+| `yuv_10b_601full`   | 4 | 2366 | 1568 |
+| `yuv_10b_709full`   | 4 | 2347 | 1560 |
+| `yuv_10b_709lim`    | 4 | 3363 | 1562 |
+| `yuv_10b_709lim_75` | 4 | 3338 | 1561 |
+| `yuv_8b_709lim`     | 4 | 3221 | 1520 |
+
+The matrix (`YUV_MATRIX`) and the bar level (`BAR_LEVEL`) only change the
+colour-bar palette constants, so they cost nothing. Limited range
+(`YUV_RANGE=1`) adds the luma map for the gradients, checker, ramp and noise:
+a shift-and-add constant multiply per source, on every lane, still with no
+DSP. That is +239 LUT at PPC=1 and +1016 LUT at PPC=4 over the full-range
+BT.709 build.
 
 **Test conditions**: Vivado 2025.2, target `xc7a100tcsg324-1` -1 speed grade,
 `synth_design` default strategy, out-of-context mode. No timing constraints
 applied (so the synth tool is conservative). Place-and-route results are
-typically ~5% smaller after phys-opt and packing.
+typically a few percent smaller after phys-opt and packing.
