@@ -644,6 +644,15 @@ module vtpgz_core #(
                     (m[2] ? {2'h0, v, 2'b0} : 20'h0) +
                     (m[3] ? {1'h0, v, 3'b0} : 20'h0);
     endfunction
+
+    // min(v, 16) in 6 bits. Every threshold the wrap-counters below test is
+    // <= NPPC <= 8, so a sum of two operands clamped to 16 answers each test
+    // exactly as the full-width sum does: below 16 both are exact, and if
+    // either operand is >= 16 both sums are >= 16 and fail every test.
+    function [5:0] clamp16;
+        input [19:0] v;
+        clamp16 = (|v[19:4]) ? 6'd16 : {2'b0, v[3:0]};
+    endfunction
     // verilator coverage_on
 
     // At NPPC>1 the per-lane multiples m*cfg (m = 1..NPPC) of the bar width,
@@ -654,6 +663,15 @@ module vtpgz_core #(
     // (written between frames), so the one-clock lag after a write is not
     // visible in the stream. At NPPC==1 the single multiple is the config
     // value itself and the build is unchanged.
+    //
+    // The wrap-counters (colorbar, checker, grid) go one step further at
+    // NPPC>1. Their thresholds count+m*size are only ever compared against
+    // values <= NPPC, so they are formed from the counter and the multiple
+    // each clamped to 16 (clamp16): a 5-bit add instead of a 20-bit one in
+    // front of the compares. The counter update count + m*size - NPPC uses
+    // the registered value m*size - NPPC, one add after the select. Both
+    // sit inside the counter's own feedback loop, which is what limits
+    // NPPC==8.
 
     generate if (EN_COLORBAR) begin : g_colorbar
         // Down-counter + parallel-threshold recurrence. bar_left is the count
@@ -683,9 +701,35 @@ module vtpgz_core #(
 
         // Thresholds: one adder each from the registered state.
         wire [19:0] thr [0:NPPC-1] /* verilator split_var */;
-        genvar cbt;
-        for (cbt = 0; cbt < NPPC; cbt = cbt + 1) begin : g_cb_thr
-            assign thr[cbt] = {4'h0, bar_left} + wmul[cbt];
+        wire [3:0]  wsel;
+        // NPPC>1: clamped thresholds and the registered per-beat step
+        // (see clamp16 / mul_small). NPPC==1 keeps the full-width form.
+        // coverage_off: constant 0 at NPPC==1, the coverage build.
+        // verilator coverage_off
+        wire [15:0] cb_step;
+        // verilator coverage_on
+        if (NPPC > 1) begin : g_cb_fast
+            wire [5:0] st_sat = clamp16({4'h0, bar_left});
+            genvar fm;
+            for (fm = 0; fm < NPPC; fm = fm + 1) begin : g_thr
+                reg [5:0] mw;
+                always @(posedge aclk) mw <= clamp16(mul_small(bar_width_eff, fm));
+                assign thr[fm] = {14'h0, st_sat + mw};
+            end
+            wire [16*(NPPC+1)-1:0] adj_flat;
+            for (fm = 0; fm <= NPPC; fm = fm + 1) begin : g_adj
+                reg [15:0] adj;
+                always @(posedge aclk)
+                    adj <= mul_small(bar_width_eff, fm) - NPPC[15:0];
+                assign adj_flat[16*fm +: 16] = adj;
+            end
+            assign cb_step = adj_flat[16*wsel +: 16];
+        end else begin : g_cb_full
+            genvar cbt;
+            for (cbt = 0; cbt < NPPC; cbt = cbt + 1) begin : g_cb_thr
+                assign thr[cbt] = {4'h0, bar_left} + wmul[cbt];
+            end
+            assign cb_step = 16'h0;   // unused at NPPC==1
         end
 
         // Beat-level wrap count: thresholds <= NPPC (NPPC <= 8, 4 bits).
@@ -737,7 +781,7 @@ module vtpgz_core #(
         for (cbf = 0; cbf <= NPPC; cbf = cbf + 1) begin : g_cb_flat
             assign wmul_flat[20*cbf +: 20] = wmul[cbf];
         end
-        wire [3:0]  wsel     = (wraps > NPPC[3:0]) ? NPPC[3:0] : wraps;
+        assign wsel = (wraps > NPPC[3:0]) ? NPPC[3:0] : wraps;
         wire [19:0] wrap_add = wmul_flat[20*wsel +: 20];
         always @(posedge aclk) begin
             if (!aresetn || frame_init) begin
@@ -753,7 +797,8 @@ module vtpgz_core #(
                     bar_left <= bar_width_eff;
                     bar_idx  <= 3'h0;
                 end else begin
-                    bar_left <= bar_left + wrap_add[15:0] - NPPC[15:0];
+                    bar_left <= (NPPC > 1) ? bar_left + cb_step
+                                           : bar_left + wrap_add[15:0] - NPPC[15:0];
                     bar_idx  <= bar_idx + wraps[2:0];
                 end
             end
@@ -866,9 +911,35 @@ module vtpgz_core #(
             end
         end
         wire [19:0] cthr [0:NPPC-1] /* verilator split_var */;
-        genvar kt;
-        for (kt = 0; kt < NPPC; kt = kt + 1) begin : g_chk_thr
-            assign cthr[kt] = {4'h0, chk_left} + cwmul[kt];
+        wire [3:0]  csel;
+        // NPPC>1: clamped thresholds and the registered per-beat step
+        // (see clamp16 / mul_small). NPPC==1 keeps the full-width form.
+        // coverage_off: constant 0 at NPPC==1, the coverage build.
+        // verilator coverage_off
+        wire [15:0] chk_step;
+        // verilator coverage_on
+        if (NPPC > 1) begin : g_chk_fast
+            wire [5:0] st_sat = clamp16({4'h0, chk_left});
+            genvar fm;
+            for (fm = 0; fm < NPPC; fm = fm + 1) begin : g_thr
+                reg [5:0] mw;
+                always @(posedge aclk) mw <= clamp16(mul_small(chk_size_eff, fm));
+                assign cthr[fm] = {14'h0, st_sat + mw};
+            end
+            wire [16*(NPPC+1)-1:0] adj_flat;
+            for (fm = 0; fm <= NPPC; fm = fm + 1) begin : g_adj
+                reg [15:0] adj;
+                always @(posedge aclk)
+                    adj <= mul_small(chk_size_eff, fm) - NPPC[15:0];
+                assign adj_flat[16*fm +: 16] = adj;
+            end
+            assign chk_step = adj_flat[16*csel +: 16];
+        end else begin : g_chk_full
+            genvar kt;
+            for (kt = 0; kt < NPPC; kt = kt + 1) begin : g_chk_thr
+                assign cthr[kt] = {4'h0, chk_left} + cwmul[kt];
+            end
+            assign chk_step = 16'h0;  // unused at NPPC==1
         end
         wire [NPPC-1:0] cwr_hit;
         genvar kw;
@@ -908,7 +979,7 @@ module vtpgz_core #(
         for (kf = 0; kf <= NPPC; kf = kf + 1) begin : g_chk_flat
             assign cwmul_flat[20*kf +: 20] = cwmul[kf];
         end
-        wire [3:0]  csel      = (cwraps > NPPC[3:0]) ? NPPC[3:0] : cwraps;
+        assign csel = (cwraps > NPPC[3:0]) ? NPPC[3:0] : cwraps;
         wire [19:0] cwrap_add = cwmul_flat[20*csel +: 20];
         always @(posedge aclk) begin
             if (!aresetn || frame_init) begin
@@ -923,7 +994,8 @@ module vtpgz_core #(
                     chk_left  <= chk_size_eff;
                     chk_sel_x <= 1'b0;
                 end else begin
-                    chk_left  <= chk_left + cwrap_add[15:0] - NPPC[15:0];
+                    chk_left  <= (NPPC > 1) ? chk_left + chk_step
+                                            : chk_left + cwrap_add[15:0] - NPPC[15:0];
                     chk_sel_x <= chk_sel_x ^ (^cwr_hit);
                 end
                 // Y axis (per-line) -- unchanged by NPPC.
@@ -1078,9 +1150,35 @@ module vtpgz_core #(
             end
         end
         wire [19:0] gthr [0:NPPC-1] /* verilator split_var */;
-        genvar gt;
-        for (gt = 0; gt < NPPC; gt = gt + 1) begin : g_grid_thr
-            assign gthr[gt] = {4'h0, g_nc} + gwmul[gt];
+        wire [3:0]  gsel;
+        // NPPC>1: clamped thresholds and the registered per-beat step
+        // (see clamp16 / mul_small). NPPC==1 keeps the full-width form.
+        // coverage_off: constant 0 at NPPC==1, the coverage build.
+        // verilator coverage_off
+        wire [15:0] grid_step;
+        // verilator coverage_on
+        if (NPPC > 1) begin : g_grid_fast
+            wire [5:0] st_sat = clamp16({4'h0, g_nc});
+            genvar fm;
+            for (fm = 0; fm < NPPC; fm = fm + 1) begin : g_thr
+                reg [5:0] mw;
+                always @(posedge aclk) mw <= clamp16(mul_small(grid_eff, fm));
+                assign gthr[fm] = {14'h0, st_sat + mw};
+            end
+            wire [16*(NPPC+1)-1:0] adj_flat;
+            for (fm = 0; fm <= NPPC; fm = fm + 1) begin : g_adj
+                reg [15:0] adj;
+                always @(posedge aclk)
+                    adj <= mul_small(grid_eff, fm) - NPPC[15:0];
+                assign adj_flat[16*fm +: 16] = adj;
+            end
+            assign grid_step = adj_flat[16*gsel +: 16];
+        end else begin : g_grid_full
+            genvar gt;
+            for (gt = 0; gt < NPPC; gt = gt + 1) begin : g_grid_thr
+                assign gthr[gt] = {4'h0, g_nc} + gwmul[gt];
+            end
+            assign grid_step = 16'h0; // unused at NPPC==1
         end
         // Columns consumed this beat: thresholds < NPPC.
         wire [NPPC-1:0] gwr_hit;
@@ -1116,7 +1214,7 @@ module vtpgz_core #(
         for (gf = 0; gf <= NPPC; gf = gf + 1) begin : g_grid_flat
             assign gwmul_flat[20*gf +: 20] = gwmul[gf];
         end
-        wire [3:0]  gsel      = (gwraps > NPPC[3:0]) ? NPPC[3:0] : gwraps;
+        assign gsel = (gwraps > NPPC[3:0]) ? NPPC[3:0] : gwraps;
         wire [19:0] gwrap_add = gwmul_flat[20*gsel +: 20];
         always @(posedge aclk) begin
             if (!aresetn || frame_init) begin
@@ -1124,7 +1222,8 @@ module vtpgz_core #(
                 gy_cnt <= 16'h0;
             end else if (source_advance) begin
                 if (last_x) g_nc <= 16'h0;
-                else        g_nc <= g_nc + gwrap_add[15:0] - NPPC[15:0];
+                else        g_nc <= (NPPC > 1) ? g_nc + grid_step
+                                               : g_nc + gwrap_add[15:0] - NPPC[15:0];
 
                 if (pix_sof)                                  gy_cnt <= 16'h0;
                 else if (last_x) begin
