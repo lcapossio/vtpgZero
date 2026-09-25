@@ -49,7 +49,7 @@ module demo_top #(
     // Pixels per clock (1/2/4/8). PPC>1 also slows the demo clock, below.
     parameter VTPGZ_PIXELS_PER_CLOCK = 4,
     // Demo clock in MHz, from the 650 MHz VCO. 0 keeps the default below
-    // (130 at PPC=1, 50 at PPC>1). Must give a divider that is a multiple of
+    // (130 at PPC=1, 100 at PPC>1). Must give a divider that is a multiple of
     // 0.125 (5200 % MHz == 0), e.g. 50, 65, 100, 130.
     parameter VTPGZ_CLK_MHZ = 0
 ) (
@@ -62,12 +62,11 @@ module demo_top #(
 );
 
     // ---------------- clock & reset ----------------
-    // PPC=1 runs 130 MHz (650/5). At PPC>1 the per-lane counter-chain patterns
-    // (checker/grid) don't close 130 MHz, so slow to 50 MHz (650/13) -- this
-    // demo validates PPC correctness on silicon, not maximum throughput.
+    // PPC=1 runs 130 MHz (650/5). PPC>1 runs 100 MHz (650/6.5): the wider
+    // per-lane datapath does not close 130 MHz on this -1 part.
     localparam real DEMO_CLK_DIV =
         (VTPGZ_CLK_MHZ != 0)         ? 650.0 / VTPGZ_CLK_MHZ :
-        (VTPGZ_PIXELS_PER_CLOCK > 1) ? 13.000 : 5.000;
+        (VTPGZ_PIXELS_PER_CLOCK > 1) ? 6.500 : 5.000;
     generate
         if ((VTPGZ_CLK_MHZ != 0) && ((5200 % VTPGZ_CLK_MHZ) != 0)) begin : g_bad_clk
             VTPGZ_CLK_MHZ_MUST_DIVIDE_5200 guard();

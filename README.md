@@ -673,10 +673,10 @@ Measured on the full Arty A7-100T demo (Vivado 2025.2, default strategies):
 | Metric | Value |
 |---|---|
 | Target | Digilent Arty A7-100T (XC7A100TCSG324-1, speed grade -1) |
-| Clock | 50 MHz at 4 pixels/clock = 200 Mpixel/s (on-board 100 MHz osc via MMCM) |
-| WNS | +6.637 ns at 50 MHz (timing met, 0 failing endpoints) |
-| LUTs | 3494 / 63400 = 5.51% |
-| FFs | 3229 / 126800 = 2.55% |
+| Clock | 100 MHz at 4 pixels/clock = 400 Mpixel/s (on-board 100 MHz osc via MMCM) |
+| WNS | +0.768 ns at 100 MHz (timing met, 0 failing endpoints) |
+| LUTs | 3509 / 63400 = 5.53% |
+| FFs | 3345 / 126800 = 2.64% |
 | BRAM36 | 8 / 135 = 5.93% |
 | Hardware test | **9/9 patterns byte-exact** vs Python model |
 
@@ -686,7 +686,7 @@ JTAG-AXI bridge + BRAM frame buffer + MMCM), and now also the
 the on-silicon parallel-video test reads — neither of which you pay for
 unless you instantiate them. Standalone, the all-patterns
 `vtpgz_axilite_top` is ~**1380 LUT / 1244 FF** (RGB-8b, OOC synth, no BRAM,
-no DSP), and ~2360 LUT at 4 pixels per clock. Pixels-per-clock scales
+no DSP), and ~2400 LUT at 4 pixels per clock. Pixels-per-clock scales
 sub-linearly: 8× throughput costs about 2.9× the LUTs. The smallest build
 (1 pattern, RAW-8b) is ~546 LUT.
 
