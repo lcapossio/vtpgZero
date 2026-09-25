@@ -5,12 +5,18 @@
 Drive Vivado synth_design over a matrix of vtpgZero parameter configurations
 to produce a resource-per-feature table for the README.
 
-Sweeps both:
-  - per-pattern enables (EN_*) for the full RGB+CSC build
-  - per-output-mode (RGB / RAW / YUV) at 8/10/12 bpc
+Sweeps:
+  - per-pattern enables (EN_*), YUV 8 bpc
+  - output mode (RGB / RAW / YUV) x BPC 8..16, all patterns
+  - PIXELS_PER_CLOCK 1/2/4/8, all patterns, RGB 8 bpc
+  - EN_INTERLACE, and the YUV colorimetry (YUV_MATRIX / YUV_RANGE / BAR_LEVEL)
+
+Every top-level parameter is passed explicitly (MODE_PARAMS), so a row
+never depends on an RTL default, and matrix.csv records the full set.
 
 Usage:
-    python synth/run_matrix.py
+    python synth/run_matrix.py          # everything
+    python synth/run_matrix.py ppc      # only the PIXELS_PER_CLOCK sweep
 """
 from __future__ import annotations
 
@@ -46,6 +52,15 @@ MODE_PARAMS = {
     "RGB_ORDER":     0,   # 0=Xilinx 1=legacy
     "BPC":           8,
     "PIXELS_PER_CLOCK": 1,  # 1/2/4/8 pixels packed per AXI-Stream beat
+    "YUV_RANGE":     0,   # 0=full 1=limited
+    "YUV_MATRIX":    0,   # 0=BT.601 1=BT.709
+    "BAR_LEVEL":     100, # colour-bar level, 100 or 75 (%)
+    "EN_INTERLACE":  0,
+    "EN_IMAGE":      0,
+    "EN_BOX_IMAGE":  0,
+    "TID_WIDTH":     0,
+    "TDEST_WIDTH":   0,
+    "LINE_GAP_CYCLES": 1,
 }
 
 
@@ -54,6 +69,8 @@ def make_generics(pat_overrides: dict[str, int],
     parts = []
     for f in PATTERN_FEATURES:
         parts.append(f"{f}={pat_overrides.get(f, 1)}")
+    unknown = set(mode_overrides) - set(MODE_PARAMS)
+    assert not unknown, f"not in MODE_PARAMS: {unknown}"
     for k, default in MODE_PARAMS.items():
         parts.append(f"{k}={mode_overrides.get(k, default)}")
     return " ".join(parts)
@@ -77,7 +94,7 @@ def parse_util(rpt: Path) -> dict[str, int]:
 
 
 def run_one(tag: str, pat_over: dict[str, int],
-            mode_over: dict[str, int]) -> dict[str, int]:
+            mode_over: dict[str, int]) -> dict[str, int | str]:
     vivado = shutil.which("vivado") or shutil.which("vivado.bat")
     if not vivado:
         print("ERROR: vivado not in PATH", file=sys.stderr); sys.exit(2)
@@ -91,7 +108,8 @@ def run_one(tag: str, pat_over: dict[str, int],
     if r.returncode != 0:
         print(f"  FAILED:\n{r.stdout[-2000:]}\n{r.stderr[-500:]}")
         return {}
-    util = parse_util(RESULTS / f"util_{tag}.rpt")
+    util: dict[str, int | str] = dict(parse_util(RESULTS / f"util_{tag}.rpt"))
+    util["generics"] = generics
     print(f"  LUT={util['LUT']:5d}  FF={util['FF']:5d}  BRAM={util['BRAM36']:2d}  DSP={util['DSP']:2d}")
     return util
 
@@ -157,6 +175,28 @@ def main() -> int:
     tiny_pats["EN_SOLID"] = 1
     configs.append(("tiny_raw_8b", tiny_pats, {"OUTPUT_MODE": 1, "BPC": 8}))
 
+    # PIXELS_PER_CLOCK sweep, and interlace at PPC 1 and 4 (the Arty demo
+    # build is ppc4_full_rgb_8b_interlace).
+    configs += ppc_configs()
+    for ppc in (1, 4):
+        configs.append((f"ppc{ppc}_full_rgb_8b_interlace", dict(full_pats),
+                        {"OUTPUT_MODE": 0, "BPC": 8, "PIXELS_PER_CLOCK": ppc,
+                         "EN_INTERLACE": 1}))
+
+    # YUV colorimetry at 10 bpc (and one 8 bpc limited build), PPC 1 and 4.
+    colorimetry = [
+        ("yuv_10b_601full",   {"BPC": 10}),
+        ("yuv_10b_709full",   {"BPC": 10, "YUV_MATRIX": 1}),
+        ("yuv_10b_709lim",    {"BPC": 10, "YUV_MATRIX": 1, "YUV_RANGE": 1}),
+        ("yuv_10b_709lim_75", {"BPC": 10, "YUV_MATRIX": 1, "YUV_RANGE": 1,
+                               "BAR_LEVEL": 75}),
+        ("yuv_8b_709lim",     {"BPC": 8, "YUV_MATRIX": 1, "YUV_RANGE": 1}),
+    ]
+    for ppc in (1, 4):
+        for name, over in colorimetry:
+            configs.append((f"ppc{ppc}_{name}", dict(full_pats),
+                            {"OUTPUT_MODE": 2, "PIXELS_PER_CLOCK": ppc, **over}))
+
     results: dict[str, dict[str, int]] = {}
     for tag, pat, mo in configs:
         results[tag] = run_one(tag, pat, mo)
@@ -172,10 +212,11 @@ def main() -> int:
     # CSV dump
     csv = RESULTS / "matrix.csv"
     with csv.open("w") as f:
-        f.write("config,LUT,FF,BRAM36,DSP\n")
+        f.write("config,LUT,FF,BRAM36,DSP,generics\n")
         for tag, _, _ in configs:
             u = results.get(tag, {})
-            f.write(f"{tag},{u.get('LUT','')},{u.get('FF','')},{u.get('BRAM36','')},{u.get('DSP','')}\n")
+            f.write(f"{tag},{u.get('LUT','')},{u.get('FF','')},{u.get('BRAM36','')},"
+                    f"{u.get('DSP','')},\"{u.get('generics','')}\"\n")
     print(f"\nCSV: {csv}")
     return 0
 

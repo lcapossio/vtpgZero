@@ -685,12 +685,14 @@ JTAG-AXI bridge + BRAM frame buffer + MMCM), and now also the
 `vtpgz_axis_to_flvdval` adapter and the `flv_monitor` raster instrument that
 the on-silicon parallel-video test reads — neither of which you pay for
 unless you instantiate them. Standalone, the all-patterns
-`vtpgz_axilite_top` is ~**1270 LUT / 1212 FF** (RGB-8b, OOC synth, no BRAM),
-and pixels-per-clock scales strongly sub-linearly — 8× throughput for only
-**+56% LUT / +36% FF**. The smallest build (1 pattern, RAW-8b) is ~534 LUT.
+`vtpgz_axilite_top` is ~**1380 LUT / 1244 FF** (RGB-8b, OOC synth, no BRAM,
+no DSP), and ~2360 LUT at 4 pixels per clock. Pixels-per-clock scales
+sub-linearly: 8× throughput costs about 2.9× the LUTs. The smallest build
+(1 pattern, RAW-8b) is ~546 LUT.
 
 The full per-configuration matrix — every mode/BPC, per-feature deltas, the
-PPC sweep, and the tiniest build — is in **[docs/resources.md](docs/resources.md)**.
+PPC sweep, interlace, the YUV colorimetry options, and the tiniest build — is
+in **[docs/resources.md](docs/resources.md)**.
 Reproduce with `python synth/run_matrix.py`.
 
 
