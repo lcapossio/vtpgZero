@@ -69,8 +69,8 @@ WIDTH        = 64
 FRAME_HEIGHT = 32
 FIELD_HEIGHT = FRAME_HEIGHT // 2
 
-# Core clock is 50 MHz in the PPC=4 demo build (650/13); ~0.5 s per field.
-FIELD_RATE_DIV = 500_000
+# Core clock is 100 MHz in the PPC=4 demo build (650/6.5): 10 ms per field.
+FIELD_RATE_DIV = 1_000_000
 
 CTRL_ENABLE    = 0x1
 CTRL_INTERLACE = 0x8

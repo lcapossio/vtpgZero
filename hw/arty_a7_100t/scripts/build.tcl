@@ -150,8 +150,8 @@ if {[llength $bitsrc] > 0} {
 }
 
 # ─── report WNS ───────────────────────────────────────────────────
-# The demo clock is not fixed: demo_top slows clk_gen for PPC>1 builds (130
-# MHz at PPC=1, 50 MHz at PPC>1). Report the frequency the design was actually
+# The demo clock is not fixed: demo_top picks it per build (130 MHz at
+# PPC=1, 100 MHz at PPC>1, or VTPGZ_CLK_MHZ). Report the frequency the design was actually
 # constrained at, read from the clock on demo_top's `clk` net, rather than a
 # hard-coded figure that is wrong for half the builds.
 set wns [get_property SLACK [get_timing_paths -max_paths 1 -setup]]

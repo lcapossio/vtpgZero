@@ -13,10 +13,9 @@
 `timescale 1ns/1ps
 
 module clk_gen #(
-    // CLKOUT0 = 650 MHz / CLKOUT0_DIVIDE. Default 5.0 -> 130 MHz. Higher-PPC
-    // demo builds raise this (slower clock) because the per-lane counter-chain
-    // patterns (checker/grid) have a longer combinational path at PPC>1 and
-    // do not close 130 MHz; correctness, not throughput, is the goal there.
+    // CLKOUT0 = 650 MHz / CLKOUT0_DIVIDE, in steps of 0.125. Default 5.0 ->
+    // 130 MHz. demo_top picks the divider: 6.5 (100 MHz) at PPC>1, or
+    // 650 / VTPGZ_CLK_MHZ when that is set.
     parameter real CLKOUT0_DIVIDE = 5.000
 )(
     input  wire clk_in,         // 100 MHz oscillator

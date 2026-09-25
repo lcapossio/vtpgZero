@@ -629,6 +629,32 @@ module vtpgz_core #(
         bar_palette = PAL_TABLE[36*idx +: 36];
     endfunction
 
+    // m * v for a small elaboration-constant m (0..15), as at most four
+    // shifted terms -- no multiply operator, so never a DSP. Used for the
+    // per-lane multiples of the quasi-static config values below.
+    // coverage_off: called only at NPPC>1, which the coverage sim (PPC=1)
+    // does not build; PPC>1 is verified by the cocotb data-path suite and
+    // the iverilog beat-exact gate.
+    // verilator coverage_off
+    function [19:0] mul_small;
+        input [15:0] v;
+        input [3:0]  m;
+        mul_small = (m[0] ? {4'h0, v}       : 20'h0) +
+                    (m[1] ? {3'h0, v, 1'b0} : 20'h0) +
+                    (m[2] ? {2'h0, v, 2'b0} : 20'h0) +
+                    (m[3] ? {1'h0, v, 3'b0} : 20'h0);
+    endfunction
+    // verilator coverage_on
+
+    // At NPPC>1 the per-lane multiples m*cfg (m = 1..NPPC) of the bar width,
+    // checker size, grid spacing and gradient step are REGISTERED, so the
+    // pixel path starts at a register one adder from each lane instead of
+    // at the AXI-Lite register through a chain of NPPC adders -- that chain
+    // set the fmax of multi-pixel builds. The config values are quasi-static
+    // (written between frames), so the one-clock lag after a write is not
+    // visible in the stream. At NPPC==1 the single multiple is the config
+    // value itself and the build is unchanged.
+
     generate if (EN_COLORBAR) begin : g_colorbar
         // Down-counter + parallel-threshold recurrence. bar_left is the count
         // of pixels remaining in the current bar including lane 0's pixel
@@ -646,7 +672,13 @@ module vtpgz_core #(
         assign wmul[0] = 20'h0;
         genvar cbm;
         for (cbm = 1; cbm <= NPPC; cbm = cbm + 1) begin : g_cb_wmul
-            assign wmul[cbm] = wmul[cbm-1] + {4'h0, bar_width_eff};
+            if (NPPC > 1) begin : g_q
+                reg [19:0] q;
+                always @(posedge aclk) q <= mul_small(bar_width_eff, cbm);
+                assign wmul[cbm] = q;
+            end else begin : g_c
+                assign wmul[cbm] = wmul[cbm-1] + {4'h0, bar_width_eff};
+            end
         end
 
         // Thresholds: one adder each from the registered state.
@@ -752,7 +784,14 @@ module vtpgz_core #(
         assign hga_l[0] = hg_acc;
         genvar hgl;
         for (hgl = 0; hgl < NPPC; hgl = hgl + 1) begin : g_hg_chain
-            assign hga_l[hgl+1] = hga_l[hgl] + {4'h0, cfg_hg_step};
+            if (NPPC > 1) begin : g_q
+                // Lane hgl+1 = hg_acc + (hgl+1)*step, one adder from hg_acc.
+                reg [19:0] smul;
+                always @(posedge aclk) smul <= mul_small(cfg_hg_step, hgl + 1);
+                assign hga_l[hgl+1] = hg_acc + smul;
+            end else begin : g_c
+                assign hga_l[hgl+1] = hga_l[hgl] + {4'h0, cfg_hg_step};
+            end
             // Saturate each lane to 12 bits.
             assign hg_bus[12*hgl +: 12] =
                 (|hga_l[hgl][19:12]) ? 12'hFFF : hga_l[hgl][11:0];
@@ -818,7 +857,13 @@ module vtpgz_core #(
         assign cwmul[0] = 20'h0;
         genvar km;
         for (km = 1; km <= NPPC; km = km + 1) begin : g_chk_wmul
-            assign cwmul[km] = cwmul[km-1] + {4'h0, chk_size_eff};
+            if (NPPC > 1) begin : g_q
+                reg [19:0] q;
+                always @(posedge aclk) q <= mul_small(chk_size_eff, km);
+                assign cwmul[km] = q;
+            end else begin : g_c
+                assign cwmul[km] = cwmul[km-1] + {4'h0, chk_size_eff};
+            end
         end
         wire [19:0] cthr [0:NPPC-1] /* verilator split_var */;
         genvar kt;
@@ -1024,7 +1069,13 @@ module vtpgz_core #(
         assign gwmul[0] = 20'h0;
         genvar gm;
         for (gm = 1; gm <= NPPC; gm = gm + 1) begin : g_grid_wmul
-            assign gwmul[gm] = gwmul[gm-1] + {4'h0, grid_eff};
+            if (NPPC > 1) begin : g_q
+                reg [19:0] q;
+                always @(posedge aclk) q <= mul_small(grid_eff, gm);
+                assign gwmul[gm] = q;
+            end else begin : g_c
+                assign gwmul[gm] = gwmul[gm-1] + {4'h0, grid_eff};
+            end
         end
         wire [19:0] gthr [0:NPPC-1] /* verilator split_var */;
         genvar gt;
@@ -1119,7 +1170,14 @@ module vtpgz_core #(
         assign rmp_l[0] = ramp_acc;
         genvar rml;
         for (rml = 0; rml < NPPC; rml = rml + 1) begin : g_ramp_chain
-            assign rmp_l[rml+1] = rmp_l[rml] + {4'h0, cfg_hg_step};
+            if (NPPC > 1) begin : g_q
+                // Lane rml+1 = ramp_acc + (rml+1)*step (see g_hgrad).
+                reg [19:0] smul;
+                always @(posedge aclk) smul <= mul_small(cfg_hg_step, rml + 1);
+                assign rmp_l[rml+1] = ramp_acc + smul;
+            end else begin : g_c
+                assign rmp_l[rml+1] = rmp_l[rml] + {4'h0, cfg_hg_step};
+            end
             assign ramp_bus[12*rml +: 12] =
                 (|rmp_l[rml][19:12]) ? 12'hFFF : rmp_l[rml][11:0];
         end
@@ -1462,16 +1520,16 @@ module vtpgz_core #(
     // tool rather than relying on a synthesis attribute being honoured.
     //
     // Applied ONLY to the patterns whose luma is a runtime value -- HGRAD,
-    // VGRAD, CHECKER, RAMP and NOISE -- and applied to each of those SOURCES,
-    // before the pattern select, not to the selected value after it. The
-    // output is the same either way (the map is used only when one of those
-    // five is selected, and then the selected value IS that source), but
-    // mapping after the select put the whole select -- and the grid / bar
-    // compares feeding it -- in front of the adder chain on every lane.
-    // Per source, each adder sees only its own generator. Five small adders
-    // instead of one, still plain LUT logic, and in a build that is not
-    // YUV+LIMITED y_to_limited() is the identity, so they do not exist. It
-    // must not touch:
+    // VGRAD, CHECKER, RAMP and NOISE. The map sits AFTER the stage-1
+    // register (see pix_c0_bus): stage 1 latches the raw pattern value and
+    // a flag saying whether this beat is one of those five patterns, and the
+    // map runs from that register into stage 2, one per lane. Mapping before
+    // stage 1 put the pattern generators, their compares and the pattern
+    // select in front of the map's adders; after stage 1 the adders start at
+    // a register and share the stage with only the box-overlay mux. The
+    // pipeline depth is unchanged. In a build that is not YUV+LIMITED the
+    // flag is the constant 0 and y_to_limited() is the identity, so none of
+    // it exists. It must not touch:
     //   * COLORBAR -- the palette constants are already in range;
     //   * SOLID / GRID line colour / BOX -- raw code values the host writes,
     //     documented as the host's responsibility in a LIMITED build;
@@ -1508,24 +1566,27 @@ module vtpgz_core #(
 
     // verilator coverage_on
 
-    // The runtime-luma sources, mapped (identity unless YUV+LIMITED).
-    wire [11:0] hg_y    = y_to_limited(hg_val);
-    wire [11:0] vg_y    = y_to_limited(vg_val);
-    wire [11:0] chk_y   = y_to_limited(chk_v);
-    wire [11:0] ramp_y  = y_to_limited(ramp_v);
-    wire [11:0] noise_y = y_to_limited(noise_v);
+    // coverage_off: constant 0 unless YUV+LIMITED (see y_to_limited).
+    // verilator coverage_off
+    wire limit_luma_now = YUV_LIMITED_BUILD &&
+                          ((cfg_pattern == `VTPGZ_PAT_HGRAD)   ||
+                           (cfg_pattern == `VTPGZ_PAT_VGRAD)   ||
+                           (cfg_pattern == `VTPGZ_PAT_CHECKER) ||
+                           (cfg_pattern == `VTPGZ_PAT_RAMP)    ||
+                           (cfg_pattern == `VTPGZ_PAT_NOISE));
+    // verilator coverage_on
 
     reg [11:0] pat_c0, pat_c1, pat_c2;
     always @* begin
         case (cfg_pattern)
             `VTPGZ_PAT_COLORBAR  : begin pat_c0 = cb_r;    pat_c1 = cb_g;    pat_c2 = cb_b;    end
-            `VTPGZ_PAT_HGRAD     : begin pat_c0 = hg_y;    pat_c1 = hg_c1;   pat_c2 = hg_c2;   end
-            `VTPGZ_PAT_VGRAD     : begin pat_c0 = vg_y;    pat_c1 = vg_c1;   pat_c2 = vg_c2;   end
-            `VTPGZ_PAT_CHECKER   : begin pat_c0 = chk_y;   pat_c1 = chk_c1;  pat_c2 = chk_c2;  end
+            `VTPGZ_PAT_HGRAD     : begin pat_c0 = hg_val;  pat_c1 = hg_c1;   pat_c2 = hg_c2;   end
+            `VTPGZ_PAT_VGRAD     : begin pat_c0 = vg_val;  pat_c1 = vg_c1;   pat_c2 = vg_c2;   end
+            `VTPGZ_PAT_CHECKER   : begin pat_c0 = chk_v;   pat_c1 = chk_c1;  pat_c2 = chk_c2;  end
             `VTPGZ_PAT_SOLID     : begin pat_c0 = solid_r; pat_c1 = solid_g; pat_c2 = solid_b; end
             `VTPGZ_PAT_GRID      : begin pat_c0 = grid_r;  pat_c1 = grid_g;  pat_c2 = grid_b;  end
-            `VTPGZ_PAT_RAMP      : begin pat_c0 = ramp_y;  pat_c1 = ramp_c1; pat_c2 = ramp_c2; end
-            `VTPGZ_PAT_NOISE     : begin pat_c0 = noise_y; pat_c1 = nz_c1;   pat_c2 = nz_c2;   end
+            `VTPGZ_PAT_RAMP      : begin pat_c0 = ramp_v;  pat_c1 = ramp_c1; pat_c2 = ramp_c2; end
+            `VTPGZ_PAT_NOISE     : begin pat_c0 = noise_v; pat_c1 = nz_c1;   pat_c2 = nz_c2;   end
             `VTPGZ_PAT_IMAGE     : begin pat_c0 = image_r; pat_c1 = image_g; pat_c2 = image_b; end
             // verilator coverage_off
             // Slot 5 (the box is an overlay, not a pattern) and unused codes.
@@ -1571,27 +1632,21 @@ module vtpgz_core #(
         wire [11:0] vgl_c  = is_yuv_build ? CHROMA_NEUTRAL : vgl;
         wire [11:0] rmpl_c = is_yuv_build ? CHROMA_NEUTRAL : rmpl;
         wire [11:0] nzl_c  = is_yuv_build ? CHROMA_NEUTRAL : nzl;
-        // Same per-source limited-range map as the scalar path, per lane.
-        wire [11:0] hgl_y  = y_to_limited(hgl);
-        wire [11:0] vgl_y  = y_to_limited(vgl);
-        wire [11:0] chkl_y = y_to_limited(chkl);
-        wire [11:0] rmpl_y = y_to_limited(rmpl);
-        wire [11:0] nzl_y  = y_to_limited(nzl);
         reg [11:0] p0, p1, p2;
         always @* begin
             case (cfg_pattern)
                 `VTPGZ_PAT_COLORBAR: begin p0 = cb_r_bus[12*gpl +: 12];
                                            p1 = cb_g_bus[12*gpl +: 12];
                                            p2 = cb_b_bus[12*gpl +: 12]; end
-                `VTPGZ_PAT_HGRAD   : begin p0 = hgl_y;   p1 = hgl_c;   p2 = hgl_c;   end
-                `VTPGZ_PAT_VGRAD   : begin p0 = vgl_y;   p1 = vgl_c;   p2 = vgl_c;   end
-                `VTPGZ_PAT_CHECKER : begin p0 = chkl_y;  p1 = chkl_c;  p2 = chkl_c;  end
+                `VTPGZ_PAT_HGRAD   : begin p0 = hgl;     p1 = hgl_c;   p2 = hgl_c;   end
+                `VTPGZ_PAT_VGRAD   : begin p0 = vgl;     p1 = vgl_c;   p2 = vgl_c;   end
+                `VTPGZ_PAT_CHECKER : begin p0 = chkl;    p1 = chkl_c;  p2 = chkl_c;  end
                 `VTPGZ_PAT_SOLID   : begin p0 = solid_r; p1 = solid_g; p2 = solid_b; end
                 `VTPGZ_PAT_GRID    : begin p0 = grid_r_bus[12*gpl +: 12];
                                            p1 = grid_g_bus[12*gpl +: 12];
                                            p2 = grid_b_bus[12*gpl +: 12]; end
-                `VTPGZ_PAT_RAMP    : begin p0 = rmpl_y;  p1 = rmpl_c;  p2 = rmpl_c;  end
-                `VTPGZ_PAT_NOISE   : begin p0 = nzl_y;   p1 = nzl_c;   p2 = nzl_c;   end
+                `VTPGZ_PAT_RAMP    : begin p0 = rmpl;    p1 = rmpl_c;  p2 = rmpl_c;  end
+                `VTPGZ_PAT_NOISE   : begin p0 = nzl;     p1 = nzl_c;   p2 = nzl_c;   end
                 `VTPGZ_PAT_IMAGE   : begin p0 = image_r_bus[12*gpl +: 12];
                                            p1 = image_g_bus[12*gpl +: 12];
                                            p2 = image_b_bus[12*gpl +: 12]; end
@@ -1677,6 +1732,22 @@ module vtpgz_core #(
     reg        pix_valid_s1, pix_sof_s1, pix_eol_s1, pix_eof_s1;
     reg        pix_x_lsb_s1, pix_y_lsb_s1;
     wire       pipe_advance;
+    // Limited-range luma map applies to this beat (one flag for all lanes:
+    // cfg_pattern is per beat). A register only in a YUV+LIMITED build;
+    // constant 0 otherwise (coverage_off, see y_to_limited).
+    // verilator coverage_off
+    wire       limit_luma_s1;
+    // verilator coverage_on
+    generate if (YUV_LIMITED_BUILD) begin : g_limit_s1
+        reg q;
+        always @(posedge aclk) begin
+            if (!aresetn)          q <= 1'b0;
+            else if (pipe_advance) q <= limit_luma_now;
+        end
+        assign limit_luma_s1 = q;
+    end else begin : g_limit_s1_off
+        assign limit_luma_s1 = 1'b0;
+    end endgenerate
     // Single-driver latch: lane 0 from the scalar mux, lanes 1..NPPC-1 from
     // the per-lane buses, all in ONE always block. A separate generate always
     // block per lane (the prior structure) leaves each packed s1 register
@@ -1754,8 +1825,20 @@ module vtpgz_core #(
     // Per-lane composited pixel. Lane 0 uses box_inside_c* (with box-image);
     // at NPPC==1 pix_c*_bus[11:0] is exactly the original pix_c*.
     wire [12*NPPC-1:0] pix_c0_bus, pix_c1_bus, pix_c2_bus;
+    // Pattern luma per lane, limited-range mapped when limit_luma_s1.
+    // verilator coverage_off
+    wire [12*NPPC-1:0] pat_y_s1;
+    // verilator coverage_on
+    generate
+        genvar gpy;
+        for (gpy = 0; gpy < NPPC; gpy = gpy + 1) begin : g_pat_y
+            assign pat_y_s1[12*gpy +: 12] =
+                limit_luma_s1 ? y_to_limited(pat_c0_s1[12*gpy +: 12])
+                              : pat_c0_s1[12*gpy +: 12];
+        end
+    endgenerate
     assign pix_c0_bus[11:0] = box_on_border_s1[0] ? box_bdr_c0 :
-                              box_in_s1[0]        ? box_inside_c0 : pat_c0_s1[11:0];
+                              box_in_s1[0]        ? box_inside_c0 : pat_y_s1[11:0];
     assign pix_c1_bus[11:0] = box_on_border_s1[0] ? box_bdr_c1 :
                               box_in_s1[0]        ? box_inside_c1 : pat_c1_s1[11:0];
     assign pix_c2_bus[11:0] = box_on_border_s1[0] ? box_bdr_c2 :
@@ -1768,7 +1851,7 @@ module vtpgz_core #(
             wire [11:0] insd_c2 = box_image_active ? box_img_b_s1[12*gpc +: 12] : box_fill_c2;
             assign pix_c0_bus[12*gpc +: 12] = box_on_border_s1[gpc] ? box_bdr_c0 :
                                               box_in_s1[gpc]        ? insd_c0
-                                                                    : pat_c0_s1[12*gpc +: 12];
+                                                                    : pat_y_s1[12*gpc +: 12];
             assign pix_c1_bus[12*gpc +: 12] = box_on_border_s1[gpc] ? box_bdr_c1 :
                                               box_in_s1[gpc]        ? insd_c1
                                                                     : pat_c1_s1[12*gpc +: 12];
