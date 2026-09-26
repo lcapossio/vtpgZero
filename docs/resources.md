@@ -94,16 +94,18 @@ pixels per beat. Reproducible on its own with `python synth/run_matrix.py ppc`.
 | Config | LUT | FF | beat width | vs `ppc1` |
 |---|---:|---:|---:|---|
 | `ppc1_full_rgb_8b` | 1380 | 1244 |  24b | — |
-| `ppc2_full_rgb_8b` | 1588 | 1403 |  48b | +15% LUT / +13% FF |
-| `ppc4_full_rgb_8b` | 2401 | 1668 |  96b | +74% LUT / +34% FF |
-| `ppc8_full_rgb_8b` | 3993 | 2269 | 192b | +189% LUT / +82% FF |
+| `ppc2_full_rgb_8b` | 1627 | 1463 |  48b | +18% LUT / +18% FF |
+| `ppc4_full_rgb_8b` | 2398 | 1786 |  96b | +74% LUT / +44% FF |
+| `ppc8_full_rgb_8b` | 3835 | 2444 | 192b | +178% LUT / +96% FF |
 
-8× the per-clock pixel throughput costs about 2.9× the LUTs. The pattern
+8× the per-clock pixel throughput costs about 2.8× the LUTs. The pattern
 generators, colour-bar compares and packers replicate per lane; the shared
 timing FSM, moving-box position arithmetic and config registers do not.
 At PPC>1 the per-lane multiples of the bar width, checker size, grid spacing
-and gradient step are registered rather than computed each beat, so that
-the counter chains close 100 MHz; that is most of the FF growth.
+and gradient step are registered rather than computed each beat, and so
+is each wrap-counter's per-beat step (m × size − PPC), so that the counter
+chains close 100 MHz at up to 8 pixels per clock; that is most of the FF
+growth.
 
 Versions of this table before September 2026 reported +56% LUT at PPC=8.
 Those numbers came from RTL where several lanes drove the same pipeline
@@ -116,10 +118,10 @@ lets PPC>1 builds close timing, the table above is the real cost.
 | Config | LUT | FF |
 |---|---:|---:|
 | `ppc1_full_rgb_8b_interlace` | 1369 | 1248 |
-| `ppc4_full_rgb_8b_interlace` | 2228 | 1672 |
+| `ppc4_full_rgb_8b_interlace` | 2316 | 1790 |
 
 `EN_INTERLACE=1` costs 4 FF. The LUT counts land a little below the
-progressive builds (−11 at PPC=1, −173 at PPC=4), which is synthesis
+progressive builds (−11 at PPC=1, −82 at PPC=4), which is synthesis
 variation rather than a saving. `ppc4_full_rgb_8b_interlace` is the core
 build of the Arty A7 demo.
 
@@ -134,18 +136,18 @@ All patterns, YUV 4:4:4.
 | `yuv_10b_709lim`    | 1 | 1395 | 1247 |
 | `yuv_10b_709lim_75` | 1 | 1393 | 1247 |
 | `yuv_8b_709lim`     | 1 | 1381 | 1237 |
-| `yuv_10b_601full`   | 4 | 2232 | 1684 |
-| `yuv_10b_709full`   | 4 | 2192 | 1676 |
-| `yuv_10b_709lim`    | 4 | 2522 | 1677 |
-| `yuv_10b_709lim_75` | 4 | 2507 | 1677 |
-| `yuv_8b_709lim`     | 4 | 2599 | 1637 |
+| `yuv_10b_601full`   | 4 | 2317 | 1802 |
+| `yuv_10b_709full`   | 4 | 2285 | 1794 |
+| `yuv_10b_709lim`    | 4 | 2513 | 1796 |
+| `yuv_10b_709lim_75` | 4 | 2518 | 1796 |
+| `yuv_8b_709lim`     | 4 | 2580 | 1756 |
 
 The matrix (`YUV_MATRIX`) and the bar level (`BAR_LEVEL`) only change the
 colour-bar palette constants, so they cost nothing. Limited range
 (`YUV_RANGE=1`) adds the luma map for the gradients, checker, ramp and noise:
 a shift-and-add constant multiply, no DSP, applied once per lane after the
 stage-1 register to whichever of those patterns is selected. That is +85 LUT
-at PPC=1 and +330 LUT at PPC=4 over the full-range BT.709 build.
+at PPC=1 and +228 LUT at PPC=4 over the full-range BT.709 build.
 
 **Test conditions**: Vivado 2025.2, target `xc7a100tcsg324-1` -1 speed grade,
 `synth_design` default strategy, out-of-context mode. No timing constraints
