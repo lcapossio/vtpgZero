@@ -68,6 +68,22 @@ python hw/arty_a7_100t/python/check_yuv_range.py
 python hw/arty_a7_100t/python/check_yuv_range_mutations.py
 ```
 
+The SMPTE RP 219 chart (`EN_SMPTE`) has its own spec check. It compares the
+model with literal values from RP 219 rather than with the generator. It
+checks the published 10-bit codes of every chart color, the 12-bit -I/+Q
+anchors, the color of every segment at 1920x1080, 1280x720 and 3840x2160
+with the host geometry, and that the Y ramp runs from black exactly to
+white:
+
+```sh
+python hw/arty_a7_100t/python/check_smpte_spec.py
+```
+
+The RTL is then held to the model by the same gates as every other pattern.
+The Verilator capture builds (`check_model`, `all_modes`, `check_seq_modes`)
+and a second `lint` pass are built with `EN_SMPTE=1`. The coverage build
+keeps the default, `EN_SMPTE=0`.
+
 The first checks five properties:
 
 - Every build's colour bars equal the standard codes exactly, at 8, 10 and
@@ -108,8 +124,8 @@ One case the model cannot reach is a pattern stripped at build time, since
 the model has no `EN_*` flags. A stripped slot is documented to read as
 black, and in YUV black is `{Y_black, 0x800, 0x800}` — the all-zero triple is
 saturated green. `tb/tb_black.v` builds the core with every pattern but HGRAD
-stripped, and checks each stripped slot plus slot 5 is exactly black on every
-lane, at PPC 1/2/4/8 in both ranges:
+stripped, and checks each stripped slot plus an unused code (10) is exactly
+black on every lane, at PPC 1/2/4/8 in both ranges:
 
 ```sh
 python sim/run_iverilog_black.py
@@ -188,7 +204,9 @@ control plane, and the byte-exact C++ gate in `sim/run_sim.py` remains the
 Verilator-backed data-path regression.
 
 A standalone iverilog beat-exact PPC gate (RTL ↔ Python model, all patterns
-and modes, PPC 1/2/4/8) is also available:
+and modes, PPC 1/2/4/8) is also available. It includes a SMPTE sweep at
+232x48, where the host geometry puts segment boundaries mid-beat at every
+PPC, in RGB and in YUV BT.709 limited 10-bit:
 
 ```sh
 python sim/check_ppc_vs_model.py

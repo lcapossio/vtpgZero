@@ -13,7 +13,7 @@
 // QData (uint64_t).
 //
 // Plusargs:
-//   +pat=<0..8>
+//   +pat=<0..9>
 //   +width=<int>     (default 64)
 //   +height=<int>    (default 32)
 //   +out=<path>      (default sim_capture.bin)
@@ -41,6 +41,9 @@
 #define VTPGZ_REG_BOX_SIZE      0x28
 #define VTPGZ_REG_BOX_SPEED     0x2C
 #define VTPGZ_REG_BOX_BORDER    0x50
+#define VTPGZ_REG_SMPTE_GEOM0     0x60
+#define VTPGZ_REG_SMPTE_GEOM1     0x64
+#define VTPGZ_REG_SMPTE_RAMP_STEP 0x68
 
 static vluint64_t main_time = 0;
 double sc_time_stamp() { return main_time; }
@@ -124,6 +127,23 @@ int main(int argc, char** argv) {
     axi_write(VTPGZ_REG_BOX_SIZE,     (16u << 16) | 16u);
     axi_write(VTPGZ_REG_BOX_SPEED,    (1u  << 16) | 1u);
     axi_write(VTPGZ_REG_BOX_BORDER,   (1u << 24) | 0x00FFFFFF); // 1px white border
+    // SMPTE RP 219 geometry from the host formulas in vtpgz_defs.vh (mirrored
+    // by smpte_host_geometry() in the Python model). Harmless when the build
+    // strips the pattern: the registers then do not exist.
+    {
+        int c = (3 * width + 14) / 28;
+        if (c < 1) c = 1;
+        int d = (width - 7 * c) / 2;
+        if (d < 0) d = 0;
+        int p = (c + 1) / 3;
+        int h = height / 12;
+        int rd = 5 * c - 1;
+        if (rd < 1) rd = 1;
+        int step = ((4095 << 8) + rd - 1) / rd;   // rounded up
+        axi_write(VTPGZ_REG_SMPTE_GEOM0,     ((uint32_t)c << 16) | (uint32_t)d);
+        axi_write(VTPGZ_REG_SMPTE_GEOM1,     ((uint32_t)p << 16) | (uint32_t)h);
+        axi_write(VTPGZ_REG_SMPTE_RAMP_STEP, (uint32_t)step & 0xFFFFu);
+    }
     axi_write(VTPGZ_REG_PATTERN_SEL,  pat);
     axi_write(VTPGZ_REG_FRAME_RATE,   100);
     axi_write(VTPGZ_REG_CONTROL,      1);  // enable, internal sync

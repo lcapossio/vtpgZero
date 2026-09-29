@@ -32,6 +32,9 @@
 #define VTPGZ_REG_BOX_SIZE      0x28
 #define VTPGZ_REG_BOX_SPEED     0x2C
 #define VTPGZ_REG_BOX_BORDER    0x50
+#define VTPGZ_REG_SMPTE_GEOM0     0x60
+#define VTPGZ_REG_SMPTE_GEOM1     0x64
+#define VTPGZ_REG_SMPTE_RAMP_STEP 0x68
 
 #define FC_BASE       0x00010000u
 #define FC_CTRL       (FC_BASE + 0x0000u)
@@ -152,6 +155,21 @@ static void configure_tpg(int width, int height, int pat) {
     vtpgz_write(VTPGZ_REG_BOX_SIZE,     (16u << 16) | 16u);
     vtpgz_write(VTPGZ_REG_BOX_SPEED,    (1u  << 16) | 1u);
     vtpgz_write(VTPGZ_REG_BOX_BORDER,   (1u << 24) | 0x00FFFFFF);
+    // SMPTE RP 219 geometry from the host formulas in vtpgz_defs.vh (the
+    // model's smpte_host_geometry).
+    {
+        int c = (3 * width + 14) / 28;
+        if (c < 1) c = 1;
+        int d = (width - 7 * c) / 2;
+        if (d < 0) d = 0;
+        int rd = 5 * c - 1;
+        if (rd < 1) rd = 1;
+        int step = ((4095 << 8) + rd - 1) / rd;   // rounded up
+        vtpgz_write(VTPGZ_REG_SMPTE_GEOM0, ((uint32_t)c << 16) | (uint32_t)d);
+        vtpgz_write(VTPGZ_REG_SMPTE_GEOM1,
+                    ((uint32_t)((c + 1) / 3) << 16) | (uint32_t)(height / 12));
+        vtpgz_write(VTPGZ_REG_SMPTE_RAMP_STEP, (uint32_t)step & 0xFFFFu);
+    }
     vtpgz_write(VTPGZ_REG_PATTERN_SEL,  pat);
     vtpgz_write(VTPGZ_REG_FRAME_RATE,   100);
 }

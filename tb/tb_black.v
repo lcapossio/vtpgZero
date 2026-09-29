@@ -1,15 +1,15 @@
 //-----------------------------------------------------------------------------
 // tb_black.v - "black" must be black in a YUV build
 //
-// Selecting pattern slot 5, or a pattern stripped at build time, is documented
-// to produce a black frame. In YUV, black is {Y_black, Cb=0x800, Cr=0x800};
+// Selecting an unused pattern code (10..15), or a pattern stripped at build
+// time, is documented to produce a black frame. In YUV, black is {Y_black, Cb=0x800, Cr=0x800};
 // the all-zero triple {0,0,0} is saturated GREEN, not black. And in a LIMITED
 // build Y_black is 64 (10-bit) / 16 (8-bit), not 0.
 //
 // The byte-exact model gate cannot see the stripped-pattern stubs, because
 // the model has no notion of EN_* build flags. This bench builds the core with
 // every pattern but HGRAD stripped (and the box), selects each stripped slot
-// plus slot 5, and asserts every pixel of every lane is exactly black. The
+// plus unused code 10, and asserts every pixel of every lane is exactly black. The
 // runtime-luma stubs (VGRAD, CHECKER, RAMP, NOISE) go through the limited-
 // range map; GRID's stub replicates its background across the bus.
 //
@@ -54,6 +54,7 @@ module tb_black;
         .EN_NOISE(0),
         .EN_IMAGE(0),
         .EN_BOX_IMAGE(0),
+        .EN_SMPTE(0),
         .OUTPUT_MODE(`VTPGZ_MODE_YUV),
         .YUV_SUBSAMPLE(0),
         .YUV_RANGE(RANGE),
@@ -90,6 +91,12 @@ module tb_black;
         .cfg_box_img_y_step(32'h00000000),
         .cfg_tid(16'h0),
         .cfg_tdest(16'h0),
+        // Non-zero on purpose: a stripped SMPTE must ignore its geometry.
+        .cfg_smpte_side_d(16'd20),
+        .cfg_smpte_bar_c(16'd20),
+        .cfg_smpte_row_h(16'd20),
+        .cfg_smpte_pluge_p(16'd20),
+        .cfg_smpte_ramp_step(16'd20),
         .sts_busy(sts_busy),
         .sts_frame_count(sts_frame_count),
         .m_axis_tdata(m_axis_tdata),
@@ -153,13 +160,14 @@ module tb_black;
 
         run_pattern(`VTPGZ_PAT_COLORBAR);    // stripped
         run_pattern(`VTPGZ_PAT_SOLID);       // stripped
-        run_pattern(5);                       // no standalone pattern
+        run_pattern(`VTPGZ_PAT_SMPTE);       // stripped
         run_pattern(`VTPGZ_PAT_IMAGE);       // stripped
         run_pattern(`VTPGZ_PAT_VGRAD);       // stripped
         run_pattern(`VTPGZ_PAT_CHECKER);     // stripped
         run_pattern(`VTPGZ_PAT_GRID);        // stripped
         run_pattern(`VTPGZ_PAT_RAMP);        // stripped
         run_pattern(`VTPGZ_PAT_NOISE);       // stripped
+        run_pattern(4'd10);                   // unused code
 
         if (errors != 0) begin
             $display("FAIL: tb_black PPC=%0d RANGE=%0d: %0d non-black pixels",

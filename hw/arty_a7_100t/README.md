@@ -184,8 +184,10 @@ capture itself completes in microseconds.
 
 - Test geometry: 64 × 32 pixels per frame (= 2048 pixels = 8 KB at RGB888)
 - Pattern slots swept: all 9 (`colorbar`, `hgrad`, `vgrad`, `checker`,
-  `solid`, slot 5 -- black, since the moving box is an overlay rather than
-  a pattern -- `grid`, `ramp`, `noise`)
+  `solid`, `smpte`, `grid`, `ramp`, `noise`). The SMPTE RP 219 chart is
+  optional (`VTPGZ_EN_SMPTE=1`, off in the default build). The script reads
+  back the `SMPTE_GEOM0` register to tell whether it is present, and checks
+  slot 5 is black when it is not.
 - Output format, bit depth and pixels per clock are build-time: the script
   reads them back from the loaded bitstream, and another format means
   another bitstream. Pass `VTPGZ_<NAME>=<int>` to `build.py`, e.g.

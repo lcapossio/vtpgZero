@@ -25,6 +25,7 @@ grabbers and camera-link style sinks.
   - [Parallel video out (FVAL/LVAL/DVAL)](#parallel-video-out-fvallvaldval)
   - [Multi-pixel-per-clock](#multi-pixel-per-clock)
   - [Output modes](#output-modes)
+  - [SMPTE RP 219 color bars](#smpte-rp-219-color-bars)
   - [Image patterns](#image-patterns)
 - [How to test it](#how-to-test-it)
 - [FPGA resource usage and frequency](#fpga-resource-usage-and-frequency)
@@ -64,9 +65,12 @@ A third, optional module sits *after* either of them:
 
 ## Features
 
-- **8 patterns**: SMPTE color bars, horizontal gradient, vertical gradient,
-  checkerboard, solid color, crosshatch/grid, color ramp, LFSR
-  pseudo-random noise.
+- **8 patterns**: 8-bar color bars (100% or 75%), horizontal gradient,
+  vertical gradient, checkerboard, solid color, crosshatch/grid, color ramp,
+  LFSR pseudo-random noise.
+- **SMPTE RP 219 HD color bars** (build-time `EN_SMPTE`, off by default): the
+  full chart, with 75% bars, -I/+Q, a Y ramp and PLUGE, at any resolution and
+  pixels-per-clock. See [SMPTE RP 219 color bars](#smpte-rp-219-color-bars).
 - **Bouncing box overlay**: optional animated box drawn on top of any
   pattern. Color, size, speed, and border are runtime-configurable; it
   bounces off the frame edges. Stripped at elaboration when `EN_MOVING_BOX=0`.
@@ -87,7 +91,8 @@ A third, optional module sits *after* either of them:
   byte-identical to prior releases.
 - Auto-derived `tdata` width — the smallest multiple-of-8 that fits the
   active components for the chosen mode/bpc. No manual sizing needed.
-- **AXI4-Lite** slave for runtime configuration (18 writable registers).
+- **AXI4-Lite** slave for runtime configuration (19 writable registers, 22
+  with `EN_SMPTE=1`).
 - **AXI4-Stream** master output with full backpressure support.
 - **Parallel video out (FVAL/LVAL/DVAL)**: optional `vtpgz_axis_to_flvdval`
   adapter presenting the classic frame-grabber timing interface, with
@@ -119,7 +124,7 @@ A third, optional module sits *after* either of them:
 | 0x0C   | STATUS         | **RO** `[0]` busy, `[1]` field_id, `[15:8]` frame_count |
 | 0x10   | IMG_WIDTH      | active pixels per line                                |
 | 0x14   | IMG_HEIGHT     | active lines per frame (per **field** in interlaced mode — see [Interlaced video](#interlaced-video)) |
-| 0x18   | PATTERN_SEL    | 0=colorbar 1=hgrad 2=vgrad 3=checker 4=solid 5=(reserved) 6=grid 7=ramp 8=noise 9=image |
+| 0x18   | PATTERN_SEL    | 0=colorbar 1=hgrad 2=vgrad 3=checker 4=solid 5=smpte 6=grid 7=ramp 8=noise 9=image. 10..15 are unused and render black. |
 | 0x1C   | COLOR_FORMAT   | **RO** build-time configuration mirror: `[1:0]`=output_mode (0=RGB 1=RAW 2=YUV), `[2]`=yuv_subsample (0=444 1=422), `[5:3]`=raw_bayer (0=PLAIN 1=RGGB 2=BGGR 3=GRBG 4=GBRG), `[6]`=rgb_order (0=Xilinx 1=legacy), `[15:8]`=BPC (8/10/12/14/16), `[31:16]`=TDATA_WIDTH |
 | 0x20   | SOLID_COLOR    | `{8'h0, R[8], G[8], B[8]}`                           |
 | 0x24   | BOX_COLOR      | moving box color                                     |
@@ -137,6 +142,9 @@ A third, optional module sits *after* either of them:
 | 0x54   | BOX_IMG_X_STEP | Q16 nearest-neighbour step for the box-image overlay. Host writes `(BOX_IMAGE_W << 16) / BOX_SIZE.width` whenever `BOX_SIZE` changes. Only meaningful when `EN_BOX_IMAGE=1`. |
 | 0x58   | BOX_IMG_Y_STEP | Q16 step for the box-image overlay y-axis. Host writes `(BOX_IMAGE_H << 16) / BOX_SIZE.height`. |
 | 0x5C   | STREAM_ROUTE   | `{tdest[15:0], tid[15:0]}` driven onto `m_axis_tdest` / `m_axis_tid`, constant across every beat. Only meaningful when `TID_WIDTH`/`TDEST_WIDTH > 0`; otherwise the sidebands are absent and this register is inert. |
+| 0x60   | SMPTE_GEOM0    | `{bar_c[16], side_d[16]}` SMPTE RP 219 bar width and side-panel width. Host writes `c = (3*IMG_WIDTH + 14) / 28` (3W/28 rounded), `d = (IMG_WIDTH - 7c) / 2`. Only exists with `EN_SMPTE=1` (reads 0 otherwise). See [SMPTE RP 219 color bars](#smpte-rp-219-color-bars). |
+| 0x64   | SMPTE_GEOM1    | `{pluge_p[16], row_h[16]}` PLUGE step width and row unit. Host writes `p = (c + 1) / 3`, `h = IMG_HEIGHT / 12`. `EN_SMPTE=1` only. |
+| 0x68   | SMPTE_RAMP_STEP | `[15:0]` Y-ramp step, 1/256 of a 12-bit code per pixel. Host writes `ceil((4095 << 8) / (5c - 1))`. `EN_SMPTE=1` only. |
 
 AXI4-Lite writes honor `WSTRB` byte lanes. A write with `WSTRB=0`
 acknowledges but leaves the addressed register unchanged, including
@@ -171,6 +179,7 @@ The AXI-Lite flavor adds the other two files.
 | `C_S_AXI_DATA_WIDTH` | 32 | AXI4-Lite data width (only 32 supported) |
 | `EN_COLORBAR` … `EN_NOISE` | 1 | Per-pattern enables. Set to 0 to strip that generator from the netlist. At least one must remain enabled. |
 | `EN_MOVING_BOX` | 1 | Bouncing-box overlay. When 1, the box is drawn on top of any active pattern. |
+| `EN_SMPTE` | 0 | SMPTE RP 219 HD color bars as `PATTERN_SEL=5`. `0` (default) strips the pattern and its three geometry registers. See [SMPTE RP 219 color bars](#smpte-rp-219-color-bars). |
 | `EN_IMAGE` | 0 | Embed a synth-time image as `PATTERN_SEL=9` (inferred BRAM). Stripped when 0. See [Image patterns](#image-patterns). |
 | `EN_BOX_IMAGE` | 0 | Paint an embedded image inside the moving box. Requires `EN_MOVING_BOX=1`. See [Image patterns](#image-patterns). |
 | `IMAGE_W` / `IMAGE_H` | 128 | Source image size in BRAM (powers of two). Plus `IMAGE_OUT_W/H`, `IMAGE_HEX_FILE` — see [Image patterns](#image-patterns). |
@@ -194,10 +203,11 @@ The AXI-Lite flavor adds the other two files.
 `cfg_*` ports mirror the writable AXI-Lite register fields (`cfg_enable`,
 `cfg_img_width`, `cfg_img_height`, `cfg_pattern`, `cfg_solid_color`,
 `cfg_box_*`, `cfg_grid_*`, `cfg_checker_size`, `cfg_frame_rate_div`,
-`cfg_bar_width`, `cfg_hg_step`, `cfg_vg_step`, …). Status outputs `sts_busy`
+`cfg_bar_width`, `cfg_hg_step`, `cfg_vg_step`, `cfg_smpte_*`, …). Status
+outputs `sts_busy`
 and `sts_frame_count[7:0]` are also exposed.
 
-A typical fully-static instantiation — a 1920×1080 SMPTE colorbar generator
+A typical fully-static instantiation — a 1920×1080 colorbar generator
 with no CPU in sight, free-running at 60 fps from a 130 MHz clock:
 
 ```verilog
@@ -353,9 +363,12 @@ put an asynchronous AXI4-Stream FIFO on the output. `m_axis_tuser` is 1 bit
    - `BAR_WIDTH = IMG_WIDTH / 8`              (colorbar bar width)
    - `HG_STEP   = 0xFFF / (IMG_WIDTH  - 1)`   (horizontal gradient step)
    - `VG_STEP   = 0xFFF / (IMG_HEIGHT - 1)`   (vertical gradient step)
-4. Write `PATTERN_SEL` (0=colorbar, 1..4=gradients/checker/solid, 6=grid,
-   7=ramp, 8=noise, 9=image). The bouncing box overlays whatever pattern is
-   selected.
+   - with `EN_SMPTE=1`, the three `SMPTE_*` geometry registers (formulas
+     in the [register map](#register-map-axi4-lite-32-bit)). Their reset
+     values are the 1920x1080 geometry.
+4. Write `PATTERN_SEL` (0=colorbar, 1..4=gradients/checker/solid, 5=smpte,
+   6=grid, 7=ramp, 8=noise, 9=image). The bouncing box overlays whatever
+   pattern is selected.
 5. Optional pattern parameters: `SOLID_COLOR`, `BOX_COLOR`/`BOX_SIZE`/
    `BOX_SPEED`/`BOX_BORDER`, `GRID_SPACING`/`GRID_COLOR`, `CHECKER_SIZE`.
 6. For internal sync mode (`CONTROL[2]=0`): write `FRAME_RATE_DIV` (one frame
@@ -628,6 +641,51 @@ A pattern stripped at build time still has its `PATTERN_SEL` slot, but
 selecting it at runtime produces a black frame. At least one pattern must
 remain enabled.
 
+### SMPTE RP 219 color bars
+
+`EN_SMPTE=1` adds the SMPTE RP 219 HD color-bar chart as `PATTERN_SEL=5`. It
+is off by default. A build without it has no chart logic and no `SMPTE_*`
+registers (they read 0), and slot 5 renders black.
+
+The chart has four row bands, 7/12, 1/12, 1/12 and 3/12 of the height:
+
+| Row | Left to right |
+|---|---|
+| 1 | 40% grey, 75% white, yellow, cyan, green, magenta, red, blue, 40% grey |
+| 2 | 100% cyan, -I, 75% white, 100% blue |
+| 3 | 100% yellow, +Q, Y ramp black to white, 100% white, 100% red |
+| 4 | 15% grey, black, 100% white, black, PLUGE -2% / black / +2% / black / +4%, black, 15% grey |
+
+RP 219 allows a choice of color in the second patch of rows 2 and 3; this
+chart uses -I and +Q. The bars are always 75%: `BAR_LEVEL` applies to the
+8-bar pattern only.
+
+- **Colors.** The palette is generated for the build's output mode, matrix,
+  range and bit depth, like the 8-bar palettes. In YUV BT.709 limited range
+  it is RP 219's published table exactly. The 10-bit codes of every color
+  and the 12-bit -I/+Q anchors are checked against literal values by
+  `hw/arty_a7_100t/python/check_smpte_spec.py`. The -2% PLUGE step is below
+  black, so it only shows in limited-range YUV (46 at 10 bits). In RGB and
+  full-range YUV there is nothing below black and it clips to black.
+- **Geometry.** The host writes the bar width `c`, side panel `d`, PLUGE step
+  `p` and row unit `h` (formulas in the [register
+  map](#register-map-axi4-lite-32-bit)). The core derives the row-4 widths
+  3c/2 and 2c, and makes 5c/6 the remainder, so both column layouts end at
+  `d + 7c`. The reset values are the 1920x1080 geometry: c=206, d=239, p=69,
+  h=90. Every bar is `c` wide, so at 1920 the chart is not pixel-identical to
+  RP 219's table, which alternates 205- and 206-pixel bars around 240-pixel
+  side panels. The structure and colors match. Every width is clamped to at
+  least `PIXELS_PER_CLOCK`.
+- **Ramp.** The Y ramp spans the five middle bars. Its step is rounded up
+  and the end clipped, so it reaches white exactly on its last pixel: 64 to
+  940 at 10 bits in limited range, 0 to full scale otherwise.
+- **Interlaced.** Like every pattern, the chart is drawn per field. With
+  `IMG_HEIGHT` set to the field height, `h = IMG_HEIGHT / 12` gives a full
+  chart in each field, and the woven frame has the same proportions.
+- **Cost.** No DSP. The ramp's start offset `(d + c) * step` comes from a
+  serial shift-add multiplier that settles within ~40 clocks of a register
+  write. Numbers are in [docs/resources.md](docs/resources.md).
+
 ### Image patterns
 
 `EN_IMAGE` bakes a 24-bit RGB888 image into inferred BRAM and draws it as
@@ -652,7 +710,9 @@ python sim/run_iverilog_interlace.py  # interlaced field ID (fid) semantics
 python sim/run_iverilog_flvdval.py    # FVAL/LVAL/DVAL adapter + gap-free source
 python sim/run_iverilog_black.py      # empty/stripped pattern slots are real black in YUV
 python sim/check_image_guard.py       # YUV builds refuse the RGB default images
+python sim/check_ppc_vs_model.py      # beat-exact RTL vs model at PPC 1/2/4/8 (Icarus), SMPTE included
 python hw/arty_a7_100t/python/check_yuv_range.py            # YUV colorimetry vs the standards
+python hw/arty_a7_100t/python/check_smpte_spec.py           # SMPTE RP 219 codes, layout and ramp
 python hw/arty_a7_100t/python/check_yuv_range_mutations.py  # ...and proof those checks bite
 ```
 

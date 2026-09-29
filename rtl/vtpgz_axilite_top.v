@@ -28,6 +28,9 @@ module vtpgz_axilite_top #(
     parameter EN_RAMP       = 1,
     parameter EN_NOISE      = 1,
     parameter EN_IMAGE      = 0,
+    // SMPTE RP 219 HD colour bars (pattern 5). Off by default: it and its
+    // geometry registers are stripped.
+    parameter EN_SMPTE      = 0,
     parameter IMAGE_W       = 128,
     parameter IMAGE_H       = 128,
     parameter IMAGE_OUT_W   = IMAGE_W,
@@ -139,6 +142,14 @@ module vtpgz_axilite_top #(
     wire [31:0] cfg_box_img_y_step;
     wire [15:0] cfg_tid;
     wire [15:0] cfg_tdest;
+    // coverage_off: constant 0 in an EN_SMPTE=0 build -> never toggles.
+    /*verilator coverage_off*/
+    wire [15:0] cfg_smpte_side_d;
+    wire [15:0] cfg_smpte_bar_c;
+    wire [15:0] cfg_smpte_row_h;
+    wire [15:0] cfg_smpte_pluge_p;
+    wire [15:0] cfg_smpte_ramp_step;
+    /*verilator coverage_on*/
 
     wire        sts_busy;
     wire [7:0]  sts_frame_count;
@@ -152,7 +163,8 @@ module vtpgz_axilite_top #(
         .RGB_ORDER    (RGB_ORDER),
         .BPC          (BPC),
         .PIXELS_PER_CLOCK(PIXELS_PER_CLOCK),
-        .TDATA_WIDTH  (C_AXIS_TDATA_WIDTH)
+        .TDATA_WIDTH  (C_AXIS_TDATA_WIDTH),
+        .EN_SMPTE     (EN_SMPTE)
     ) u_regs (
         .aclk             (aclk),
         .aresetn          (aresetn),
@@ -203,7 +215,12 @@ module vtpgz_axilite_top #(
         .cfg_box_img_x_step  (cfg_box_img_x_step),
         .cfg_box_img_y_step  (cfg_box_img_y_step),
         .cfg_tid             (cfg_tid),
-        .cfg_tdest           (cfg_tdest)
+        .cfg_tdest           (cfg_tdest),
+        .cfg_smpte_side_d    (cfg_smpte_side_d),
+        .cfg_smpte_bar_c     (cfg_smpte_bar_c),
+        .cfg_smpte_row_h     (cfg_smpte_row_h),
+        .cfg_smpte_pluge_p   (cfg_smpte_pluge_p),
+        .cfg_smpte_ramp_step (cfg_smpte_ramp_step)
     );
 
     // ---------------- pattern generator core ----------------
@@ -218,6 +235,7 @@ module vtpgz_axilite_top #(
         .EN_RAMP      (EN_RAMP),
         .EN_NOISE     (EN_NOISE),
         .EN_IMAGE     (EN_IMAGE),
+        .EN_SMPTE     (EN_SMPTE),
         .IMAGE_W      (IMAGE_W),
         .IMAGE_H      (IMAGE_H),
         .IMAGE_OUT_W  (IMAGE_OUT_W),
@@ -271,6 +289,11 @@ module vtpgz_axilite_top #(
         .cfg_box_img_y_step  (cfg_box_img_y_step),
         .cfg_tid             (cfg_tid),
         .cfg_tdest           (cfg_tdest),
+        .cfg_smpte_side_d    (cfg_smpte_side_d),
+        .cfg_smpte_bar_c     (cfg_smpte_bar_c),
+        .cfg_smpte_row_h     (cfg_smpte_row_h),
+        .cfg_smpte_pluge_p   (cfg_smpte_pluge_p),
+        .cfg_smpte_ramp_step (cfg_smpte_ramp_step),
         .sts_busy         (sts_busy),
         .sts_frame_count  (sts_frame_count),
         .sts_field_id     (sts_field_id),

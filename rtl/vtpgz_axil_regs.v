@@ -17,7 +17,10 @@ module vtpgz_axil_regs #(
     parameter RGB_ORDER     = `VTPGZ_RGB_ORDER_XILINX,
     parameter BPC           = 8,
     parameter integer PIXELS_PER_CLOCK = 1,
-    parameter TDATA_WIDTH   = 24
+    parameter TDATA_WIDTH   = 24,
+    // SMPTE RP 219 pattern present (vtpgz_core EN_SMPTE). At 0 its geometry
+    // registers are not built: writes are dropped and reads return 0.
+    parameter EN_SMPTE      = 0
 )(
     input  wire        aclk,
     input  wire        aresetn,
@@ -79,7 +82,16 @@ module vtpgz_axil_regs #(
     output wire [31:0] cfg_box_img_x_step,
     output wire [31:0] cfg_box_img_y_step,
     output wire [15:0] cfg_tid,
-    output wire [15:0] cfg_tdest
+    output wire [15:0] cfg_tdest,
+    // SMPTE RP 219 geometry. coverage_off: constant 0 in an EN_SMPTE=0
+    // build (the coverage build) -> never toggles.
+    /*verilator coverage_off*/
+    output wire [15:0] cfg_smpte_side_d,
+    output wire [15:0] cfg_smpte_bar_c,
+    output wire [15:0] cfg_smpte_row_h,
+    output wire [15:0] cfg_smpte_pluge_p,
+    output wire [15:0] cfg_smpte_ramp_step
+    /*verilator coverage_on*/
 );
 
     // ---------------- registers ----------------
@@ -102,6 +114,14 @@ module vtpgz_axil_regs #(
     reg [31:0] reg_box_img_x_step;
     reg [31:0] reg_box_img_y_step;
     reg [31:0] reg_stream_route;   // {tdest[31:16], tid[15:0]}
+    // SMPTE geometry. Written and read back only when EN_SMPTE=1; otherwise
+    // nothing reads them and synthesis drops them. coverage_off: the
+    // coverage build is EN_SMPTE=0.
+    // verilator coverage_off
+    reg [31:0] reg_smpte_geom0;    // {bar_c[31:16], side_d[15:0]}
+    reg [31:0] reg_smpte_geom1;    // {pluge_p[31:16], row_h[15:0]}
+    reg [31:0] reg_smpte_ramp_step;
+    // verilator coverage_on
 
     // ---------------- write FSM ----------------
     reg [7:0]  awaddr_q;
@@ -161,6 +181,12 @@ module vtpgz_axil_regs #(
             reg_box_img_x_step <= 32'd32768;
             reg_box_img_y_step <= 32'd32768;
             reg_stream_route   <= 32'h0;   // tid=0, tdest=0
+            // SMPTE defaults for 1920x1080: c = 206, d = (1920 - 1442)/2 =
+            // 239, p = 69, h = 90, ramp step = ceil((4095 << 8) / 1029) =
+            // 1019.
+            reg_smpte_geom0     <= {16'd206, 16'd239};
+            reg_smpte_geom1     <= {16'd69,  16'd90};
+            reg_smpte_ramp_step <= 32'd1019;
         end else begin
             // address handshake
             if (!aw_captured && s_axi_awvalid) begin
@@ -204,6 +230,12 @@ module vtpgz_axil_regs #(
                     `VTPGZ_REG_BOX_IMG_X_STEP : reg_box_img_x_step <= apply_wstrb(reg_box_img_x_step, wdata_q, wstrb_q);
                     `VTPGZ_REG_BOX_IMG_Y_STEP : reg_box_img_y_step <= apply_wstrb(reg_box_img_y_step, wdata_q, wstrb_q);
                     `VTPGZ_REG_STREAM_ROUTE : reg_stream_route <= apply_wstrb(reg_stream_route, wdata_q, wstrb_q);
+                    // verilator coverage_off
+                    // EN_SMPTE registers; the coverage build strips them.
+                    `VTPGZ_REG_SMPTE_GEOM0     : reg_smpte_geom0     <= apply_wstrb(reg_smpte_geom0,     wdata_q, wstrb_q);
+                    `VTPGZ_REG_SMPTE_GEOM1     : reg_smpte_geom1     <= apply_wstrb(reg_smpte_geom1,     wdata_q, wstrb_q);
+                    `VTPGZ_REG_SMPTE_RAMP_STEP : reg_smpte_ramp_step <= apply_wstrb(reg_smpte_ramp_step, wdata_q, wstrb_q);
+                    // verilator coverage_on
                     default               : ;
                 endcase
                 s_axi_bvalid <= 1'b1;
@@ -267,6 +299,12 @@ module vtpgz_axil_regs #(
                     `VTPGZ_REG_BOX_IMG_X_STEP : s_axi_rdata <= reg_box_img_x_step;
                     `VTPGZ_REG_BOX_IMG_Y_STEP : s_axi_rdata <= reg_box_img_y_step;
                     `VTPGZ_REG_STREAM_ROUTE : s_axi_rdata <= reg_stream_route;
+                    // verilator coverage_off
+                    // EN_SMPTE registers read as 0 when stripped.
+                    `VTPGZ_REG_SMPTE_GEOM0     : s_axi_rdata <= EN_SMPTE ? reg_smpte_geom0     : 32'h0;
+                    `VTPGZ_REG_SMPTE_GEOM1     : s_axi_rdata <= EN_SMPTE ? reg_smpte_geom1     : 32'h0;
+                    `VTPGZ_REG_SMPTE_RAMP_STEP : s_axi_rdata <= EN_SMPTE ? reg_smpte_ramp_step : 32'h0;
+                    // verilator coverage_on
                     default               : s_axi_rdata <= 32'h0;
                 endcase
             end else begin
@@ -304,5 +342,10 @@ module vtpgz_axil_regs #(
     assign cfg_box_img_y_step   = reg_box_img_y_step;
     assign cfg_tid              = reg_stream_route[15:0];
     assign cfg_tdest            = reg_stream_route[31:16];
+    assign cfg_smpte_side_d     = EN_SMPTE ? reg_smpte_geom0[15:0]      : 16'h0;
+    assign cfg_smpte_bar_c      = EN_SMPTE ? reg_smpte_geom0[31:16]     : 16'h0;
+    assign cfg_smpte_row_h      = EN_SMPTE ? reg_smpte_geom1[15:0]      : 16'h0;
+    assign cfg_smpte_pluge_p    = EN_SMPTE ? reg_smpte_geom1[31:16]     : 16'h0;
+    assign cfg_smpte_ramp_step  = EN_SMPTE ? reg_smpte_ramp_step[15:0]  : 16'h0;
 
 endmodule

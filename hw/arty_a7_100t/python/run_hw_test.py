@@ -31,6 +31,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import sys
 import time
 from pathlib import Path
@@ -55,7 +56,7 @@ from vtpgz_model import (  # noqa: E402
     MODE_RGB, MODE_RAW, MODE_YUV,
     YUV_444, YUV_422,
     RAW_PLAIN, RAW_RGGB, RAW_BGGR, RAW_GRBG, RAW_GBRG,
-    RGB_ORDER_XILINX, RGB_ORDER_LEGACY,
+    RGB_ORDER_XILINX, RGB_ORDER_LEGACY, PAT_SMPTE, smpte_host_geometry,
 )
 
 # Build-time mode of the loaded bitstream. The vtpgZero IP exposes the
@@ -93,6 +94,9 @@ VTPGZ_BAR_WIDTH     = 0x44
 VTPGZ_HG_STEP       = 0x48
 VTPGZ_VG_STEP       = 0x4C
 VTPGZ_BOX_BORDER    = 0x50
+VTPGZ_SMPTE_GEOM0   = 0x60  # {bar_c, side_d}; reads 0 when EN_SMPTE=0
+VTPGZ_SMPTE_GEOM1   = 0x64  # {pluge_p, row_h}
+VTPGZ_SMPTE_RAMP_STEP = 0x68
 VTPGZ_CORE_ID_MAGIC = 0x47505456  # little-endian "VTPG"
 
 # Frame-capture CSR offsets
@@ -123,6 +127,7 @@ def cfg_for(pat: int, mode: int, bpc: int, sub: int,
         grid_spacing=16,
         box_width=16, box_height=16,
         box_dx=1, box_dy=1,
+        **smpte_host_geometry(WIDTH, HEIGHT),
     )
 
 
@@ -139,14 +144,24 @@ def configure_vtpgz(axi: EjtagAxiController, cfg: VtpgzConfig) -> None:
                   ((cfg.box_width & 0xFFFF) << 16) | (cfg.box_height & 0xFFFF))
     axi.axi_write(VTPGZ_BASE + VTPGZ_BOX_SPEED,
                   ((cfg.box_dx & 0xFFFF) << 16) | (cfg.box_dy & 0xFFFF))
+    # Harmless in an EN_SMPTE=0 build, where the registers do not exist.
+    axi.axi_write(VTPGZ_BASE + VTPGZ_SMPTE_GEOM0,
+                  (cfg.smpte_bar_c << 16) | cfg.smpte_side_d)
+    axi.axi_write(VTPGZ_BASE + VTPGZ_SMPTE_GEOM1,
+                  (cfg.smpte_pluge_p << 16) | cfg.smpte_row_h)
+    axi.axi_write(VTPGZ_BASE + VTPGZ_SMPTE_RAMP_STEP, cfg.smpte_ramp_step)
     axi.axi_write(VTPGZ_BASE + VTPGZ_PATTERN_SEL,  cfg.pattern)
     # COLOR_FORMAT is RO now (build-time)
     axi.axi_write(VTPGZ_BASE + VTPGZ_FRAME_RATE,   200)
 
 
 def run_one(axi: EjtagAxiController, cfg: VtpgzConfig,
-            verbose: bool = False) -> tuple[bool, str]:
-    """Run a single (pat, fmt, bpp) and return (passed, error_msg)."""
+            verbose: bool = False,
+            model_pattern: int | None = None) -> tuple[bool, str]:
+    """Run a single (pat, fmt, bpp) and return (passed, error_msg).
+    model_pattern, if given, is what the model renders in place of
+    cfg.pattern (a pattern stripped from the bitstream renders black, as an
+    unused code does)."""
     # 1. Disable VTPGZ, then configure
     axi.axi_write(VTPGZ_BASE + VTPGZ_CONTROL, 0)
     configure_vtpgz(axi, cfg)
@@ -179,7 +194,9 @@ def run_one(axi: EjtagAxiController, cfg: VtpgzConfig,
     # frame_capture stores them: ceil(beat_width/32) little-endian words/beat.
     # At ppc=1 render_frame_beats == render_frame and beat_width == tdata_width,
     # so this reduces to the classic one-word-per-pixel layout.
-    sw_words = tdata_to_bram_words(render_frame_beats(cfg), cfg.beat_tdata_width)
+    ref = cfg if model_pattern is None else dataclasses.replace(
+        cfg, pattern=model_pattern)
+    sw_words = tdata_to_bram_words(render_frame_beats(ref), cfg.beat_tdata_width)
     expected_words = len(sw_words)
     if word_count < expected_words:
         axi.axi_write(VTPGZ_BASE + VTPGZ_CONTROL, 0)
@@ -321,6 +338,15 @@ def main() -> int:
         if mode == MODE_YUV:
             print(f"YUV colorimetry (from CLI): range={args.yuv_range} "
                   f"matrix={args.yuv_matrix}")
+        # SMPTE (pattern 5) is optional (EN_SMPTE, off by default): its
+        # geometry register reads back 0 when the pattern is stripped, and
+        # slot 5 then renders black.
+        geo = smpte_host_geometry(WIDTH, HEIGHT)
+        want_g0 = (geo["smpte_bar_c"] << 16) | geo["smpte_side_d"]
+        bridge.axi_write(VTPGZ_BASE + VTPGZ_SMPTE_GEOM0, want_g0)
+        has_smpte = bridge.axi_read(VTPGZ_BASE + VTPGZ_SMPTE_GEOM0) == want_g0
+        print(f"SMPTE RP 219 (EN_SMPTE): "
+              f"{'present' if has_smpte else 'stripped, slot 5 must be black'}")
         pats = [args.only] if args.only is not None else list(range(9))
 
         for pat in pats:
@@ -329,7 +355,9 @@ def main() -> int:
                           yuv_range=1 if args.yuv_range == "limited" else 0,
                           yuv_matrix=1 if args.yuv_matrix == "709" else 0,
                           bar_level=args.bar_level)
-            ok, err = run_one(bridge, cfg, verbose=(args.only is not None))
+            stripped = (pat == PAT_SMPTE and not has_smpte)
+            ok, err = run_one(bridge, cfg, verbose=(args.only is not None),
+                              model_pattern=10 if stripped else None)
             tag = "OK  " if ok else "FAIL"
             print(f"  {tag}  pat={pat}" + (f"  {err}" if err else ""))
             if not ok:

@@ -31,6 +31,9 @@ jobs:
       - name: YUV range/matrix/bar-level spec test
         run: python hw/arty_a7_100t/python/check_yuv_range.py
 
+      - name: SMPTE RP 219 spec test (codes, layout, ramp)
+        run: python hw/arty_a7_100t/python/check_smpte_spec.py
+
       - name: YUV range/matrix mutation check (the spec test must bite)
         run: python hw/arty_a7_100t/python/check_yuv_range_mutations.py
 

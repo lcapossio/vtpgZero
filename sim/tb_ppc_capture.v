@@ -40,6 +40,7 @@ module tb_ppc_capture;
     parameter integer EN_RAMP     = 0;
     parameter integer EN_NOISE    = 0;
     parameter integer EN_IMAGE    = 0;
+    parameter integer EN_SMPTE    = 0;
     parameter integer IMAGE_W     = 16;
     parameter integer IMAGE_H     = 16;
     parameter integer IMAGE_OUT_W = 16;
@@ -70,6 +71,9 @@ module tb_ppc_capture;
     reg  [15:0] cfg_img_height;
     reg  [3:0]  cfg_pattern;
     reg         cfg_enable;
+    // SMPTE RP 219 geometry, from plusargs (defaults: the check script's
+    // HARNESS_CFG).
+    reg  [15:0] cfg_sm_d, cfg_sm_c, cfg_sm_p, cfg_sm_h, cfg_sm_step;
 
     wire [TDATA_WIDTH-1:0] m_tdata;
     wire                   m_tvalid;
@@ -88,6 +92,7 @@ module tb_ppc_capture;
         .EN_RAMP      (EN_RAMP),
         .EN_NOISE     (EN_NOISE),
         .EN_IMAGE     (EN_IMAGE),
+        .EN_SMPTE     (EN_SMPTE),
         .IMAGE_W      (IMAGE_W),
         .IMAGE_H      (IMAGE_H),
         .IMAGE_OUT_W  (IMAGE_OUT_W),
@@ -135,6 +140,11 @@ module tb_ppc_capture;
         .cfg_box_img_y_step(BOX_IMG_Y_STEP),
         .cfg_tid(16'h0),
         .cfg_tdest(16'h0),
+        .cfg_smpte_side_d(cfg_sm_d),
+        .cfg_smpte_bar_c(cfg_sm_c),
+        .cfg_smpte_row_h(cfg_sm_h),
+        .cfg_smpte_pluge_p(cfg_sm_p),
+        .cfg_smpte_ramp_step(cfg_sm_step),
         .sts_busy(),
         .sts_frame_count(),
         .m_axis_tdata(m_tdata),
@@ -157,6 +167,7 @@ module tb_ppc_capture;
     integer max_cycles;
     integer started;
     integer width, height, pat;
+    integer sm_d, sm_c, sm_p, sm_h, sm_step;
     integer n_tuser, n_tlast, bad_flag;
     reg [1023:0] out_path;
 
@@ -165,6 +176,16 @@ module tb_ppc_capture;
         if (!$value$plusargs("height=%d", height)) height = 12;
         if (!$value$plusargs("pat=%d",    pat))    pat    = `VTPGZ_PAT_SOLID;
         if (!$value$plusargs("out=%s",    out_path)) out_path = "ppc_cap.hex";
+        if (!$value$plusargs("sm_d=%d",    sm_d))    sm_d    = 3;
+        if (!$value$plusargs("sm_c=%d",    sm_c))    sm_c    = 3;
+        if (!$value$plusargs("sm_p=%d",    sm_p))    sm_p    = 1;
+        if (!$value$plusargs("sm_h=%d",    sm_h))    sm_h    = 1;
+        if (!$value$plusargs("sm_step=%d", sm_step)) sm_step = 18000;
+        cfg_sm_d    = sm_d[15:0];
+        cfg_sm_c    = sm_c[15:0];
+        cfg_sm_p    = sm_p[15:0];
+        cfg_sm_h    = sm_h[15:0];
+        cfg_sm_step = sm_step[15:0];
 
         total_beats = (width / PIXELS_PER_CLOCK) * height;
         max_cycles  = total_beats * 40 + 10000;

@@ -31,6 +31,9 @@ module vtpgz_core #(
     parameter EN_RAMP       = 1,
     parameter EN_NOISE      = 1,
     parameter EN_IMAGE      = 0,
+    // SMPTE RP 219 HD colour bars (pattern 5). Off by default: stripping it
+    // also strips its geometry registers in vtpgz_axil_regs.
+    parameter EN_SMPTE      = 0,
     // ---- IMAGE pattern (only used when EN_IMAGE=1) ----
     // IMAGE_W / IMAGE_H: source image dimensions in the BRAM. Both MUST be
     //                   powers of two so the BRAM index is a bit slice.
@@ -112,12 +115,7 @@ module vtpgz_core #(
     //              beat, lane 0 (leftmost pixel) in the tdata LSBs. cfg_img_width
     //              is clamped down to a multiple of PIXELS_PER_CLOCK.
     //
-    // NOTE (M1 scope): at PIXELS_PER_CLOCK>1 only the position-combinational
-    // patterns are supported -- SOLID, GRID, CHECKER, plus the moving-box
-    // overlay. The accumulator/counter/stateful patterns (COLORBAR, HGRAD,
-    // VGRAD, RAMP, NOISE, IMAGE, BOX_IMAGE) require PIXELS_PER_CLOCK==1 and
-    // their EN_* must be 0 for a PPC>1 build -- enforced by an elaboration
-    // check below (g_ppc_guard).
+    // Every pattern and overlay is supported at every PIXELS_PER_CLOCK.
     parameter integer PIXELS_PER_CLOCK = 1,
     // ----- AXI4-Stream video line pacing -----
     // Insert this many TVALID-low cycles after each non-final TLAST before
@@ -185,6 +183,16 @@ module vtpgz_core #(
     // Stream-routing sideband values (used only when TID_WIDTH/TDEST_WIDTH>0).
     input  wire [15:0] cfg_tid,
     input  wire [15:0] cfg_tdest,
+    // SMPTE RP 219 geometry (used only when EN_SMPTE=1; see g_smpte and the
+    // SMPTE_* registers in vtpgz_defs.vh). coverage_off: a stripped build
+    // never reads them, and the AXI-Lite wrapper ties them to 0 there.
+    /*verilator coverage_off*/
+    input  wire [15:0] cfg_smpte_side_d,
+    input  wire [15:0] cfg_smpte_bar_c,
+    input  wire [15:0] cfg_smpte_row_h,
+    input  wire [15:0] cfg_smpte_pluge_p,
+    input  wire [15:0] cfg_smpte_ramp_step,
+    /*verilator coverage_on*/
 
     // ----- status outputs -----
     output reg         sts_busy,
@@ -242,8 +250,8 @@ module vtpgz_core #(
     //   YUV, full range    {Y=0,     Cb=0x800, Cr=0x800}
     //   YUV, limited range {Y=0x100, Cb=0x800, Cr=0x800}  (64/512/512 @10b)
     // In YUV the all-zero triple is saturated GREEN, so every place that
-    // emits a constant black (pattern slot 5, stripped-pattern stubs, the
-    // grid background) must use these rather than 12'h000.
+    // emits a constant black (unused pattern codes, stripped-pattern stubs,
+    // the grid background) must use these rather than 12'h000.
     localparam YUV_LIMITED_BUILD =
         (OUTPUT_MODE == `VTPGZ_MODE_YUV) && (YUV_RANGE == `VTPGZ_YUV_LIMITED);
     localparam [11:0] Y_BLACK_LIM = YUV_LIMITED_BUILD ? 12'h100 : 12'h000;
@@ -543,6 +551,12 @@ module vtpgz_core #(
     wire [12*NPPC-1:0] noise_bus;                      // per-lane LFSR value
     wire [12*NPPC-1:0] image_r_bus, image_g_bus, image_b_bus; // per-lane IMAGE
     wire [12*NPPC-1:0] box_img_r_bus, box_img_g_bus, box_img_b_bus; // per-lane box-image
+    // SMPTE RP 219 triple. coverage_off: constant black in a stripped build,
+    // and the coverage build is EN_SMPTE=0.
+    // verilator coverage_off
+    wire [11:0] sm_c0, sm_c1, sm_c2;
+    wire [12*NPPC-1:0] sm_c0_bus, sm_c1_bus, sm_c2_bus;
+    // verilator coverage_on
 
     // ---- Color bars (8 SMPTE bars) ----
     // Counter-based: increment bar index every cfg_bar_width pixels.
@@ -628,6 +642,47 @@ module vtpgz_core #(
         input [2:0] idx;
         bar_palette = PAL_TABLE[36*idx +: 36];
     endfunction
+
+    // BEGIN GENERATED SMPTE RP 219 TABLES (scripts/gen_yuv_palettes.py --write-rtl)
+    // Each palette is 21 colours x {c0, c1, c2} x 12 bits, colour 20
+    // (the ramp placeholder) in the MSBs down to colour 0 in the LSBs. Colour
+    // order: gray40, white75, yellow75, cyan75, green75, magenta75, red75, blue75, cyan100, minus_i, blue100, yellow100, plus_q, white100, red100, black, gray15, pluge_m2, pluge_p2, pluge_p4.
+    // SM_MAP holds a 5-bit colour index per {row[1:0], seg[3:0]}, row 3 in the
+    // MSBs; index 20 (SM_RAMP) marks a Y-ramp pixel. Do not edit by hand.
+    localparam [755:0] SM_PAL_RGB_8       = 756'h000000000_0A00A00A0_050050050_000000000_260260260_000000000_FF0000000_FF0FF0FF0_410000780_FF0FF0000_000000FF0_0003F0690_000FF0FF0_000000BF0_BF0000000_BF0000BF0_000BF0000_000BF0BF0_BF0BF0000_BF0BF0BF0_660660660;
+    localparam [755:0] SM_PAL_RGB_10      = 756'h000000000_0A40A40A4_050050050_000000000_264264264_000000000_FFC000000_FFCFFCFFC_40C000784_FFCFFC000_000000FFC_0003EC698_000FFCFFC_000000BFC_BFC000000_BFC000BFC_000BFC000_000BFCBFC_BFCBFC000_BFCBFCBFC_664664664;
+    localparam [755:0] SM_PAL_RGB_12      = 756'h000000000_0A40A40A4_052052052_000000000_266266266_000000000_FFF000000_FFFFFFFFF_40E000787_FFFFFF000_000000FFF_0003EE69A_000FFFFFF_000000BFF_BFF000000_BFF000BFF_000BFF000_000BFFBFF_BFFBFF000_BFFBFFBFF_666666666;
+    localparam [755:0] SM_PAL_601_FULL_8  = 756'h000800800_0A0800800_050800800_000800800_260800800_000800800_4C0550FF0_FF0800800_210B10970_E20010950_1D0FF06B0_310A005D0_B30AB0010_160E00700_390600E00_4F0BF0D00_700410300_860A00200_A90200900_BF0800800_660800800;
+    localparam [755:0] SM_PAL_601_FULL_10 = 756'h000800800_0A4800800_050800800_000800800_264800800_000800800_4C854CFFC_FFC800800_210B1496C_E2800494C_1D4FFC6B4_310A005D0_B34AB4004_15CE00708_3945FCE00_4F4BF8D04_7084082FC_868A04200_AA02008F8_BFC800800_664800800;
+    localparam [755:0] SM_PAL_601_FULL_12 = 756'h000800800_0A4800800_052800800_000800800_266800800_000800800_4C854DFFF_FFF800800_212B1496A_E2C00194D_1D3FFF6B3_30FA005D1_B37AB3001_15EE00706_3965FAE00_4F4BF9D06_70B4072FA_869A06200_AA12008FA_BFF800800_666800800;
+    localparam [755:0] SM_PAL_601_LIM_8   = 756'h100800800_190800800_140800800_0C0800800_310800800_100800800_5105A0F00_EB0800800_2C0AB0940_D20100920_290F006E0_3A09C0610_AA0A60100_230D40720_410640D40_540B80C60_7004803A0_8309C02C0_A202C08E0_B40800800_680800800;
+    localparam [755:0] SM_PAL_601_LIM_10  = 756'h100800800_18C800800_148800800_0B8800800_30C800800_100800800_5185A4F00_EB0800800_2C4AB093C_D20100924_290F006DC_3A09C0618_A98A5C100_22CD40724_41063CD40_53CB7CC64_70848439C_8349C42C0_A182C08DC_B44800800_678800800;
+    localparam [755:0] SM_PAL_601_LIM_12  = 756'h100800800_18C800800_146800800_0BA800800_30E800800_100800800_5185A3F00_EB0800800_2C6AB293D_D21100923_28FF006DD_39E9C0617_A98A5D100_22CD40725_41263AD40_53DB7AC65_70748639B_8329C62C0_A182C08DB_B44800800_67A800800;
+    localparam [755:0] SM_PAL_709_FULL_8  = 756'h000800800_0A0800800_050800800_000800800_260800800_000800800_360630FF0_FF0800800_160B509B0_ED00108C0_120FF0740_3409C05F0_C909D0010_0E0E00770_2906A0E00_360CA0D70_890360290_970960200_B10200890_BF0800800_660800800;
+    localparam [755:0] SM_PAL_709_FULL_10 = 756'h000800800_0A4800800_050800800_000800800_264800800_000800800_36462CFFC_FFC800800_168B4C9B0_ED40048BC_128FFC744_3489C85E8_C989D4004_0DCE00774_28C6A0E00_36CCA0D70_894360290_970960200_B2020088C_BFC800800_664800800;
+    localparam [755:0] SM_PAL_709_FULL_12 = 756'h000800800_0A4800800_052800800_000800800_266800800_000800800_36762BFFF_FFF800800_168B4C9AF_ED70018BC_128FFF744_3499C95E9_C989D5001_0DEE00773_28D6A0E00_36BCA0D73_89536028D_972960200_B2220088D_BFF800800_666800800;
+    localparam [755:0] SM_PAL_709_LIM_8   = 756'h100800800_190800800_140800800_0C0800800_310800800_100800800_3F0660F00_EB0800800_230AE0980_DB01008A0_200F00760_3D0990630_BC09A0100_1C0D40780_3306D0D40_3F0C10CC0_8503F0340_9109302C0_A802C0880_B40800800_680800800;
+    localparam [755:0] SM_PAL_709_LIM_10  = 756'h100800800_18C800800_148800800_0B8800800_30C800800_100800800_3E8664F00_EB0800800_234AE4978_DB41008A4_1FCF0075C_3D099062C_BC899C100_1BCD40784_3306CCD40_3ECC0CCC4_8583F433C_9149342C0_A882C087C_B44800800_678800800;
+    localparam [755:0] SM_PAL_709_LIM_12  = 756'h100800800_18C800800_146800800_0BA800800_30E800800_100800800_3E9665F00_EB0800800_234AE3979_DB31008A4_1FDF0075C_3D099062C_BC799B100_1BED40785_32F6CCD40_3ECC0CCC5_8583F433B_9159342C0_A862C087B_B44800800_67A800800;
+    localparam [755:0] SM_PAL =
+        (!PAL_YUV && PAL_BITS == 8) ? SM_PAL_RGB_8 :
+        (!PAL_YUV && PAL_BITS == 10) ? SM_PAL_RGB_10 :
+        (!PAL_YUV && PAL_BITS == 12) ? SM_PAL_RGB_12 :
+        (PAL_YUV && !PAL_709 && !PAL_LIM && PAL_BITS == 8) ? SM_PAL_601_FULL_8 :
+        (PAL_YUV && !PAL_709 && !PAL_LIM && PAL_BITS == 10) ? SM_PAL_601_FULL_10 :
+        (PAL_YUV && !PAL_709 && !PAL_LIM && PAL_BITS == 12) ? SM_PAL_601_FULL_12 :
+        (PAL_YUV && !PAL_709 && PAL_LIM && PAL_BITS == 8) ? SM_PAL_601_LIM_8 :
+        (PAL_YUV && !PAL_709 && PAL_LIM && PAL_BITS == 10) ? SM_PAL_601_LIM_10 :
+        (PAL_YUV && !PAL_709 && PAL_LIM && PAL_BITS == 12) ? SM_PAL_601_LIM_12 :
+        (PAL_YUV && PAL_709 && !PAL_LIM && PAL_BITS == 8) ? SM_PAL_709_FULL_8 :
+        (PAL_YUV && PAL_709 && !PAL_LIM && PAL_BITS == 10) ? SM_PAL_709_FULL_10 :
+        (PAL_YUV && PAL_709 && !PAL_LIM && PAL_BITS == 12) ? SM_PAL_709_FULL_12 :
+        (PAL_YUV && PAL_709 && PAL_LIM && PAL_BITS == 8) ? SM_PAL_709_LIM_8 :
+        (PAL_YUV && PAL_709 && PAL_LIM && PAL_BITS == 10) ? SM_PAL_709_LIM_10 :
+        SM_PAL_709_LIM_12;  // PAL_YUV && PAL_709 && PAL_LIM && PAL_BITS == 12
+    localparam [319:0] SM_MAP = 320'h7BDEF7C1F37C9F17B5F07BDEF7BDEE6D294A518B7BDEF7BDEA08421085287BDEF7BDE0398A418820;
+    localparam [4:0] SM_RAMP = 5'd20;
+    // END GENERATED SMPTE RP 219 TABLES
 
     // m * v for a small elaboration-constant m (0..15), as at most four
     // shifted terms -- no multiply operator, so never a DSP. Used for the
@@ -815,6 +870,229 @@ module vtpgz_core #(
         assign cb_g_bus = {NPPC{BLACK_C12}};
         assign cb_b_bus = {NPPC{BLACK_C12}};
     end endgenerate
+
+    // ---- SMPTE RP 219 HD colour bars ----
+    // Four row bands, 7/12, 1/12, 1/12 and 3/12 of the height, each a run of
+    // horizontal segments. Rows 0-2 share layout A: side panel d, seven bars
+    // c, then side panel to the end of the line. Row 3 has layout B: d, 3c/2,
+    // 2c, 5c/6, five PLUGE steps p, c, side panel. The host writes d, c, p,
+    // the row unit h and the ramp step (SMPTE_GEOM0/1, SMPTE_RAMP_STEP); 3c/2
+    // and 2c are derived here and 5c/6 is the remainder 7c - 3c/2 - 2c - 5p
+    // - c, so both layouts end at d + 7c by construction.
+    //
+    // Segment walker: sm_s is lane 0's segment and sm_r the pixels left in it
+    // counting lane 0. Every width is clamped to >= NPPC, so at most one
+    // boundary falls inside a beat: lanes l >= sm_r are in segment sm_s+1, the
+    // rest in sm_s. A row walker (sm_row / sm_rl) does the same once per line.
+    // A lane's colour is SM_PAL[SM_MAP[{row, seg}]], two constant tables (the
+    // generated block above), so each output bit is one LUT of {row, seg}.
+    //
+    // Row 2's Y ramp is (x - (d + c)) * step in 1/256-code units, with a
+    // 24-bit wrap. It is accumulated like HGRAD from -K at the start of each
+    // line, where K = (d + c) * step comes from a serial shift-add multiplier:
+    // the geometry is quasi-static, so K settles within ~40 clocks of a
+    // register write and no multiply (and no DSP) is needed. In a YUV LIMITED
+    // build the step is scaled once by 3505/4096, the y_to_limited slope, and
+    // the ramp sits on limited black, so it runs 64..940 at 10 bits with no
+    // per-pixel luma map. That is why PAT_SMPTE is NOT in limit_luma_now: an
+    // SMPTE beat mixes palette codes, already in range, with ramp pixels.
+    generate if (EN_SMPTE) begin : g_smpte
+        // Clamp a width to [NPPC, 0xFFFF]. The input is signed (21 bits): the
+        // 5c/6 remainder goes negative when p is too large for c.
+        function [15:0] sm_clamp;
+            input [20:0] v;
+            sm_clamp = v[20]                  ? NPPC[15:0] :
+                       (|v[19:16])            ? 16'hFFFF   :
+                       (v[15:0] < NPPC[15:0]) ? NPPC[15:0] : v[15:0];
+        endfunction
+        // ceil(step * 3505 / 4096) as shifts and adds (see y_to_limited).
+        // Rounded up, like the host's step, so the limited ramp reaches
+        // white; the SM_VMAX clip absorbs the overshoot.
+        function [15:0] sm_lim_step;
+            input [15:0] st;
+            reg [27:0] t, prod;
+            begin
+                t    = {12'h0, st};
+                prod = (t << 11) + (t << 10) + (t << 8) + (t << 7) +
+                       (t << 5)  + (t << 4)  + t + 28'hFFF;
+                sm_lim_step = prod[27:12];
+            end
+        endfunction
+
+        // Quasi-static geometry, registered. The derived widths settle one
+        // clock after w_c / w_p, K a few dozen after that.
+        reg [15:0] w_d, w_c, w_p, w_e, w_f, w_g;   // segment widths
+        reg [15:0] a_c, a_e, a_f, a_g, a_p;        // the same, minus NPPC
+        reg [15:0] h_1, h_23;                       // row heights, lines
+        reg [15:0] rs;                              // ramp step, build scale
+        reg [16:0] b2;                              // ramp start x = d + c
+        wire [15:0] rs_lim = sm_lim_step(cfg_smpte_ramp_step);
+        always @(posedge aclk) begin
+            if (!aresetn) begin
+                w_d <= NPPC[15:0]; w_c <= NPPC[15:0]; w_p <= NPPC[15:0];
+                w_e <= NPPC[15:0]; w_f <= NPPC[15:0]; w_g <= NPPC[15:0];
+                a_c <= 16'h0; a_e <= 16'h0; a_f <= 16'h0;
+                a_g <= 16'h0; a_p <= 16'h0;
+                h_1 <= 16'd7; h_23 <= 16'd1;
+                rs  <= 16'h0; b2  <= 17'h0;
+            end else begin
+                w_d  <= sm_clamp({5'h0, cfg_smpte_side_d});
+                w_c  <= sm_clamp({5'h0, cfg_smpte_bar_c});
+                w_p  <= sm_clamp({5'h0, cfg_smpte_pluge_p});
+                w_e  <= sm_clamp({5'h0, w_c} + {6'h0, w_c[15:1]});
+                w_f  <= sm_clamp({4'h0, w_c, 1'b0});
+                w_g  <= sm_clamp({4'h0, w_c, 1'b0} + {5'h0, w_c}
+                                 - {6'h0, w_c[15:1]}
+                                 - {3'h0, w_p, 2'b0} - {5'h0, w_p});
+                a_c  <= w_c - NPPC[15:0];
+                a_e  <= w_e - NPPC[15:0];
+                a_f  <= w_f - NPPC[15:0];
+                a_g  <= w_g - NPPC[15:0];
+                a_p  <= w_p - NPPC[15:0];
+                h_23 <= (cfg_smpte_row_h == 16'h0) ? 16'h1 : cfg_smpte_row_h;
+                h_1  <= (|h_23[15:13]) ? 16'hFFFF : ({h_23[12:0], 3'b0} - h_23);
+                rs   <= YUV_LIMITED_BUILD ? rs_lim : cfg_smpte_ramp_step;
+                b2   <= {1'b0, w_d} + {1'b0, w_c};
+            end
+        end
+        localparam [15:0] A_INF = 16'hFFFF - NPPC[15:0];  // last segment
+
+        // K = b2 * rs mod 2^24, one bit of b2 per clock, restarting forever.
+        reg [4:0]  mk_n;
+        reg [16:0] mk_b;
+        reg [23:0] mk_a, mk_acc, sm_k;
+        wire [23:0] mk_sum = mk_acc + (mk_b[0] ? mk_a : 24'h0);
+        always @(posedge aclk) begin
+            if (!aresetn) begin
+                mk_n <= 5'd0; mk_b <= 17'h0; mk_a <= 24'h0;
+                mk_acc <= 24'h0; sm_k <= 24'h0;
+            end else if (mk_n == 5'd0) begin
+                mk_b   <= b2;
+                mk_a   <= {8'h0, rs};
+                mk_acc <= 24'h0;
+                mk_n   <= 5'd1;
+            end else begin
+                mk_b <= mk_b >> 1;
+                mk_a <= mk_a << 1;
+                if (mk_n == 5'd17) begin
+                    sm_k <= mk_sum;
+                    mk_n <= 5'd0;
+                end else begin
+                    mk_acc <= mk_sum;
+                    mk_n   <= mk_n + 5'd1;
+                end
+            end
+        end
+
+        // ---- row and segment walkers ----
+        reg [1:0]  sm_row;
+        reg [15:0] sm_rl;       // lines left in this row, counting this one
+        reg [3:0]  sm_s;
+        reg [15:0] sm_r;        // pixels left in segment sm_s, counting lane 0
+        wire [3:0] s_inc = sm_s + 4'd1;
+        reg [15:0] a_next;      // width of segment s_inc, minus NPPC
+        always @* begin
+            if (sm_row == 2'd3) begin
+                case (s_inc)
+                    4'd1:                         a_next = a_e;
+                    4'd2:                         a_next = a_f;
+                    4'd3:                         a_next = a_g;
+                    4'd4, 4'd5, 4'd6, 4'd7, 4'd8: a_next = a_p;
+                    4'd9:                         a_next = a_c;
+                    default:                      a_next = A_INF;
+                endcase
+            end else begin
+                a_next = (s_inc <= 4'd7) ? a_c : A_INF;
+            end
+        end
+        always @(posedge aclk) begin
+            if (!aresetn || frame_init) begin
+                sm_row <= 2'd0;
+                sm_rl  <= h_1;
+            end else if (source_advance && last_x) begin
+                if (last_y) begin
+                    sm_row <= 2'd0;
+                    sm_rl  <= h_1;
+                end else if (sm_row != 2'd3) begin
+                    if (sm_rl == 16'h1) begin
+                        sm_row <= sm_row + 2'd1;
+                        sm_rl  <= h_23;       // rows 1 and 2 (row 3 ignores it)
+                    end else begin
+                        sm_rl  <= sm_rl - 16'h1;
+                    end
+                end
+            end
+        end
+        // The next segment starts inside this beat (or at the next one) when
+        // sm_r <= NPPC; the new count is then sm_r + width - NPPC >= 1.
+        always @(posedge aclk) begin
+            if (!aresetn || frame_init) begin
+                sm_s <= 4'h0;
+                sm_r <= w_d;
+            end else if (source_advance) begin
+                if (last_x) begin
+                    sm_s <= 4'h0;
+                    sm_r <= w_d;
+                end else if (sm_r > NPPC[15:0]) begin
+                    sm_r <= sm_r - NPPC[15:0];
+                end else begin
+                    sm_s <= s_inc;
+                    sm_r <= sm_r + a_next;
+                end
+            end
+        end
+
+        // ---- ramp accumulator (lane 0), same structure as g_hgrad ----
+        reg [23:0] sm_q;
+        wire [23:0] rmul [0:NPPC] /* verilator split_var */;   // m * rs
+        assign rmul[0] = 24'h0;
+        genvar sm_m;
+        for (sm_m = 1; sm_m <= NPPC; sm_m = sm_m + 1) begin : g_sm_rmul
+            if (NPPC > 1) begin : g_q
+                reg [19:0] q;
+                always @(posedge aclk) q <= mul_small(rs, sm_m);
+                assign rmul[sm_m] = {4'h0, q};
+            end else begin : g_c
+                assign rmul[sm_m] = {8'h0, rs};
+            end
+        end
+        always @(posedge aclk) begin
+            if (!aresetn || frame_init) sm_q <= 24'h0 - sm_k;
+            else if (source_advance)    sm_q <= last_x ? (24'h0 - sm_k)
+                                                       : (sm_q + rmul[NPPC]);
+        end
+        localparam [11:0] SM_VMAX = YUV_LIMITED_BUILD ? 12'd3504 : 12'hFFF;
+
+        // ---- per-lane colour ----
+        wire [4:0] r_sat = (|sm_r[15:4]) ? 5'd16 : {1'b0, sm_r[3:0]};
+        genvar sl;
+        for (sl = 0; sl < NPPC; sl = sl + 1) begin : g_sm_lane
+            wire        nxt  = ({2'b0, sl[2:0]} >= r_sat);
+            wire [3:0]  seg  = nxt ? s_inc : sm_s;
+            wire [4:0]  cidx = SM_MAP[5*{sm_row, seg} +: 5];
+            wire [35:0] pal  = SM_PAL[36*cidx +: 36];
+            wire        rmp  = (cidx == SM_RAMP);
+            wire [23:0] ql   = sm_q + rmul[sl];
+            wire [11:0] v0   = (|ql[23:20]) ? 12'hFFF : ql[19:8];
+            // Constant false outside a LIMITED build, where SM_VMAX is 0xFFF.
+            /* verilator lint_off CMPCONST */
+            wire [11:0] rv   = Y_BLACK_LIM + ((v0 > SM_VMAX) ? SM_VMAX : v0);
+            /* verilator lint_on CMPCONST */
+            wire [11:0] rvc  = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : rv;
+            assign sm_c0_bus[12*sl +: 12] = rmp ? rv  : pal[35:24];
+            assign sm_c1_bus[12*sl +: 12] = rmp ? rvc : pal[23:12];
+            assign sm_c2_bus[12*sl +: 12] = rmp ? rvc : pal[11:0];
+        end
+    end else begin : g_smpte_off
+        // Stripped: the slot still exists and must read as black.
+        assign sm_c0_bus = {NPPC{BLACK_C0}};
+        assign sm_c1_bus = {NPPC{BLACK_C12}};
+        assign sm_c2_bus = {NPPC{BLACK_C12}};
+    end endgenerate
+    assign sm_c0 = sm_c0_bus[11:0];   // lane 0
+    assign sm_c1 = sm_c1_bus[11:0];
+    assign sm_c2 = sm_c2_bus[11:0];
+
 
     // ---- Horizontal gradient ----
     // Q4.12 accumulator: increments by cfg_hg_step (Q4.12) per pixel,
@@ -1687,19 +1965,18 @@ module vtpgz_core #(
             `VTPGZ_PAT_RAMP      : begin pat_c0 = ramp_v;  pat_c1 = ramp_c1; pat_c2 = ramp_c2; end
             `VTPGZ_PAT_NOISE     : begin pat_c0 = noise_v; pat_c1 = nz_c1;   pat_c2 = nz_c2;   end
             `VTPGZ_PAT_IMAGE     : begin pat_c0 = image_r; pat_c1 = image_g; pat_c2 = image_b; end
+            `VTPGZ_PAT_SMPTE     : begin pat_c0 = sm_c0;   pat_c1 = sm_c1;   pat_c2 = sm_c2;   end
             // verilator coverage_off
-            // Slot 5 (the box is an overlay, not a pattern) and unused codes.
+            // Unused codes 10..15.
             default              : begin pat_c0 = BLACK_C0; pat_c1 = BLACK_C12; pat_c2 = BLACK_C12; end
             // verilator coverage_on
         endcase
     end
 
     // ---- Per-lane pattern mux (NPPC>1 only) ----
-    // Lanes 1..NPPC-1 select among the M1 patterns (SOLID / GRID / CHECKER)
-    // for column (x+l). Lane 0 uses the full pat_c0/c1/c2 mux above, so the
-    // NPPC==1 datapath is untouched. The stateful/accumulator patterns are
-    // elaboration-forbidden at NPPC>1 (g_ppc_guard), so a black default here
-    // is never selected in a legal build.
+    // Lanes 1..NPPC-1 select among the patterns' per-lane buses for column
+    // (x+l). Lane 0 uses the full pat_c0/c1/c2 mux above, so the NPPC==1
+    // datapath is untouched. The black default is for unused pattern codes.
     // Gated on NPPC>1: at NPPC==1 the pipeline latches lane 0 from the scalar
     // pat_c0/c1/c2 above and never reads this bus, so building it would be
     // dead logic. Explicitly stripping it (rather than leaning on synthesis
@@ -1749,6 +2026,9 @@ module vtpgz_core #(
                 `VTPGZ_PAT_IMAGE   : begin p0 = image_r_bus[12*gpl +: 12];
                                            p1 = image_g_bus[12*gpl +: 12];
                                            p2 = image_b_bus[12*gpl +: 12]; end
+                `VTPGZ_PAT_SMPTE   : begin p0 = sm_c0_bus[12*gpl +: 12];
+                                           p1 = sm_c1_bus[12*gpl +: 12];
+                                           p2 = sm_c2_bus[12*gpl +: 12]; end
                 default            : begin p0 = BLACK_C0; p1 = BLACK_C12; p2 = BLACK_C12; end
             endcase
         end

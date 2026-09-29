@@ -19,6 +19,7 @@ module sim_top #(
     parameter BAR_LEVEL     = 100,
     parameter integer PIXELS_PER_CLOCK = 1,
     parameter LINE_GAP_CYCLES = 1,
+    parameter EN_SMPTE      = 0,
     // Derived per-pixel width, then packed by PIXELS_PER_CLOCK (must match
     // vtpgz_axilite_top's C_AXIS_TDATA_WIDTH).
     parameter PIX_TDATA_WIDTH =
@@ -99,7 +100,8 @@ module sim_top #(
         .YUV_MATRIX   (YUV_MATRIX),
         .BAR_LEVEL    (BAR_LEVEL),
         .PIXELS_PER_CLOCK(PIXELS_PER_CLOCK),
-        .LINE_GAP_CYCLES(LINE_GAP_CYCLES)
+        .LINE_GAP_CYCLES(LINE_GAP_CYCLES),
+        .EN_SMPTE     (EN_SMPTE)
     ) u_vtpgz (
         .aclk          (aclk),
         .aresetn       (aresetn),

@@ -28,7 +28,7 @@ from vtpgz_model import (
     MODE_RGB, MODE_RAW, MODE_YUV,
     YUV_444, YUV_422,
     RAW_PLAIN, RAW_RGGB, RAW_BGGR, RAW_GRBG, RAW_GBRG,
-    RGB_ORDER_XILINX, RGB_ORDER_LEGACY,
+    RGB_ORDER_XILINX, RGB_ORDER_LEGACY, smpte_host_geometry,
 )
 
 WIDTH, HEIGHT = 64, 32
@@ -55,6 +55,7 @@ def cfg_for(pat: int, mode: int, bpc: int, sub: int,
         box_width=16, box_height=16,
         box_dx=1, box_dy=1,
         box_border_color=0x00FFFFFF, box_border_width=1,
+        **smpte_host_geometry(WIDTH, HEIGHT),
     )
 
 
