@@ -682,9 +682,11 @@ chart uses -I and +Q. The bars are always 75%: `BAR_LEVEL` applies to the
 - **Interlaced.** Like every pattern, the chart is drawn per field. With
   `IMG_HEIGHT` set to the field height, `h = IMG_HEIGHT / 12` gives a full
   chart in each field, and the woven frame has the same proportions.
-- **Cost.** No DSP. The ramp's start offset `(d + c) * step` comes from a
+- **Cost.** About +600 LUT / +500 FF at 1 pixel per clock and +950 LUT at
+  4, with no DSP. The ramp's start offset `(d + c) * step` comes from a
   serial shift-add multiplier that settles within ~40 clocks of a register
-  write. Numbers are in [docs/resources.md](docs/resources.md).
+  write. Full numbers are in
+  [docs/resources.md](docs/resources.md#smpte-rp-219-chart).
 
 ### Image patterns
 
@@ -751,7 +753,8 @@ sub-linearly: 8× throughput costs about 2.8× the LUTs. The smallest build
 (1 pattern, RAW-8b) is ~546 LUT.
 
 The full per-configuration matrix — every mode/BPC, per-feature deltas, the
-PPC sweep, interlace, the YUV colorimetry options, and the tiniest build — is
+PPC sweep, interlace, the YUV colorimetry options, the SMPTE RP 219 chart,
+and the tiniest build — is
 in **[docs/resources.md](docs/resources.md)**.
 Reproduce with `python synth/run_matrix.py`.
 
