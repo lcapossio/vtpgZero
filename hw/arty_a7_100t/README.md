@@ -232,7 +232,7 @@ each build was constrained at.
 | RGB-8b, 2 pixels/clock | 100 MHz | +1.364 ns | 9/9 |
 | RGB-8b, 8 pixels/clock | 100 MHz | +0.216 ns | 9/9 |
 | YUV-10b BT.709 limited, 4 pixels/clock | 100 MHz | +1.136 ns | 9/9 |
-| RGB-8b, 4 pixels/clock, `VTPGZ_EN_SMPTE=1` | 100 MHz | +0.876 ns | not yet run |
+| RGB-8b, 4 pixels/clock, `VTPGZ_EN_SMPTE=1` | 100 MHz | +0.876 ns | 9/9, SMPTE chart included |
 
 The SMPTE build is 4564 LUT / 4296 FF for the whole demo, 0 DSP. Its worst
 path is the core's end-of-line compare feeding the chart's segment counter;
