@@ -885,7 +885,8 @@ module vtpgz_core #(
     // boundary falls inside a beat: lanes l >= sm_r are in segment sm_s+1, the
     // rest in sm_s. A row walker (sm_row / sm_rl) does the same once per line.
     // A lane's colour is SM_PAL[SM_MAP[{row, seg}]], two constant tables (the
-    // generated block above), so each output bit is one LUT of {row, seg}.
+    // generated block above). See g_smpte for how that is kept off the path
+    // into the pattern mux.
     //
     // Row 2's Y ramp is (x - (d + c)) * step in 1/256-code units, with a
     // 24-bit wrap. It is accumulated like HGRAD from -K at the start of each
@@ -919,9 +920,13 @@ module vtpgz_core #(
             end
         endfunction
 
-        // Quasi-static geometry, registered. The derived widths settle one
-        // clock after w_c / w_p, K a few dozen after that.
+        // Quasi-static geometry, registered. The derived widths settle a few
+        // clocks after w_c / w_p (5c/6 is staged: it is the longest), K a
+        // few dozen after that.
         reg [15:0] w_d, w_c, w_p, w_e, w_f, w_g;   // segment widths
+        reg [17:0] g_c3h;                           // 3c - c/2
+        reg [18:0] g_p5;                            // 5p
+        reg [20:0] g_raw;                           // 3c - c/2 - 5p, signed
         reg [15:0] a_c, a_e, a_f, a_g, a_p;        // the same, minus NPPC
         reg [15:0] h_1, h_23;                       // row heights, lines
         reg [15:0] rs;                              // ramp step, build scale
@@ -935,15 +940,17 @@ module vtpgz_core #(
                 a_g <= 16'h0; a_p <= 16'h0;
                 h_1 <= 16'd7; h_23 <= 16'd1;
                 rs  <= 16'h0; b2  <= 17'h0;
+                g_c3h <= 18'h0; g_p5 <= 19'h0; g_raw <= 21'h0;
             end else begin
                 w_d  <= sm_clamp({5'h0, cfg_smpte_side_d});
                 w_c  <= sm_clamp({5'h0, cfg_smpte_bar_c});
                 w_p  <= sm_clamp({5'h0, cfg_smpte_pluge_p});
                 w_e  <= sm_clamp({5'h0, w_c} + {6'h0, w_c[15:1]});
                 w_f  <= sm_clamp({4'h0, w_c, 1'b0});
-                w_g  <= sm_clamp({4'h0, w_c, 1'b0} + {5'h0, w_c}
-                                 - {6'h0, w_c[15:1]}
-                                 - {3'h0, w_p, 2'b0} - {5'h0, w_p});
+                g_c3h <= {1'b0, w_c, 1'b0} + {2'h0, w_c} - {3'h0, w_c[15:1]};
+                g_p5  <= {1'b0, w_p, 2'b0} + {3'h0, w_p};
+                g_raw <= {3'h0, g_c3h} - {2'h0, g_p5};
+                w_g   <= sm_clamp(g_raw);
                 a_c  <= w_c - NPPC[15:0];
                 a_e  <= w_e - NPPC[15:0];
                 a_f  <= w_f - NPPC[15:0];
@@ -985,66 +992,138 @@ module vtpgz_core #(
         end
 
         // ---- row and segment walkers ----
+        // sm_s is lane 0's segment and sm_r the pixels left in it, counting
+        // lane 0; sm_row / sm_rl do the same once per line.
+        //
+        // Timing: the per-lane colour feeds the pattern mux, so nothing on
+        // the output side is computed from the walker. Everything a lane
+        // needs is registered: its "in segment sm_s + 1" flag (nx), the
+        // colours of segments sm_s and sm_s + 1 (shared by all lanes) and its
+        // ramp value. The flags' next state uses only small compares, on
+        // sm_r and on 4-bit saturated copies of the widths, never the 16-bit
+        // sum the walker computes: only lanes 0..NPPC-1 (< 8) are compared,
+        // so any count of 16 or more can saturate.
         reg [1:0]  sm_row;
         reg [15:0] sm_rl;       // lines left in this row, counting this one
         reg [3:0]  sm_s;
         reg [15:0] sm_r;        // pixels left in segment sm_s, counting lane 0
         wire [3:0] s_inc = sm_s + 4'd1;
+        reg [3:0]  as_c, as_e, as_f, as_g, as_p;    // min(a_*, 15)
+        always @(posedge aclk) begin
+            as_c <= (|a_c[15:4]) ? 4'hF : a_c[3:0];
+            as_e <= (|a_e[15:4]) ? 4'hF : a_e[3:0];
+            as_f <= (|a_f[15:4]) ? 4'hF : a_f[3:0];
+            as_g <= (|a_g[15:4]) ? 4'hF : a_g[3:0];
+            as_p <= (|a_p[15:4]) ? 4'hF : a_p[3:0];
+        end
         reg [15:0] a_next;      // width of segment s_inc, minus NPPC
+        reg [3:0]  as_next;     // the same, saturated at 15
         always @* begin
             if (sm_row == 2'd3) begin
                 case (s_inc)
-                    4'd1:                         a_next = a_e;
-                    4'd2:                         a_next = a_f;
-                    4'd3:                         a_next = a_g;
-                    4'd4, 4'd5, 4'd6, 4'd7, 4'd8: a_next = a_p;
-                    4'd9:                         a_next = a_c;
-                    default:                      a_next = A_INF;
+                    4'd1:                         begin a_next = a_e;   as_next = as_e; end
+                    4'd2:                         begin a_next = a_f;   as_next = as_f; end
+                    4'd3:                         begin a_next = a_g;   as_next = as_g; end
+                    4'd4, 4'd5, 4'd6, 4'd7, 4'd8: begin a_next = a_p;   as_next = as_p; end
+                    4'd9:                         begin a_next = a_c;   as_next = as_c; end
+                    default:                      begin a_next = A_INF; as_next = 4'hF; end
                 endcase
+            end else if (s_inc <= 4'd7) begin
+                a_next = a_c;   as_next = as_c;
             end else begin
-                a_next = (s_inc <= 4'd7) ? a_c : A_INF;
-            end
-        end
-        always @(posedge aclk) begin
-            if (!aresetn || frame_init) begin
-                sm_row <= 2'd0;
-                sm_rl  <= h_1;
-            end else if (source_advance && last_x) begin
-                if (last_y) begin
-                    sm_row <= 2'd0;
-                    sm_rl  <= h_1;
-                end else if (sm_row != 2'd3) begin
-                    if (sm_rl == 16'h1) begin
-                        sm_row <= sm_row + 2'd1;
-                        sm_rl  <= h_23;       // rows 1 and 2 (row 3 ignores it)
-                    end else begin
-                        sm_rl  <= sm_rl - 16'h1;
-                    end
-                end
-            end
-        end
-        // The next segment starts inside this beat (or at the next one) when
-        // sm_r <= NPPC; the new count is then sm_r + width - NPPC >= 1.
-        always @(posedge aclk) begin
-            if (!aresetn || frame_init) begin
-                sm_s <= 4'h0;
-                sm_r <= w_d;
-            end else if (source_advance) begin
-                if (last_x) begin
-                    sm_s <= 4'h0;
-                    sm_r <= w_d;
-                end else if (sm_r > NPPC[15:0]) begin
-                    sm_r <= sm_r - NPPC[15:0];
-                end else begin
-                    sm_s <= s_inc;
-                    sm_r <= sm_r + a_next;
-                end
+                a_next = A_INF; as_next = 4'hF;
             end
         end
 
-        // ---- ramp accumulator (lane 0), same structure as g_hgrad ----
-        reg [23:0] sm_q;
-        wire [23:0] rmul [0:NPPC] /* verilator split_var */;   // m * rs
+        // The next segment starts inside this beat (or at the next one) when
+        // sm_r <= NPPC; the new count is then sm_r + width - NPPC >= 1.
+        wire line_start = !aresetn || frame_init || (source_advance && last_x);
+        wire r_big      = (sm_r > NPPC[15:0]);
+        reg  [1:0] row_n;
+        reg  [3:0] s_n;
+        always @* begin
+            row_n = sm_row;
+            if (!aresetn || frame_init)
+                row_n = 2'd0;
+            else if (source_advance && last_x) begin
+                if (last_y)
+                    row_n = 2'd0;
+                else if (sm_row != 2'd3 && sm_rl == 16'h1)
+                    row_n = sm_row + 2'd1;
+            end
+            s_n = sm_s;
+            if (line_start)
+                s_n = 4'h0;
+            else if (source_advance && !r_big)
+                s_n = s_inc;
+        end
+        always @(posedge aclk) begin
+            sm_row <= row_n;
+            sm_s   <= s_n;
+            if (!aresetn || frame_init)
+                sm_rl <= h_1;
+            else if (source_advance && last_x) begin
+                if (last_y)
+                    sm_rl <= h_1;
+                else if (sm_row != 2'd3)
+                    sm_rl <= (sm_rl == 16'h1) ? h_23 : sm_rl - 16'h1;
+            end
+            if (line_start)
+                sm_r <= w_d;
+            else if (source_advance)
+                sm_r <= r_big ? sm_r - NPPC[15:0] : sm_r + a_next;
+        end
+
+        // Colours of segments sm_s and sm_s + 1 in row sm_row, as
+        // {is_ramp, palette entry}. Every value they can take next is a
+        // lookup of the current registers, so last_x and friends (deep
+        // compares in the timing engine) only drive the final select.
+        function [36:0] sm_color;
+            input [1:0] row;
+            input [3:0] seg;
+            reg   [4:0] ci;
+            begin
+                ci       = SM_MAP[5*{row, seg} +: 5];
+                sm_color = {ci == SM_RAMP, SM_PAL[36*ci +: 36]};
+            end
+        endfunction
+        wire [1:0]  row_p1 = sm_row + 2'd1;
+        wire [3:0]  s_inc2 = sm_s + 4'd2;
+        wire [36:0] k_c0 = sm_color(2'd0,   4'd0);   // first row, line start
+        wire [36:0] k_x0 = sm_color(2'd0,   4'd1);
+        wire [36:0] k_cs = sm_color(sm_row, 4'd0);   // same row, line start
+        wire [36:0] k_xs = sm_color(sm_row, 4'd1);
+        wire [36:0] k_cr = sm_color(row_p1, 4'd0);   // next row, line start
+        wire [36:0] k_xr = sm_color(row_p1, 4'd1);
+        wire [36:0] k_x2 = sm_color(sm_row, s_inc2); // segment sm_s + 2
+        reg  [36:0] col_c, col_x;
+        always @(posedge aclk) begin
+            if (!aresetn || frame_init) begin
+                col_c <= k_c0;
+                col_x <= k_x0;
+            end else if (source_advance && last_x) begin
+                if (last_y) begin
+                    col_c <= k_c0;
+                    col_x <= k_x0;
+                end else if (sm_row != 2'd3 && sm_rl == 16'h1) begin
+                    col_c <= k_cr;
+                    col_x <= k_xr;
+                end else begin
+                    col_c <= k_cs;
+                    col_x <= k_xs;
+                end
+            end else if (source_advance && !r_big) begin
+                col_c <= col_x;
+                col_x <= k_x2;
+            end
+        end
+        wire        rmp_c = col_c[36];
+        wire        rmp_x = col_x[36];
+        wire [35:0] pal_c = col_c[35:0];
+        wire [35:0] pal_x = col_x[35:0];
+
+        // ramp step per lane offset: rmul[m] = m * rs
+        wire [23:0] rmul [0:NPPC] /* verilator split_var */;
         assign rmul[0] = 24'h0;
         genvar sm_m;
         for (sm_m = 1; sm_m <= NPPC; sm_m = sm_m + 1) begin : g_sm_rmul
@@ -1056,32 +1135,62 @@ module vtpgz_core #(
                 assign rmul[sm_m] = {8'h0, rs};
             end
         end
-        always @(posedge aclk) begin
-            if (!aresetn || frame_init) sm_q <= 24'h0 - sm_k;
-            else if (source_advance)    sm_q <= last_x ? (24'h0 - sm_k)
-                                                       : (sm_q + rmul[NPPC]);
-        end
         localparam [11:0] SM_VMAX = YUV_LIMITED_BUILD ? 12'd3504 : 12'hFFF;
+        // A ramp accumulator value as the output code: clip at the range's
+        // white, then put it on the range's black.
+        function [11:0] sm_ramp_val;
+            input [23:0] q;
+            reg   [11:0] v;
+            begin
+                v = (|q[23:20]) ? 12'hFFF : q[19:8];
+                // Constant false outside a LIMITED build (SM_VMAX = 0xFFF).
+                /* verilator lint_off CMPCONST */
+                sm_ramp_val = Y_BLACK_LIM + ((v > SM_VMAX) ? SM_VMAX : v);
+                /* verilator lint_on CMPCONST */
+            end
+        endfunction
 
-        // ---- per-lane colour ----
-        wire [4:0] r_sat = (|sm_r[15:4]) ? 5'd16 : {1'b0, sm_r[3:0]};
+        // ---- per lane ----
         genvar sl;
         for (sl = 0; sl < NPPC; sl = sl + 1) begin : g_sm_lane
-            wire        nxt  = ({2'b0, sl[2:0]} >= r_sat);
-            wire [3:0]  seg  = nxt ? s_inc : sm_s;
-            wire [4:0]  cidx = SM_MAP[5*{sm_row, seg} +: 5];
-            wire [35:0] pal  = SM_PAL[36*cidx +: 36];
-            wire        rmp  = (cidx == SM_RAMP);
-            wire [23:0] ql   = sm_q + rmul[sl];
-            wire [11:0] v0   = (|ql[23:20]) ? 12'hFFF : ql[19:8];
-            // Constant false outside a LIMITED build, where SM_VMAX is 0xFFF.
-            /* verilator lint_off CMPCONST */
-            wire [11:0] rv   = Y_BLACK_LIM + ((v0 > SM_VMAX) ? SM_VMAX : v0);
-            /* verilator lint_on CMPCONST */
-            wire [11:0] rvc  = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : rv;
-            assign sm_c0_bus[12*sl +: 12] = rmp ? rv  : pal[35:24];
-            assign sm_c1_bus[12*sl +: 12] = rmp ? rvc : pal[23:12];
-            assign sm_c2_bus[12*sl +: 12] = rmp ? rvc : pal[11:0];
+            // nx: sm_r <= sl, i.e. this lane is past the end of segment sm_s.
+            reg         wd_le;  // w_d <= sl: the flag at the start of a line
+            reg         nx;
+            wire [4:0]  bsum   = {1'b0, sm_r[3:0]} + {1'b0, as_next};
+            wire        fl_big = (sm_r <= sl + NPPC);   // sm_r - NPPC <= sl
+            wire        fl_bnd = (bsum <= sl);          // sm_r + a_next <= sl
+            wire        nx_n   = line_start      ? wd_le :
+                                 !source_advance ? nx    :
+                                 r_big           ? fl_big : fl_bnd;
+            // Ramp, (x - (d + c)) * step for this lane's pixel, accumulated
+            // like HGRAD. The output value is registered, from candidates
+            // for a line start (quasi-static, so registered too) and for an
+            // advance, so the line-start select comes last.
+            reg  [23:0] ql;
+            reg  [11:0] rv, rv_st;
+            wire [23:0] ql_st = rmul[sl] - sm_k;
+            wire [23:0] ql_ad = ql + rmul[NPPC];
+            wire [11:0] rv_ad = sm_ramp_val(ql_ad);
+            wire [11:0] rv_s  = sm_ramp_val(ql_st);
+            always @(posedge aclk) begin
+                wd_le <= (w_d <= sl);
+                nx    <= nx_n;
+                rv_st <= rv_s;
+                if (line_start) begin
+                    ql <= ql_st;
+                    rv <= rv_st;
+                end else if (source_advance) begin
+                    ql <= ql_ad;
+                    rv <= rv_ad;
+                end
+            end
+            wire [11:0] rvc = (OUTPUT_MODE == `VTPGZ_MODE_YUV) ? 12'h800 : rv;
+            assign sm_c0_bus[12*sl +: 12] = nx ? (rmp_x ? rv  : pal_x[35:24])
+                                               : (rmp_c ? rv  : pal_c[35:24]);
+            assign sm_c1_bus[12*sl +: 12] = nx ? (rmp_x ? rvc : pal_x[23:12])
+                                               : (rmp_c ? rvc : pal_c[23:12]);
+            assign sm_c2_bus[12*sl +: 12] = nx ? (rmp_x ? rvc : pal_x[11:0])
+                                               : (rmp_c ? rvc : pal_c[11:0]);
         end
     end else begin : g_smpte_off
         // Stripped: the slot still exists and must read as black.

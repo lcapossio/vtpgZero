@@ -158,21 +158,26 @@ removes its registers and logic entirely. Reproducible on its own with
 
 | Config | PPC | LUT | FF | ΔLUT | ΔFF |
 |---|---:|---:|---:|---:|---:|
-| `only_smpte_yuv` (vs `baseline_solid_yuv`) | 1 |  1136 | 1462 |  +598 | +504 |
-| `ppc1_full_rgb_8b_smpte`    | 1 | 1982 | 1737 |  +602 | +493 |
-| `ppc2_full_rgb_8b_smpte`    | 2 | 2391 | 1973 |  +764 | +510 |
-| `ppc4_full_rgb_8b_smpte`    | 4 | 3347 | 2319 |  +949 | +533 |
-| `ppc8_full_rgb_8b_smpte`    | 8 | 5347 | 3034 | +1512 | +590 |
-| `ppc1_yuv_10b_709lim_smpte` | 1 | 2130 | 1743 |  +735 | +496 |
-| `ppc4_yuv_10b_709lim_smpte` | 4 | 3686 | 2339 | +1173 | +543 |
+| `only_smpte_yuv` (vs `baseline_solid_yuv`) | 1 | 1235 | 1631 |  +697 |  +673 |
+| `ppc1_full_rgb_8b_smpte`    | 1 | 2042 | 1897 |  +662 |  +653 |
+| `ppc2_full_rgb_8b_smpte`    | 2 | 2412 | 2185 |  +785 |  +722 |
+| `ppc4_full_rgb_8b_smpte`    | 4 | 3453 | 2613 | +1055 |  +827 |
+| `ppc8_full_rgb_8b_smpte`    | 8 | 5560 | 3537 | +1725 | +1093 |
+| `ppc1_yuv_10b_709lim_smpte` | 1 | 2214 | 1914 |  +819 |  +667 |
+| `ppc4_yuv_10b_709lim_smpte` | 4 | 3779 | 2646 | +1266 |  +850 |
 
-No DSP in any of them. The ~500 FF are mostly shared, whatever the PPC:
-the three geometry registers, the registered derived widths (each also
-held minus PPC, so the segment walker's update is a single add), the
-serial multiplier that produces the ramp's start offset, and the row,
-segment and ramp counters. The LUTs that grow with PPC are the per-lane
-palette lookup and ramp clip. The last row is the RP 219 target build at
-4 pixels per clock.
+No DSP in any of them. About 600 FF are shared, whatever the PPC: the
+three geometry registers, the registered derived widths (each also held
+minus PPC, so the segment walker's update is a single add), the serial
+multiplier that produces the ramp's start offset, the row and segment
+counters, and the two candidate colours. Each lane adds about 60 FF: its
+own ramp accumulator and registered ramp value, its multiple of the ramp
+step, and its segment flag. That
+per-lane registering is what keeps the chart off the critical path. Without
+it, the Arty demo at 4 pixels per clock closed 100 MHz with only +0.13 ns;
+with it, +0.88 ns. The LUTs that grow with PPC are the per-lane ramp
+adders and output selects. The last row is the RP 219 target build at 4
+pixels per clock.
 
 **Test conditions**: Vivado 2025.2, target `xc7a100tcsg324-1` -1 speed grade,
 `synth_design` default strategy, out-of-context mode. No timing constraints

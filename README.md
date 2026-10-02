@@ -682,8 +682,9 @@ chart uses -I and +Q. The bars are always 75%: `BAR_LEVEL` applies to the
 - **Interlaced.** Like every pattern, the chart is drawn per field. With
   `IMG_HEIGHT` set to the field height, `h = IMG_HEIGHT / 12` gives a full
   chart in each field, and the woven frame has the same proportions.
-- **Cost.** About +600 LUT / +500 FF at 1 pixel per clock and +950 LUT at
-  4, with no DSP. The ramp's start offset `(d + c) * step` comes from a
+- **Cost.** About +660 LUT / +650 FF at 1 pixel per clock and +1050 LUT /
+  +830 FF at 4, with no DSP. The Arty demo with the chart still closes
+  100 MHz at 4 pixels per clock. The ramp's start offset `(d + c) * step` comes from a
   serial shift-add multiplier that settles within ~40 clocks of a register
   write. Full numbers are in
   [docs/resources.md](docs/resources.md#smpte-rp-219-chart).

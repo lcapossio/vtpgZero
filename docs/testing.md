@@ -426,8 +426,7 @@ it to the build, e.g. `build.py VTPGZ_PIXELS_PER_CLOCK=1` (1/2/4/8), and
 re-run — `frame_capture` serializes each wide beat into
 `ceil(TDATA_WIDTH/32)` little-endian words and `run_hw_test.py` reads back
 the configured PPC and checks byte-exact. PPC>1 builds run the demo at
-50 MHz instead of 130 MHz (`clk_gen`'s `CLKOUT0_DIVIDE`): the per-lane
-counter-chain patterns (checker/grid) do not close 130 MHz, and the demo
-targets correctness rather than throughput. `build.tcl` prints the clock the
-build was actually constrained at. PPC=4 is verified byte-exact across all
-patterns on the board.
+100 MHz instead of 130 MHz (`clk_gen`'s `CLKOUT0_DIVIDE_F`): the wider
+per-lane datapath does not close 130 MHz on this -1 part. `build.tcl` prints
+the clock the build was actually constrained at. PPC 2, 4 and 8 are verified
+byte-exact across all patterns on the board.
