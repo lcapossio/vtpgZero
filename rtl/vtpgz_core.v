@@ -922,7 +922,8 @@ module vtpgz_core #(
 
         // Quasi-static geometry, registered. The derived widths settle a few
         // clocks after w_c / w_p (5c/6 is staged: it is the longest), K a
-        // few dozen after that.
+        // few dozen after that. The row heights take one clock, like
+        // img_height_eff, since a frame can load them as soon as it starts.
         reg [15:0] w_d, w_c, w_p, w_e, w_f, w_g;   // segment widths
         reg [17:0] g_c3h;                           // 3c - c/2
         reg [18:0] g_p5;                            // 5p
@@ -932,6 +933,8 @@ module vtpgz_core #(
         reg [15:0] rs;                              // ramp step, build scale
         reg [16:0] b2;                              // ramp start x = d + c
         wire [15:0] rs_lim = sm_lim_step(cfg_smpte_ramp_step);
+        wire [15:0] h_in = (cfg_smpte_row_h == 16'h0) ? 16'h1 : cfg_smpte_row_h;
+        wire [18:0] h_7  = {h_in, 3'b0} - {3'h0, h_in};   // 7h, no DSP
         always @(posedge aclk) begin
             if (!aresetn) begin
                 w_d <= NPPC[15:0]; w_c <= NPPC[15:0]; w_p <= NPPC[15:0];
@@ -956,8 +959,8 @@ module vtpgz_core #(
                 a_f  <= w_f - NPPC[15:0];
                 a_g  <= w_g - NPPC[15:0];
                 a_p  <= w_p - NPPC[15:0];
-                h_23 <= (cfg_smpte_row_h == 16'h0) ? 16'h1 : cfg_smpte_row_h;
-                h_1  <= (|h_23[15:13]) ? 16'hFFFF : ({h_23[12:0], 3'b0} - h_23);
+                h_23 <= h_in;
+                h_1  <= (|h_7[18:16]) ? 16'hFFFF : h_7[15:0];
                 rs   <= YUV_LIMITED_BUILD ? rs_lim : cfg_smpte_ramp_step;
                 b2   <= {1'b0, w_d} + {1'b0, w_c};
             end

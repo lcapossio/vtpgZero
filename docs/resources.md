@@ -158,13 +158,13 @@ removes its registers and logic entirely. Reproducible on its own with
 
 | Config | PPC | LUT | FF | ΔLUT | ΔFF |
 |---|---:|---:|---:|---:|---:|
-| `only_smpte_yuv` (vs `baseline_solid_yuv`) | 1 | 1235 | 1631 |  +697 |  +673 |
-| `ppc1_full_rgb_8b_smpte`    | 1 | 2042 | 1897 |  +662 |  +653 |
-| `ppc2_full_rgb_8b_smpte`    | 2 | 2412 | 2185 |  +785 |  +722 |
-| `ppc4_full_rgb_8b_smpte`    | 4 | 3453 | 2613 | +1055 |  +827 |
-| `ppc8_full_rgb_8b_smpte`    | 8 | 5560 | 3537 | +1725 | +1093 |
-| `ppc1_yuv_10b_709lim_smpte` | 1 | 2214 | 1914 |  +819 |  +667 |
-| `ppc4_yuv_10b_709lim_smpte` | 4 | 3779 | 2646 | +1266 |  +850 |
+| `only_smpte_yuv` (vs `baseline_solid_yuv`) | 1 | 1237 | 1631 |  +699 |  +673 |
+| `ppc1_full_rgb_8b_smpte`    | 1 | 2041 | 1897 |  +661 |  +653 |
+| `ppc2_full_rgb_8b_smpte`    | 2 | 2413 | 2185 |  +786 |  +722 |
+| `ppc4_full_rgb_8b_smpte`    | 4 | 3315 | 2612 |  +917 |  +826 |
+| `ppc8_full_rgb_8b_smpte`    | 8 | 5253 | 3518 | +1418 | +1074 |
+| `ppc1_yuv_10b_709lim_smpte` | 1 | 2215 | 1914 |  +820 |  +667 |
+| `ppc4_yuv_10b_709lim_smpte` | 4 | 3936 | 2647 | +1423 |  +851 |
 
 No DSP in any of them. About 600 FF are shared, whatever the PPC: the
 three geometry registers, the registered derived widths (each also held
@@ -175,7 +175,7 @@ own ramp accumulator and registered ramp value, its multiple of the ramp
 step, and its segment flag. That
 per-lane registering is what keeps the chart off the critical path. Without
 it, the Arty demo at 4 pixels per clock closed 100 MHz with only +0.13 ns;
-with it, +0.88 ns. The LUTs that grow with PPC are the per-lane ramp
+with it, +0.97 ns. The LUTs that grow with PPC are the per-lane ramp
 adders and output selects. The last row is the RP 219 target build at 4
 pixels per clock.
 

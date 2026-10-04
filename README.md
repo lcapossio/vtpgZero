@@ -671,18 +671,22 @@ chart uses -I and +Q. The bars are always 75%: `BAR_LEVEL` applies to the
   `p` and row unit `h` (formulas in the [register
   map](#register-map-axi4-lite-32-bit)). The core derives the row-4 widths
   3c/2 and 2c, and makes 5c/6 the remainder, so both column layouts end at
-  `d + 7c`. The reset values are the 1920x1080 geometry: c=206, d=239, p=69,
+  `d + 7c` (unless a width is too small and gets clamped, see below). The reset values are the 1920x1080 geometry: c=206, d=239, p=69,
   h=90. Every bar is `c` wide, so at 1920 the chart is not pixel-identical to
   RP 219's table, which alternates 205- and 206-pixel bars around 240-pixel
   side panels. The structure and colors match. Every width is clamped to at
-  least `PIXELS_PER_CLOCK`.
+  least `PIXELS_PER_CLOCK`. Like the other geometry, these registers are
+  meant to be written while the core is disabled: a write during a frame
+  takes effect at the next line or frame, not at a clean frame boundary.
 - **Ramp.** The Y ramp spans the five middle bars. Its step is rounded up
   and the end clipped, so it reaches white exactly on its last pixel: 64 to
-  940 at 10 bits in limited range, 0 to full scale otherwise.
+  940 at 10 bits in limited range, 0 to full scale otherwise. This needs
+  `c >= 4` (a frame at least 33 pixels wide); below that the step does not
+  fit its 16 bits.
 - **Interlaced.** Like every pattern, the chart is drawn per field. With
   `IMG_HEIGHT` set to the field height, `h = IMG_HEIGHT / 12` gives a full
   chart in each field, and the woven frame has the same proportions.
-- **Cost.** About +660 LUT / +650 FF at 1 pixel per clock and +1050 LUT /
+- **Cost.** About +660 LUT / +650 FF at 1 pixel per clock and +920 LUT /
   +830 FF at 4, with no DSP. The Arty demo with the chart still closes
   100 MHz at 4 pixels per clock. The ramp's start offset `(d + c) * step` comes from a
   serial shift-add multiplier that settles within ~40 clocks of a register
