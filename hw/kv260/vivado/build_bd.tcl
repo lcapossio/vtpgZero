@@ -80,6 +80,7 @@ set_property -dict [list \
     CONFIG.BOX_IMAGE_W            32 \
     CONFIG.BOX_IMAGE_H            32 \
     CONFIG.BOX_IMAGE_HEX_FILE $BOX_IMG_HEX \
+    CONFIG.EN_SMPTE                1 \
 ] [get_bd_cells u_tpg]
 
 create_bd_cell -type module -reference axis_to_ddr_writer u_writer

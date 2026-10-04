@@ -51,7 +51,7 @@ help banner. Available keys:
 
 | Key | Effect |
 |-----|--------|
-| `0`..`9` (skip `5`) | switch `PATTERN_SEL` (0=bars, 1=hgrad, 2=vgrad, 3=checker, 4=solid, 6=grid, 7=ramp, 8=noise, 9=image) |
+| `0`..`9` | switch `PATTERN_SEL` (0=bars, 1=hgrad, 2=vgrad, 3=checker, 4=solid, 5=SMPTE RP 219, 6=grid, 7=ramp, 8=noise, 9=image) |
 | `+` / `-` | grow / shrink the box in 16-px steps (image-in-box auto-rescales) |
 | `f` / `s` | faster / slower box motion |
 | `b` | cycle box color through an 8-entry palette (visible only when image-in-box is off) |
@@ -108,3 +108,8 @@ free-run behavior, tearing reappears).
   size change. To disable image-in-box at runtime, write `0` to either
   step register (the `i` UART key does this); the box reverts to solid
   `cfg_box_color`.
+- The BD also sets `EN_SMPTE=1`, so `PATTERN_SEL=5` is the SMPTE RP 219
+  chart. Its geometry registers reset to 1920x1080 values, so the app writes
+  the 1280x720 geometry at init (bar 137, side panel 160, PLUGE step 46, row
+  unit 60, ramp step 1533). The bouncing box draws over it like any other
+  pattern.
