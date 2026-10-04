@@ -233,11 +233,14 @@ each build was constrained at.
 | RGB-8b, 8 pixels/clock | 100 MHz | +0.216 ns | 9/9 |
 | YUV-10b BT.709 limited, 4 pixels/clock | 100 MHz | +1.136 ns | 9/9 |
 | RGB-8b, 4 pixels/clock, `VTPGZ_EN_SMPTE=1` | 100 MHz | +0.967 ns | 9/9, SMPTE chart included |
+| YUV-10b BT.709 limited, 4 pixels/clock, `VTPGZ_EN_SMPTE=1` | 100 MHz | +0.654 ns | 9/9, SMPTE chart included |
 
-The SMPTE build is 4734 LUT / 4309 FF for the whole demo, 0 DSP. Its worst
-path is the downstream `tready` (from the capture core) through the core's
-advance enable into the chart's segment counter; the chart's per-lane colour
-logic is registered, so it is not on it.
+The RGB SMPTE build is 4734 LUT / 4309 FF for the whole demo, the YUV one
+4867 LUT / 4356 FF, both 0 DSP. In the RGB build the worst path is the
+downstream `tready` (from the capture core) through the core's advance enable
+into the chart's segment counter; in the YUV build it is the 8-bar colorbar's
+bar-index logic. The chart's per-lane colour logic is registered, so it is on
+neither.
 
 ## File layout
 
