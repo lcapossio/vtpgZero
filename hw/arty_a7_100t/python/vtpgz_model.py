@@ -28,7 +28,7 @@ PAT_HGRAD      = 1
 PAT_VGRAD      = 2
 PAT_CHECKER    = 3
 PAT_SOLID      = 4
-PAT_MOVING_BOX = 5
+PAT_SMPTE      = 5   # SMPTE RP 219 HD bars (EN_SMPTE); was PAT_MOVING_BOX
 PAT_GRID       = 6
 PAT_RAMP       = 7
 PAT_NOISE      = 8
@@ -126,6 +126,15 @@ class VtpgzConfig:
     # into one wider beat, lane 0 (leftmost pixel) in the LSBs. width must
     # be a multiple of pixels_per_clock. See render_frame_beats().
     pixels_per_clock: int = 1
+    # SMPTE RP 219 geometry (PAT_SMPTE, EN_SMPTE=1): side panel d, bar c,
+    # PLUGE step p, row unit h (row bands 7h, h, h, rest) and the Y-ramp step
+    # in 1/256 of a 12-bit code per pixel. See vtpgz_defs.vh for the host
+    # formulas.
+    smpte_side_d: int = 239
+    smpte_bar_c: int = 206
+    smpte_pluge_p: int = 69
+    smpte_row_h: int = 90
+    smpte_ramp_step: int = 1019
 
     @property
     def tdata_width(self) -> int:
@@ -197,6 +206,9 @@ if str(_SCRIPTS) not in _sys.path:
     _sys.path.insert(0, str(_SCRIPTS))
 from gen_yuv_palettes import palette as _gen_palette  # noqa: E402
 from gen_yuv_palettes import pal_bits as _pal_bits    # noqa: E402
+from gen_yuv_palettes import smpte_palette as _gen_smpte_palette  # noqa: E402
+from gen_yuv_palettes import smpte_map as _gen_smpte_map          # noqa: E402
+from gen_yuv_palettes import SMPTE_RAMP as _SMPTE_RAMP            # noqa: E402
 
 _PALETTES: dict = {}
 
@@ -224,6 +236,98 @@ PALETTE_RGB = bar_palette(MODE_RGB)
 PALETTE_YUV = bar_palette(MODE_YUV)
 
 CHROMA_NEUTRAL = 0x800  # 12-bit Q12 neutral chroma (0.5)
+
+_SMPTE_PALETTES: dict = {}
+SMPTE_MAP = _gen_smpte_map()
+
+
+def smpte_palette(output_mode: int, yuv_matrix: int = YUV_BT601,
+                  yuv_range: int = YUV_FULL, bpc: int = 8) -> list:
+    """The SMPTE RP 219 palette of one build: 21 triples, index order
+    (see gen_yuv_palettes.SMPTE_COLORS). Independent of bar_level."""
+    yuv = (output_mode == MODE_YUV)
+    key = ((yuv, yuv_matrix, yuv_range) if yuv else (False, 0, 0),
+           _pal_bits(bpc))
+    if key not in _SMPTE_PALETTES:
+        _SMPTE_PALETTES[key] = [t for _, t in _gen_smpte_palette(
+            yuv, "709" if yuv_matrix == YUV_BT709 else "601",
+            yuv_range == YUV_LIMITED, _pal_bits(bpc))]
+    return _SMPTE_PALETTES[key]
+
+
+def smpte_host_geometry(width: int, height: int) -> dict:
+    """The SMPTE register values a host writes for a width x height frame
+    (the formulas documented at VTPGZ_REG_SMPTE_GEOM0 in vtpgz_defs.vh), as
+    VtpgzConfig field overrides. c = round(3W/28), d = (W - 7c)/2,
+    p = round(c/3), h = H/12, step = ceil((4095 << 8) / (5c - 1)): rounded
+    up so the ramp reaches white, the RTL clipping the overshoot."""
+    c = max((3 * width + 14) // 28, 1)
+    d = max((width - 7 * c) // 2, 0)
+    return dict(smpte_side_d=d, smpte_bar_c=c, smpte_pluge_p=(c + 1) // 3,
+                smpte_row_h=height // 12,
+                smpte_ramp_step=-(-(4095 << 8) // max(5 * c - 1, 1)) & 0xFFFF)
+
+
+def smpte_geometry(cfg: VtpgzConfig) -> dict:
+    """The RP 219 layout the RTL derives from the SMPTE registers.
+
+    Every width is clamped to [pixels_per_clock, 0xFFFF], as the RTL does so
+    that at most one segment boundary falls inside a beat. Returns the
+    boundary x positions of layout A (rows 0-2) and B (row 3), the row
+    boundary y positions and the ramp start.
+    """
+    n = cfg.pixels_per_clock
+
+    def clamp(v: int) -> int:
+        return min(max(v, n), 0xFFFF)
+
+    d = clamp(cfg.smpte_side_d & 0xFFFF)
+    c = clamp(cfg.smpte_bar_c & 0xFFFF)
+    p = clamp(cfg.smpte_pluge_p & 0xFFFF)
+    e = clamp(c + (c >> 1))                     # 3c/2
+    f = clamp(2 * c)                            # 2c
+    g = clamp(3 * c - (c >> 1) - 5 * p)         # 5c/6: the remainder to 7c
+    h = max(cfg.smpte_row_h & 0xFFFF, 1)
+    h1 = min(7 * h, 0xFFFF)
+
+    def cum(widths):
+        out, acc = [], 0
+        for w in widths:
+            acc += w
+            out.append(acc)
+        return out
+
+    return {
+        "a": cum([d] + [c] * 7),
+        "b": cum([d, e, f, g] + [p] * 5 + [c]),
+        "rows": [h1, h1 + h, h1 + 2 * h],
+        "ramp_x": d + c,
+    }
+
+
+def _smpte_pixel(cfg: VtpgzConfig, x: int, y: int) -> tuple[int, int, int]:
+    """SMPTE RP 219 pixel at (x, y): a pure function of position, the
+    reference the RTL's segment walker must match at every PPC."""
+    geo = smpte_geometry(cfg)
+    row = sum(1 for b in geo["rows"] if y >= b)
+    seg = sum(1 for b in geo["b" if row == 3 else "a"] if x >= b)
+    cidx = SMPTE_MAP[row][seg]
+    is_yuv = (cfg.output_mode == MODE_YUV)
+    if cidx != _SMPTE_RAMP:
+        return smpte_palette(cfg.output_mode, cfg.yuv_matrix, cfg.yuv_range,
+                             cfg.bpc)[cidx]
+    # The Y ramp, mirroring the RTL: (x - ramp_x) * step with a 24-bit wrap,
+    # the step pre-scaled by 3505/4096 (rounded up) in a LIMITED build and
+    # the result clipped to the range's white and put on its black.
+    limited = is_yuv and cfg.yuv_range == YUV_LIMITED
+    step = cfg.smpte_ramp_step & 0xFFFF
+    if limited:
+        step = (step * 3505 + 4095) >> 12
+    q = ((x - geo["ramp_x"]) * step) & 0xFFFFFF
+    v = 0xFFF if (q >> 20) else (q >> 8) & 0xFFF
+    if limited:
+        v = 0x100 + min(v, 3504)
+    return (v, CHROMA_NEUTRAL, CHROMA_NEUTRAL) if is_yuv else (v, v, v)
 
 
 def img_expand(v8: int, output_mode: int) -> int:
@@ -289,9 +393,8 @@ def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int,
         b = ( cfg.solid_color        & 0xFF) << 4
         return (r, g, b)
 
-    # PAT_MOVING_BOX is no longer a standalone pattern; the box is a
-    # post-mux overlay (see _box_overlay below). Selecting pattern 5
-    # produces black.
+    if pat == PAT_SMPTE:
+        return _smpte_pixel(cfg, x, y)
 
     if pat == PAT_GRID:
         on = (regs.gx_cnt == 0) or (regs.gy_cnt == 0)
@@ -314,7 +417,7 @@ def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int,
         # Centred, scaled with Q16 nearest-neighbour. Source pixel index
         # for output pixel k (0..image_out_w - 1) is (k * step) >> 16,
         # where step = (image_w << 16) // image_out_w, mirroring the RTL.
-        # No image, or outside its window: the build's black, like slot 5.
+        # No image, or outside its window: the build's black, like an unused code.
         if cfg.image_w == 0 or cfg.image_h == 0 or not cfg.image_rgb888:
             return gray(0)
         out_w = cfg.image_out_w or cfg.image_w
@@ -335,7 +438,7 @@ def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int,
         m = cfg.output_mode
         return (img_expand(r8, m), img_expand(g8, m), img_expand(b8, m))
 
-    # Slot 5 and any unused code: black for THIS build. In YUV that is
+    # Any unused code: black for THIS build. In YUV that is
     # neutral chroma (and limited-range Y in a LIMITED build), not {0,0,0},
     # which would be saturated green. gray(0) is exactly that triple.
     return gray(0)
@@ -738,7 +841,7 @@ if __name__ == "__main__":
 
     # Sweep all (mode, bpc) combos
     n = 0
-    for pat in range(9):
+    for pat in range(10):
         for output_mode in (MODE_RGB, MODE_RAW, MODE_YUV):
             for bpc in (8, 10, 12, 14, 16):
                 for sub in (YUV_444, YUV_422) if output_mode == MODE_YUV else (0,):

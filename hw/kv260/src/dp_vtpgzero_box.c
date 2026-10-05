@@ -121,6 +121,9 @@ static void usleep_busy(unsigned us) {
 #define VTPG_REG_BOX_BORDER    0x50
 #define VTPG_REG_BOX_IMG_X_STEP 0x54
 #define VTPG_REG_BOX_IMG_Y_STEP 0x58
+#define VTPG_REG_SMPTE_GEOM0   0x60
+#define VTPG_REG_SMPTE_GEOM1   0x64
+#define VTPG_REG_SMPTE_RAMP_STEP 0x68
 /* Mirrors the build-time BOX_IMAGE_W/H baked into the PL (see
  * hw/kv260/vivado/build_bd.tcl). Update both sides together. */
 #define VTPG_BOX_IMAGE_W       32u
@@ -134,6 +137,21 @@ static void vtpg_update_box_image_steps(unsigned box_w, unsigned box_h) {
     unsigned y_step = (box_h > 0) ? ((VTPG_BOX_IMAGE_H << 16) / box_h) : 0;
     WR(VTPG_BASE + VTPG_REG_BOX_IMG_X_STEP, x_step);
     WR(VTPG_BASE + VTPG_REG_BOX_IMG_Y_STEP, y_step);
+}
+
+/* SMPTE RP 219 chart geometry (PATTERN_SEL=5, EN_SMPTE=1 in the BD), the
+ * formulas at VTPGZ_REG_SMPTE_GEOM0 in rtl/vtpgz_defs.vh. The reset values
+ * are for 1920x1080, so a 1280x720 frame needs these. */
+static void vtpg_set_smpte_geometry(unsigned w, unsigned h) {
+    unsigned c = (3u * w + 14u) / 28u;          /* bar width, 3W/28 rounded */
+    if (c == 0) c = 1;
+    unsigned d = (w > 7u * c) ? (w - 7u * c) / 2u : 0u;   /* side panel */
+    unsigned p = (c + 1u) / 3u;                 /* PLUGE step, c/3 rounded */
+    unsigned n = 5u * c - 1u;                   /* ramp length - 1 */
+    unsigned step = (n > 0) ? ((4095u << 8) + n - 1u) / n : 0u;  /* ceil */
+    WR(VTPG_BASE + VTPG_REG_SMPTE_GEOM0, (c << 16) | d);
+    WR(VTPG_BASE + VTPG_REG_SMPTE_GEOM1, (p << 16) | (h / 12u));
+    WR(VTPG_BASE + VTPG_REG_SMPTE_RAMP_STEP, step & 0xFFFFu);
 }
 
 #define VTPG_PAT_COLORBAR      0
@@ -167,6 +185,7 @@ static int vtpg_init_moving_box(unsigned w, unsigned h) {
     WR(VTPG_BASE + VTPG_REG_BAR_WIDTH, w / 8u);
     if (w > 1) WR(VTPG_BASE + VTPG_REG_HG_STEP, 0xFFFu / (w - 1));
     if (h > 1) WR(VTPG_BASE + VTPG_REG_VG_STEP, 0xFFFu / (h - 1));
+    vtpg_set_smpte_geometry(w, h);
 
     /* Moving-box overlay on colorbar background.
      * The new vtpgz_core draws the box as a POST-MUX overlay on whatever
@@ -424,7 +443,7 @@ void dp_run(void) {
 
     u1s("=== Running. UART commands (115200 8N1):\n");
     u1s("  0..9  pattern (0=bars 1=hgrad 2=vgrad 3=checker 4=solid\n");
-    u1s("        6=grid 7=ramp 8=noise 9=image; 5 reserved)\n");
+    u1s("        5=smpte 6=grid 7=ramp 8=noise 9=image)\n");
     u1s("  +/-   box bigger/smaller     f/s  box faster/slower\n");
     u1s("  b     cycle box color        c    solid color (PATTERN=4)\n");
     u1s("  g/G   grid spacing -/+       k/K  checker size -/+\n");
@@ -465,7 +484,7 @@ void dp_run(void) {
 
         int ch = u1_rx();
         if (ch >= 0) {
-            if (ch >= '0' && ch <= '9' && ch != '5') {
+            if (ch >= '0' && ch <= '9') {
                 WR(VTPG_BASE + VTPG_REG_PATTERN_SEL, (unsigned)(ch - '0'));
                 u1s("pattern="); u1((char)ch); u1s("\n");
             } else if (ch == '+') {

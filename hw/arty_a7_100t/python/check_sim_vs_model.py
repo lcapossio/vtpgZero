@@ -28,7 +28,7 @@ from pathlib import Path
 # Make vtpgz_model importable when run from anywhere
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from vtpgz_model import (
-    VtpgzConfig, render_frame, tdata_to_bram_words,
+    VtpgzConfig, render_frame, tdata_to_bram_words, smpte_host_geometry,
     MODE_RGB, MODE_RAW, MODE_YUV,
     YUV_444, YUV_422,
     RAW_PLAIN, RAW_RGGB, RAW_BGGR, RAW_GRBG, RAW_GBRG,
@@ -83,6 +83,7 @@ def model_words(pat: int, mode: int, bpc: int, sub: int,
         box_width=16, box_height=16,
         box_dx=1, box_dy=1,
         box_border_color=0x00FFFFFF, box_border_width=1,
+        **smpte_host_geometry(WIDTH, HEIGHT),
     )
     return tdata_to_bram_words(render_frame(cfg), cfg.tdata_width)
 
@@ -126,6 +127,8 @@ def main() -> int:
     n = 0
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
+        # Patterns 0..8; 5 is SMPTE RP 219 (the capture builds set
+        # EN_SMPTE=1). 9 = IMAGE is not built into the capture binaries.
         for pat in range(9):
             n += 1
             out_file = td_path / f"f_{pat}.bin"

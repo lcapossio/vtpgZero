@@ -10,6 +10,8 @@ Sweeps:
   - output mode (RGB / RAW / YUV) x BPC 8..16, all patterns
   - PIXELS_PER_CLOCK 1/2/4/8, all patterns, RGB 8 bpc
   - EN_INTERLACE, and the YUV colorimetry (YUV_MATRIX / YUV_RANGE / BAR_LEVEL)
+  - EN_SMPTE (off in every other row): alone, per PPC, and in the RP 219
+    target build (YUV BT.709 limited 10 bpc)
 
 Every top-level parameter is passed explicitly (MODE_PARAMS), so a row
 never depends on an RTL default, and matrix.csv records the full set.
@@ -17,6 +19,8 @@ never depends on an RTL default, and matrix.csv records the full set.
 Usage:
     python synth/run_matrix.py          # everything
     python synth/run_matrix.py ppc      # only the PIXELS_PER_CLOCK sweep
+    python synth/run_matrix.py smpte    # only the EN_SMPTE rows and the
+                                        # EN_SMPTE=0 rows they compare to
 """
 from __future__ import annotations
 
@@ -56,6 +60,7 @@ MODE_PARAMS = {
     "YUV_MATRIX":    0,   # 0=BT.601 1=BT.709
     "BAR_LEVEL":     100, # colour-bar level, 100 or 75 (%)
     "EN_INTERLACE":  0,
+    "EN_SMPTE":      0,   # SMPTE RP 219 chart (pattern 5), off by default
     "EN_IMAGE":      0,
     "EN_BOX_IMAGE":  0,
     "TID_WIDTH":     0,
@@ -129,15 +134,53 @@ def ppc_configs() -> list[tuple[str, dict[str, int], dict[str, int]]]:
     return cfgs
 
 
+def smpte_configs() -> list[tuple[str, dict[str, int], dict[str, int]]]:
+    """EN_SMPTE=1 rows, each named after the EN_SMPTE=0 row it adds to."""
+    full_pats = {f: 1 for f in PATTERN_FEATURES}
+    base_off = {f: 0 for f in PATTERN_FEATURES}
+    base_off["EN_SOLID"] = 1
+    cfgs = [("only_smpte_yuv", base_off,
+             {"OUTPUT_MODE": 2, "BPC": 8, "EN_SMPTE": 1})]
+    for ppc in (1, 2, 4, 8):
+        cfgs.append((f"ppc{ppc}_full_rgb_8b_smpte", dict(full_pats),
+                     {"OUTPUT_MODE": 0, "BPC": 8, "PIXELS_PER_CLOCK": ppc,
+                      "EN_SMPTE": 1}))
+    for ppc in (1, 4):
+        cfgs.append((f"ppc{ppc}_yuv_10b_709lim_smpte", dict(full_pats),
+                     {"OUTPUT_MODE": 2, "BPC": 10, "YUV_MATRIX": 1,
+                      "YUV_RANGE": 1, "PIXELS_PER_CLOCK": ppc,
+                      "EN_SMPTE": 1}))
+    return cfgs
+
+
+def smpte_baselines() -> list[tuple[str, dict[str, int], dict[str, int]]]:
+    """The EN_SMPTE=0 rows smpte_configs() is compared against."""
+    base_off = {f: 0 for f in PATTERN_FEATURES}
+    base_off["EN_SOLID"] = 1
+    cfgs = [("baseline_solid_yuv", base_off, {"OUTPUT_MODE": 2, "BPC": 8})]
+    cfgs += ppc_configs()
+    for ppc in (1, 4):
+        cfgs.append((f"ppc{ppc}_yuv_10b_709lim",
+                     {f: 1 for f in PATTERN_FEATURES},
+                     {"OUTPUT_MODE": 2, "BPC": 10, "YUV_MATRIX": 1,
+                      "YUV_RANGE": 1, "PIXELS_PER_CLOCK": ppc}))
+    return cfgs
+
+
 def main() -> int:
     RESULTS.mkdir(parents=True, exist_ok=True)
     configs: list[tuple[str, dict[str, int], dict[str, int]]] = []
 
-    # `run_matrix.py ppc` synthesizes only the PIXELS_PER_CLOCK sweep.
-    if len(sys.argv) > 1 and sys.argv[1] == "ppc":
-        configs = ppc_configs()
+    # `run_matrix.py ppc` synthesizes only the PIXELS_PER_CLOCK sweep and
+    # `run_matrix.py smpte` only the EN_SMPTE rows plus their baselines.
+    if len(sys.argv) > 1 and sys.argv[1] in ("ppc", "smpte"):
+        if sys.argv[1] == "ppc":
+            configs = ppc_configs()
+        else:
+            configs = smpte_baselines() + smpte_configs()
         results = {tag: run_one(tag, p, m) for tag, p, m in configs}
-        print("\n\n## PPC resource sweep (synth-only, xc7a100tcsg324-1)\n")
+        print(f"\n\n## {sys.argv[1]} resource sweep (synth-only, "
+              "xc7a100tcsg324-1)\n")
         print("| Config | LUT | FF | BRAM36 | DSP |")
         print("|---|---:|---:|---:|---:|")
         for tag, _, _ in configs:
@@ -196,6 +239,8 @@ def main() -> int:
         for name, over in colorimetry:
             configs.append((f"ppc{ppc}_{name}", dict(full_pats),
                             {"OUTPUT_MODE": 2, "PIXELS_PER_CLOCK": ppc, **over}))
+
+    configs += smpte_configs()
 
     results: dict[str, dict[str, int]] = {}
     for tag, pat, mo in configs:

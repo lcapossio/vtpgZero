@@ -10,9 +10,9 @@ with Vivado 2025.2's default `synth_design` flow. Reproducible with
 `python synth/run_matrix.py`, which passes every top-level parameter
 explicitly and records the full parameter set of each row in
 `synth/results/matrix.csv`. Parameters a table does not mention are at their
-defaults: `EN_IMAGE=0`, `EN_BOX_IMAGE=0`, `EN_INTERLACE=0`, `YUV_RANGE=0`
-(full), `YUV_MATRIX=0` (BT.601), `BAR_LEVEL=100`, `TID_WIDTH=0`,
-`TDEST_WIDTH=0`, `PIXELS_PER_CLOCK=1`.
+defaults: `EN_SMPTE=0`, `EN_IMAGE=0`, `EN_BOX_IMAGE=0`, `EN_INTERLACE=0`,
+`YUV_RANGE=0` (full), `YUV_MATRIX=0` (BT.601), `BAR_LEVEL=100`,
+`TID_WIDTH=0`, `TDEST_WIDTH=0`, `PIXELS_PER_CLOCK=1`.
 
 No configuration below uses a BRAM or a DSP.
 
@@ -148,6 +148,36 @@ colour-bar palette constants, so they cost nothing. Limited range
 a shift-and-add constant multiply, no DSP, applied once per lane after the
 stage-1 register to whichever of those patterns is selected. That is +85 LUT
 at PPC=1 and +228 LUT at PPC=4 over the full-range BT.709 build.
+
+## SMPTE RP 219 chart
+
+`EN_SMPTE=1` rows, each against the same build without it. The EN_SMPTE=0
+builds are the rows above, unchanged to the LUT: stripping the pattern
+removes its registers and logic entirely. Reproducible on its own with
+`python synth/run_matrix.py smpte`.
+
+| Config | PPC | LUT | FF | ΔLUT | ΔFF |
+|---|---:|---:|---:|---:|---:|
+| `only_smpte_yuv` (vs `baseline_solid_yuv`) | 1 | 1237 | 1631 |  +699 |  +673 |
+| `ppc1_full_rgb_8b_smpte`    | 1 | 2041 | 1897 |  +661 |  +653 |
+| `ppc2_full_rgb_8b_smpte`    | 2 | 2413 | 2185 |  +786 |  +722 |
+| `ppc4_full_rgb_8b_smpte`    | 4 | 3315 | 2612 |  +917 |  +826 |
+| `ppc8_full_rgb_8b_smpte`    | 8 | 5253 | 3518 | +1418 | +1074 |
+| `ppc1_yuv_10b_709lim_smpte` | 1 | 2215 | 1914 |  +820 |  +667 |
+| `ppc4_yuv_10b_709lim_smpte` | 4 | 3936 | 2647 | +1423 |  +851 |
+
+No DSP in any of them. About 600 FF are shared, whatever the PPC: the
+three geometry registers, the registered derived widths (each also held
+minus PPC, so the segment walker's update is a single add), the serial
+multiplier that produces the ramp's start offset, the row and segment
+counters, and the two candidate colours. Each lane adds about 60 FF: its
+own ramp accumulator and registered ramp value, its multiple of the ramp
+step, and its segment flag. That
+per-lane registering is what keeps the chart off the critical path. Without
+it, the Arty demo at 4 pixels per clock closed 100 MHz with only +0.13 ns;
+with it, +0.97 ns. The LUTs that grow with PPC are the per-lane ramp
+adders and output selects. The last row is the RP 219 target build at 4
+pixels per clock.
 
 **Test conditions**: Vivado 2025.2, target `xc7a100tcsg324-1` -1 speed grade,
 `synth_design` default strategy, out-of-context mode. No timing constraints

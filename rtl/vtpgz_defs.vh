@@ -68,6 +68,18 @@
 `define VTPGZ_REG_BOX_IMG_X_STEP 8'h54
 `define VTPGZ_REG_BOX_IMG_Y_STEP 8'h58
 `define VTPGZ_REG_STREAM_ROUTE  8'h5C  // {tdest[31:16], tid[15:0]} for m_axis_tid/tdest
+// SMPTE RP 219 colour-bar geometry (only meaningful with EN_SMPTE=1; the
+// registers do not exist in a stripped build and read as 0). Host writes,
+// once per resolution change (W x H):
+//   SMPTE_GEOM0     = {bar_c[31:16], side_d[15:0]}   c = round(3W/28),
+//                                                    d = (W - 7c) / 2
+//   SMPTE_GEOM1     = {pluge_p[31:16], row_h[15:0]}  p = round(c/3), h = H/12
+//   SMPTE_RAMP_STEP = ramp step, 1/256 of a 12-bit code per pixel, rounded
+//                     up so the ramp reaches white (the end is clipped):
+//                     ceil((4095 << 8) / (5c - 1))
+`define VTPGZ_REG_SMPTE_GEOM0     8'h60
+`define VTPGZ_REG_SMPTE_GEOM1     8'h64
+`define VTPGZ_REG_SMPTE_RAMP_STEP 8'h68
 
 // Magic value returned by VTPGZ_REG_CORE_ID. Little-endian "VTPG":
 //   byte 0 = 'V' (0x56)
@@ -82,7 +94,7 @@
 `define VTPGZ_PAT_VGRAD       4'd2
 `define VTPGZ_PAT_CHECKER     4'd3
 `define VTPGZ_PAT_SOLID       4'd4
-`define VTPGZ_PAT_RSVD_5      4'd5  // reserved — future use (was PAT_MOVING_BOX)
+`define VTPGZ_PAT_SMPTE       4'd5  // SMPTE RP 219 HD bars (EN_SMPTE; was PAT_MOVING_BOX)
 `define VTPGZ_PAT_GRID        4'd6
 `define VTPGZ_PAT_RAMP        4'd7
 `define VTPGZ_PAT_NOISE       4'd8

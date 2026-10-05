@@ -33,6 +33,10 @@ Two palettes are frozen rather than computed, because they are what vtpgZero
 has always shipped and the default build must stay bit-exact: RGB 100% (all
 ones at every depth) and BT.601 full 100% (see LEGACY_601_FULL).
 
+It also generates the SMPTE RP 219 (HD) colour-bar tables for PAT_SMPTE: a
+21-entry colour palette per build and the fixed {row, segment} -> colour map
+(see SMPTE_LAYOUT). The RP 219 bars are always 75%, whatever BAR_LEVEL says.
+
     python scripts/gen_yuv_palettes.py              # print every palette
     python scripts/gen_yuv_palettes.py --write-rtl  # regenerate vtpgz_core.v
     python scripts/gen_yuv_palettes.py --check      # CI: RTL is up to date
@@ -105,7 +109,9 @@ def _clip(v: int, bits: int) -> int:
 
 
 def _round(x: Fraction) -> int:
-    """H.273 Round(): half away from zero. Every argument here is >= 0."""
+    """H.273 Round(): half away from zero for the non-negative arguments
+    that matter. A negative argument (a PLUGE step below black in a range
+    that has no room for it) only ever feeds _clip, which takes it to 0."""
     return math.floor(x + Fraction(1, 2))
 
 
@@ -224,13 +230,186 @@ def rtl_block(indent: str = "    ") -> str:
     return "\n".join(indent + ln for ln in lines)
 
 
-def _splice(src: str) -> str:
-    a = src.index(BEGIN)
+# ------------------------------------------------------ SMPTE RP 219 ----
+SMPTE_BEGIN = ("// BEGIN GENERATED SMPTE RP 219 TABLES "
+               "(scripts/gen_yuv_palettes.py --write-rtl)")
+SMPTE_END = "// END GENERATED SMPTE RP 219 TABLES"
+
+# The -I and +Q patches are defined by RP 219-2 as Y'Cb'Cr' codes (BT.709,
+# limited range), not as R'G'B'. Their colour is anchored on the 12-bit codes
+# and carried to every other build by exact inversion: the R'G'B' below is
+# the one those codes encode, so re-encoding it for BT.709 limited gives
+# them back exactly (at 12 bits, and at 10 bits after rounding).
+RP219_IQ_709_LIM_12 = {
+    "minus_i": (976, 2448, 1580),
+    "plus_q":  (564, 2787, 2425),
+}
+
+
+def _rgb_from_ycbcr_lim(code, kr: Fraction, kb: Fraction, bits: int):
+    """n-bit limited-range {Y, Cb, Cr} codes -> exact non-linear R'G'B'."""
+    s = Fraction(2) ** (bits - 8)
+    y = (Fraction(code[0]) / s - 16) / 219
+    cb = (Fraction(code[1]) / s - 128) / 224
+    cr = (Fraction(code[2]) / s - 128) / 224
+    r = y + 2 * (1 - kr) * cr
+    b = y + 2 * (1 - kb) * cb
+    g = (y - kr * r - kb * b) / (1 - kr - kb)
+    return (r, g, b)
+
+
+def _grey(level) -> tuple:
+    v = Fraction(level)
+    return (v, v, v)
+
+
+_K709 = MATRICES["709"]
+_P75 = Fraction(3, 4)
+
+# The palette, in index order. R'G'B' in [0, 1]; the PLUGE step below black
+# is negative and only survives in a limited-range build.
+SMPTE_COLORS = [
+    ("gray40",    _grey(Fraction(2, 5))),
+    ("white75",   _grey(_P75)),
+    ("yellow75",  (_P75, _P75, 0)),
+    ("cyan75",    (0, _P75, _P75)),
+    ("green75",   (0, _P75, 0)),
+    ("magenta75", (_P75, 0, _P75)),
+    ("red75",     (_P75, 0, 0)),
+    ("blue75",    (0, 0, _P75)),
+    ("cyan100",   (0, 1, 1)),
+    ("minus_i",   _rgb_from_ycbcr_lim(RP219_IQ_709_LIM_12["minus_i"], *_K709, 12)),
+    ("blue100",   (0, 0, 1)),
+    ("yellow100", (1, 1, 0)),
+    ("plus_q",    _rgb_from_ycbcr_lim(RP219_IQ_709_LIM_12["plus_q"], *_K709, 12)),
+    ("white100",  _grey(1)),
+    ("red100",    (1, 0, 0)),
+    ("black",     _grey(0)),
+    ("gray15",    _grey(Fraction(3, 20))),
+    ("pluge_m2",  _grey(Fraction(-1, 50))),
+    ("pluge_p2",  _grey(Fraction(1, 50))),
+    ("pluge_p4",  _grey(Fraction(1, 25))),
+]
+# The map code for "Y ramp pixel"; its palette slot holds black and is never
+# shown, the RTL substitutes the ramp value.
+SMPTE_RAMP = len(SMPTE_COLORS)
+SMPTE_NCOL = SMPTE_RAMP + 1
+SMPTE_ROWS = 4
+SMPTE_SEGS = 16          # map slots per row (4-bit segment index)
+
+# RP 219 layout: per row, the colour of each horizontal segment, left to
+# right. Rows 0-2 share the segment boundaries of layout A (side panel d,
+# seven bars c, side panel to the end of line); row 3 has its own (layout
+# B: d, 3c/2, 2c, 5c/6, five PLUGE steps, c, side panel). Row 1's second
+# patch is -I and row 2's is +Q (RP 219 also permits 75%/100% white and
+# black there); the ramp in row 2 spans bars 2..6 and is followed by a 100%
+# white bar.
+SMPTE_LAYOUT = [
+    ["gray40", "white75", "yellow75", "cyan75", "green75", "magenta75",
+     "red75", "blue75", "gray40"],
+    ["cyan100", "minus_i"] + ["white75"] * 6 + ["blue100"],
+    ["yellow100", "plus_q"] + ["RAMP"] * 5 + ["white100", "red100"],
+    ["gray15", "black", "white100", "black", "pluge_m2", "black",
+     "pluge_p2", "black", "pluge_p4", "black", "gray15"],
+]
+
+
+def smpte_palette(yuv: bool, matrix: str = "601", limited: bool = False,
+                  bits: int = 12):
+    """One build's SMPTE palette: [(name, 12-bit {c0, c1, c2})], index
+    order, ending with the ramp's (black) placeholder slot."""
+    if bits not in PAL_BITS:
+        raise ValueError(f"palette bits must be one of {PAL_BITS}, not {bits}")
+    out = []
+    for name, rgb in SMPTE_COLORS:
+        if yuv:
+            kr, kb = MATRICES[matrix]
+            t = ycbcr_code(rgb, kr, kb, limited, bits)
+        else:
+            fs = (1 << bits) - 1
+            t = tuple(_clip(_round(fs * Fraction(c)), bits) for c in rgb)
+        out.append((name, _left_align(t, bits)))
+    black = dict(out)["black"]
+    out.append(("ramp", black))
+    return out
+
+
+def smpte_map():
+    """[row][seg] -> palette index (SMPTE_RAMP for a ramp pixel). Slots past
+    the last segment of a row are black; the walker never reaches them."""
+    idx = {name: i for i, (name, _) in enumerate(SMPTE_COLORS)}
+    idx["RAMP"] = SMPTE_RAMP
+    black = idx["black"]
+    return [[idx[row[s]] if s < len(row) else black
+             for s in range(SMPTE_SEGS)] for row in SMPTE_LAYOUT]
+
+
+def _smpte_builds():
+    """(localparam name, condition, palette) for every SMPTE palette."""
+    out = []
+    for bits in PAL_BITS:
+        out.append((f"SM_PAL_RGB_{bits}", f"!PAL_YUV && PAL_BITS == {bits}",
+                    smpte_palette(False, bits=bits)))
+    for matrix in ("601", "709"):
+        for limited in (False, True):
+            rng = "LIM" if limited else "FULL"
+            cond = (f"PAL_YUV && {'' if matrix == '709' else '!'}PAL_709 && "
+                    f"{'' if limited else '!'}PAL_LIM")
+            for bits in PAL_BITS:
+                out.append((f"SM_PAL_{matrix}_{rng}_{bits}",
+                            f"{cond} && PAL_BITS == {bits}",
+                            smpte_palette(True, matrix, limited, bits)))
+    return out
+
+
+def smpte_rtl_block(indent: str = "    ") -> str:
+    """The generated SMPTE region of vtpgz_core.v, markers included."""
+    nbits = 36 * SMPTE_NCOL
+    lines = [SMPTE_BEGIN,
+             f"// Each palette is {SMPTE_NCOL} colours x {{c0, c1, c2}} x 12 "
+             f"bits, colour {SMPTE_NCOL - 1}",
+             "// (the ramp placeholder) in the MSBs down to colour 0 in the "
+             "LSBs. Colour",
+             "// order: " + ", ".join(n for n, _ in SMPTE_COLORS) + ".",
+             "// SM_MAP holds a 5-bit colour index per {row[1:0], seg[3:0]}, "
+             "row 3 in the",
+             f"// MSBs; index {SMPTE_RAMP} (SM_RAMP) marks a Y-ramp pixel. "
+             "Do not edit by hand."]
+    builds = _smpte_builds()
+    width = max(len(n) for n, _, _ in builds)
+    for name, _, pal in builds:
+        hexes = "_".join(f"{a:03X}{b:03X}{c:03X}"
+                         for _, (a, b, c) in reversed(pal))
+        lines.append(f"localparam [{nbits - 1}:0] {name:<{width}} = "
+                     f"{nbits}'h{hexes};")
+    lines.append(f"localparam [{nbits - 1}:0] SM_PAL =")
+    for name, cond, _ in builds[:-1]:
+        lines.append(f"    ({cond}) ? {name} :")
+    lines.append(f"    {builds[-1][0]};  // {builds[-1][1]}")
+    flat = 0
+    for r, row in enumerate(smpte_map()):
+        for s, v in enumerate(row):
+            flat |= v << (5 * (r * SMPTE_SEGS + s))
+    mbits = 5 * SMPTE_ROWS * SMPTE_SEGS
+    lines.append(f"localparam [{mbits - 1}:0] SM_MAP = "
+                 f"{mbits}'h{flat:0{mbits // 4}X};")
+    lines.append(f"localparam [4:0] SM_RAMP = 5'd{SMPTE_RAMP};")
+    lines.append(SMPTE_END)
+    return "\n".join(indent + ln for ln in lines)
+
+
+def _splice_one(src: str, begin: str, end: str, block) -> str:
+    a = src.index(begin)
     a = src.rindex("\n", 0, a) + 1
-    b = src.index(END, a)
+    b = src.index(end, a)
     b = src.index("\n", b)
-    indent = src[a:src.index(BEGIN)]
-    return src[:a] + rtl_block(indent) + src[b:]
+    indent = src[a:src.index(begin)]
+    return src[:a] + block(indent) + src[b:]
+
+
+def _splice(src: str) -> str:
+    src = _splice_one(src, BEGIN, END, rtl_block)
+    return _splice_one(src, SMPTE_BEGIN, SMPTE_END, smpte_rtl_block)
 
 
 # --------------------------------------------------------------- main ----
@@ -265,6 +444,12 @@ def main() -> int:
         print(f"=== {name} ===")
         for bar, t in pal:
             print(f"  {bar:8} 12b={' '.join(f'{v:03X}' for v in t)}  "
+                  f"{bits}b={tuple(v >> (12 - bits) for v in t)}")
+    for name, _, pal in _smpte_builds():
+        bits = int(name.rsplit("_", 1)[1])
+        print(f"=== {name} ===")
+        for col, t in pal:
+            print(f"  {col:9} 12b={' '.join(f'{v:03X}' for v in t)}  "
                   f"{bits}b={tuple(v >> (12 - bits) for v in t)}")
     return 0
 

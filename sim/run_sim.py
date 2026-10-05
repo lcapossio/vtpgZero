@@ -161,12 +161,18 @@ def build_flags(args: argparse.Namespace) -> list[str]:
             f'-GBOX_IMAGE_HEX_FILE="{bimg.as_posix()}"']
 
 
+# The capture builds (sim <-> model gates, single and sequential) and a
+# second lint pass include the SMPTE RP 219 pattern, which is off by default;
+# the coverage build keeps the default (stripped).
+CAPTURE_EXTRA = ["-GEN_SMPTE=1"]
+
+
 def capture_flags(args: argparse.Namespace) -> list[str]:
     return ["--cc", "--exe", "--build",
             "-Wall", "-Wno-UNUSED", "-Wno-WIDTH", "-Wno-CASEINCOMPLETE",
             "-I" + str(RTL_DIR), "--top-module", TOP,
             "-Mdir", str(CAPTURE_OBJ_DIR),
-            "--prefix", "Vvtpgz_axilite_top"] + generics(args)
+            "--prefix", "Vvtpgz_axilite_top"] + generics(args) + CAPTURE_EXTRA
 
 
 def seq_flags(args: argparse.Namespace) -> list[str]:
@@ -176,7 +182,7 @@ def seq_flags(args: argparse.Namespace) -> list[str]:
             "-I" + str(RTL_DIR), "-I" + str(HW_RTL),
             "--top-module", "sim_top",
             "-Mdir", str(SEQ_OBJ_DIR),
-            "--prefix", "Vsim_top"] + generics(args)
+            "--prefix", "Vsim_top"] + generics(args) + CAPTURE_EXTRA
 
 
 # ---------- subcommands ----------
@@ -185,6 +191,9 @@ def cmd_lint(args):
     verilator = need_tool("verilator")
     print(f"=== Lint MODE={args.mode} BPC={args.bpc} ===")
     run([verilator] + lint_flags(args) + [str(s) for s in RTL_SRCS], cwd=HERE)
+    print(f"=== Lint MODE={args.mode} BPC={args.bpc} {' '.join(CAPTURE_EXTRA)} ===")
+    run([verilator] + lint_flags(args) + CAPTURE_EXTRA
+        + [str(s) for s in RTL_SRCS], cwd=HERE)
 
 
 def cmd_build(args):
@@ -256,7 +265,7 @@ def _capture_flags_for(args: argparse.Namespace, obj_dir: Path) -> list[str]:
             "-Wall", "-Wno-UNUSED", "-Wno-WIDTH", "-Wno-CASEINCOMPLETE",
             "-I" + str(RTL_DIR), "--top-module", TOP,
             "-Mdir", str(obj_dir),
-            "--prefix", "Vvtpgz_axilite_top"] + generics(args)
+            "--prefix", "Vvtpgz_axilite_top"] + generics(args) + CAPTURE_EXTRA
 
 
 def cmd_capture_build(args):

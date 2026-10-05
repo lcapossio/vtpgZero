@@ -184,8 +184,10 @@ capture itself completes in microseconds.
 
 - Test geometry: 64 × 32 pixels per frame (= 2048 pixels = 8 KB at RGB888)
 - Pattern slots swept: all 9 (`colorbar`, `hgrad`, `vgrad`, `checker`,
-  `solid`, slot 5 -- black, since the moving box is an overlay rather than
-  a pattern -- `grid`, `ramp`, `noise`)
+  `solid`, `smpte`, `grid`, `ramp`, `noise`). The SMPTE RP 219 chart is
+  optional (`VTPGZ_EN_SMPTE=1`, off in the default build). The script reads
+  back the `SMPTE_GEOM0` register to tell whether it is present, and checks
+  slot 5 is black when it is not.
 - Output format, bit depth and pixels per clock are build-time: the script
   reads them back from the loaded bitstream, and another format means
   another bitstream. Pass `VTPGZ_<NAME>=<int>` to `build.py`, e.g.
@@ -230,6 +232,15 @@ each build was constrained at.
 | RGB-8b, 2 pixels/clock | 100 MHz | +1.364 ns | 9/9 |
 | RGB-8b, 8 pixels/clock | 100 MHz | +0.216 ns | 9/9 |
 | YUV-10b BT.709 limited, 4 pixels/clock | 100 MHz | +1.136 ns | 9/9 |
+| RGB-8b, 4 pixels/clock, `VTPGZ_EN_SMPTE=1` | 100 MHz | +0.967 ns | 9/9, SMPTE chart included |
+| YUV-10b BT.709 limited, 4 pixels/clock, `VTPGZ_EN_SMPTE=1` | 100 MHz | +0.654 ns | 9/9, SMPTE chart included |
+
+The RGB SMPTE build is 4734 LUT / 4309 FF for the whole demo, the YUV one
+4867 LUT / 4356 FF, both 0 DSP. In the RGB build the worst path is the
+downstream `tready` (from the capture core) through the core's advance enable
+into the chart's segment counter; in the YUV build it is the 8-bar colorbar's
+bar-index logic. The chart's per-lane colour logic is registered, so it is on
+neither.
 
 ## File layout
 

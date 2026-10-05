@@ -37,6 +37,7 @@ from vtpgz_model import (  # noqa: E402
     RGB_ORDER_XILINX, RGB_ORDER_LEGACY,
     PAT_SOLID, PAT_GRID, PAT_CHECKER,
     PAT_COLORBAR, PAT_HGRAD, PAT_VGRAD, PAT_RAMP, PAT_NOISE, PAT_IMAGE,
+    PAT_SMPTE, smpte_host_geometry,
     YUV_FULL, YUV_LIMITED, YUV_BT601, YUV_BT709,
 )
 from image_to_hex import pixel_word  # noqa: E402
@@ -74,7 +75,7 @@ PPC_PATTERNS = [
     ("solid", PAT_SOLID), ("grid", PAT_GRID), ("checker", PAT_CHECKER),
     ("colorbar", PAT_COLORBAR), ("hgrad", PAT_HGRAD),
     ("vgrad", PAT_VGRAD), ("ramp", PAT_RAMP), ("noise", PAT_NOISE),
-    ("image", PAT_IMAGE),
+    ("image", PAT_IMAGE), ("smpte", PAT_SMPTE),
 ]
 
 # Must mirror the constant cfg_* the harness drives (tb_ppc_capture.v).
@@ -86,6 +87,10 @@ HARNESS_CFG = dict(
     grid_spacing=7, grid_color=0xFFFFFF,
     checker_size=5,
     hg_step=64, vg_step=128, bar_width=8,
+    # The tb's default SMPTE geometry. At 32x12 most widths are below 8, so
+    # PPC>1 exercises the RTL's clamp of every width to >= PPC.
+    smpte_side_d=3, smpte_bar_c=3, smpte_pluge_p=1, smpte_row_h=1,
+    smpte_ramp_step=18000,
 )
 
 
@@ -110,7 +115,7 @@ def build(ppc: int, mode: int, sub: int, bayer: int, order: int, bpc: int,
         "BAR_LEVEL": col.get("bar_level", 100),
         # M2/M3 patterns are legal at PPC>1 now; enable them for the sweep.
         "EN_COLORBAR": 1, "EN_HGRAD": 1, "EN_VGRAD": 1, "EN_RAMP": 1,
-        "EN_NOISE": 1,
+        "EN_NOISE": 1, "EN_SMPTE": 1,
     }
     cmd = [iverilog, "-g2001", "-Wall", "-I", str(RTL), "-s", top,
            "-o", str(out_vvp)]
@@ -128,10 +133,14 @@ def build(ppc: int, mode: int, sub: int, bayer: int, order: int, bpc: int,
 
 
 def run_capture(vvp_bin: Path, pat: int, width: int, height: int,
-                out_hex: Path) -> None:
+                out_hex: Path, smpte: dict | None = None) -> None:
     vvp = need("vvp")
     cmd = [vvp, str(vvp_bin), f"+pat={pat}", f"+width={width}",
            f"+height={height}", f"+out={out_hex}"]
+    names = {"smpte_side_d": "sm_d", "smpte_bar_c": "sm_c",
+             "smpte_pluge_p": "sm_p", "smpte_row_h": "sm_h",
+             "smpte_ramp_step": "sm_step"}
+    cmd += [f"+{names[k]}={v}" for k, v in (smpte or {}).items()]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0 or "OK:" not in r.stdout:
         raise RuntimeError(f"vvp capture failed (pat={pat}):\n{r.stdout}{r.stderr}")
@@ -314,6 +323,56 @@ def _check_box_image_one(tmp: Path, ppc: int, mode: int, col: dict,
     return fails
 
 
+# ---- SMPTE RP 219 at a size where the host formulas give real widths:
+# 232x48 -> d=28, c=25, p=8, h=4, so segment boundaries land mid-beat at
+# every PPC and the bottom row's 5c/6 remainder is 23. Swept per PPC in the
+# default RGB build and in the RP 219 target (YUV BT.709 limited 10-bit), and
+# once in 4:2:2 at PPC 8.
+SMPTE_W, SMPTE_H = 232, 48
+SMPTE_CONFIGS = [
+    # (ppc, mode, bpc, sub, colorimetry)
+    (1, "rgb", 8, "444", {}),
+    (2, "rgb", 8, "444", {}),
+    (4, "rgb", 8, "444", {}),
+    (8, "rgb", 8, "444", {}),
+    (1, "yuv", 10, "444", dict(yuv_range=YUV_LIMITED, yuv_matrix=YUV_BT709)),
+    (2, "yuv", 10, "444", dict(yuv_range=YUV_LIMITED, yuv_matrix=YUV_BT709)),
+    (4, "yuv", 10, "444", dict(yuv_range=YUV_LIMITED, yuv_matrix=YUV_BT709)),
+    (8, "yuv", 10, "444", dict(yuv_range=YUV_LIMITED, yuv_matrix=YUV_BT709)),
+    (8, "yuv", 8, "422", dict(yuv_range=YUV_FULL, yuv_matrix=YUV_BT601)),
+]
+
+
+def check_smpte(tmp: Path) -> list[str]:
+    fails: list[str] = []
+    geo = smpte_host_geometry(SMPTE_W, SMPTE_H)
+    for ppc, mode_name, bpc, sub_name, col in SMPTE_CONFIGS:
+        mode, sub = MODE_MAP[mode_name], SUB_MAP[sub_name]
+        ctag = "".join(f"_{k[0]}{v}" for k, v in col.items())
+        vvp_bin = tmp / f"smpte_ppc{ppc}_{mode_name}{bpc}_{sub_name}{ctag}.vvp"
+        build(ppc, mode, sub, RAW_RGGB, RGB_ORDER_XILINX, bpc, vvp_bin, col)
+        hexf = vvp_bin.with_suffix(".hex")
+        run_capture(vvp_bin, PAT_SMPTE, SMPTE_W, SMPTE_H, hexf, geo)
+        sim = load_beats(hexf)
+        cfg = VtpgzConfig(width=SMPTE_W, height=SMPTE_H, pattern=PAT_SMPTE,
+                          output_mode=mode, yuv_subsample=sub, bpc=bpc,
+                          pixels_per_clock=ppc,
+                          **col, **{**HARNESS_CFG, **geo})
+        mod = render_frame_beats(cfg)
+        label = (f"smpte {SMPTE_W}x{SMPTE_H} ppc={ppc} {mode_name}{bpc} "
+                 f"{sub_name} " + " ".join(f"{k}={v}" for k, v in col.items()))
+        if sim != mod:
+            first = next((i for i, (a, b) in enumerate(zip(sim, mod)) if a != b),
+                         min(len(sim), len(mod)))
+            fails.append(f"{label}: len sim={len(sim)} mod={len(mod)} "
+                         f"first_diff@{first} "
+                         f"sim=0x{(sim[first] if first < len(sim) else 0):X} "
+                         f"mod=0x{(mod[first] if first < len(mod) else 0):X}")
+        else:
+            print(f"  OK  {label} ({len(sim)} beats)")
+    return fails
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ppc", type=int, default=None, choices=[1, 2, 4, 8])
@@ -371,6 +430,12 @@ def main() -> int:
                 all_fails += check_box_image(tmp)
             except RuntimeError as e:
                 all_fails.append(f"box-image: {e}")
+        if not (args.ppc or args.mode or args.bpc):
+            try:
+                n += len(SMPTE_CONFIGS)
+                all_fails += check_smpte(tmp)
+            except RuntimeError as e:
+                all_fails.append(f"smpte: {e}")
 
     print()
     if all_fails:
