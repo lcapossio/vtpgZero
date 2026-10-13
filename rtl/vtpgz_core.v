@@ -174,8 +174,8 @@ module vtpgz_core #(
     input  wire [15:0] cfg_checker_size,
     input  wire [31:0] cfg_frame_rate_div,
     input  wire [15:0] cfg_bar_width,
-    input  wire [15:0] cfg_hg_step,
-    input  wire [15:0] cfg_vg_step,
+    input  wire [27:0] cfg_hg_step,   // Q12.16 codes per pixel
+    input  wire [27:0] cfg_vg_step,   // Q12.16 codes per line
     input  wire [23:0] cfg_box_border_color,
     input  wire [7:0]  cfg_box_border_width,
     input  wire [31:0] cfg_box_img_x_step,
@@ -700,6 +700,17 @@ module vtpgz_core #(
                     (m[3] ? {1'h0, v, 3'b0} : 20'h0);
     endfunction
 
+    // The same for a Q12.16 gradient step (HG_STEP): 31 bits hold
+    // 8 * (2^28 - 1).
+    function [30:0] mul_step;
+        input [27:0] v;
+        input [3:0]  m;
+        mul_step = (m[0] ? {3'h0, v}       : 31'h0) +
+                   (m[1] ? {2'h0, v, 1'b0} : 31'h0) +
+                   (m[2] ? {1'h0, v, 2'b0} : 31'h0) +
+                   (m[3] ? {v, 3'b0}       : 31'h0);
+    endfunction
+
     // min(v, 16) in 6 bits. Every threshold the wrap-counters below test is
     // <= NPPC <= 8, so a sum of two operands clamped to 16 answers each test
     // exactly as the full-width sum does: below 16 both are exact, and if
@@ -1207,32 +1218,35 @@ module vtpgz_core #(
 
 
     // ---- Horizontal gradient ----
-    // Q4.12 accumulator: increments by cfg_hg_step (Q4.12) per pixel,
-    // resets at start of line. Host computes step = (4096<<8)/(width-1)>>8
-    // ~ 0xFFF / width, written once per resolution change.
+    // Q16.16 accumulator: increments by cfg_hg_step (Q12.16 codes) per
+    // pixel, resets at start of line; the output is the integer part,
+    // saturated to 12 bits. Host computes step = ceil((0xFFF << 16) /
+    // (width - 1)), written once per resolution change: the 16 fraction
+    // bits keep every pixel within one code of the ideal ramp at any
+    // 16-bit width, and rounding up makes the last pixel land on 0xFFF.
     generate if (EN_HGRAD) begin : g_hgrad
-        reg [19:0] hg_acc;  // 4 int + 12 frac of headroom + 4 guard
+        reg [31:0] hg_acc;  // 16 int (12 out + 4 guard) + 16 frac
         // Per-lane accumulator chain: lane gl sees hg_acc + gl*step. The base
         // advances by NPPC*step per beat; at NPPC==1 this is one +step and is
         // identical to the original.
-        wire [19:0] hga_l [0:NPPC] /* verilator split_var */;
+        wire [31:0] hga_l [0:NPPC] /* verilator split_var */;
         assign hga_l[0] = hg_acc;
         genvar hgl;
         for (hgl = 0; hgl < NPPC; hgl = hgl + 1) begin : g_hg_chain
             if (NPPC > 1) begin : g_q
                 // Lane hgl+1 = hg_acc + (hgl+1)*step, one adder from hg_acc.
-                reg [19:0] smul;
-                always @(posedge aclk) smul <= mul_small(cfg_hg_step, hgl + 1);
-                assign hga_l[hgl+1] = hg_acc + smul;
+                reg [30:0] smul;
+                always @(posedge aclk) smul <= mul_step(cfg_hg_step, hgl + 1);
+                assign hga_l[hgl+1] = hg_acc + {1'b0, smul};
             end else begin : g_c
                 assign hga_l[hgl+1] = hga_l[hgl] + {4'h0, cfg_hg_step};
             end
             // Saturate each lane to 12 bits.
             assign hg_bus[12*hgl +: 12] =
-                (|hga_l[hgl][19:12]) ? 12'hFFF : hga_l[hgl][11:0];
+                (|hga_l[hgl][31:28]) ? 12'hFFF : hga_l[hgl][27:16];
         end
         always @(posedge aclk) begin
-            if (!aresetn || frame_init) hg_acc <= 20'h0;
+            if (!aresetn || frame_init) hg_acc <= 32'h0;
             else if (source_advance) begin
                 // Clear at last_x of the prior line (not x==0 of this one)
                 // so the next line's pixel 0 reads acc=0 combinationally.
@@ -1240,7 +1254,7 @@ module vtpgz_core #(
                 // takes effect at x=1, leaving hg_acc carrying ~1279*step
                 // from the previous line and producing a bright artifact
                 // at col 0 of every row.
-                if (last_x)     hg_acc <= 20'h0;
+                if (last_x)     hg_acc <= 32'h0;
                 else            hg_acc <= hga_l[NPPC];
             end
         end
@@ -1252,19 +1266,19 @@ module vtpgz_core #(
     end endgenerate
 
     // ---- Vertical gradient ----
-    // Increments by cfg_vg_step per line.
+    // Increments by cfg_vg_step (Q12.16, as hgrad) per line.
     generate if (EN_VGRAD) begin : g_vgrad
-        reg [19:0] vg_acc;
+        reg [31:0] vg_acc;
         always @(posedge aclk) begin
-            if (!aresetn || frame_init) vg_acc <= 20'h0;
+            if (!aresetn || frame_init) vg_acc <= 32'h0;
             else if (source_advance) begin
-                if (pix_sof)              vg_acc <= 20'h0;
+                if (pix_sof)              vg_acc <= 32'h0;
                 else if (last_x)          vg_acc <= vg_acc + {4'h0, cfg_vg_step};
             end
         end
         // vg_acc only changes per LINE, so every lane in a beat shares the
         // same value -- replicate it across the bus.
-        assign vg_val = (|vg_acc[19:12]) ? 12'hFFF : vg_acc[11:0];
+        assign vg_val = (|vg_acc[31:28]) ? 12'hFFF : vg_acc[27:16];
         genvar vgl;
         for (vgl = 0; vgl < NPPC; vgl = vgl + 1) begin : g_vg_lane
             assign vg_bus[12*vgl +: 12] = vg_val;
@@ -1653,27 +1667,27 @@ module vtpgz_core #(
     // ---- Ramp ----
     // Same accumulator approach as hgrad. Reuses cfg_hg_step.
     generate if (EN_RAMP) begin : g_ramp
-        reg [19:0] ramp_acc;
+        reg [31:0] ramp_acc;
         // Per-lane accumulator chain (same structure as hgrad).
-        wire [19:0] rmp_l [0:NPPC] /* verilator split_var */;
+        wire [31:0] rmp_l [0:NPPC] /* verilator split_var */;
         assign rmp_l[0] = ramp_acc;
         genvar rml;
         for (rml = 0; rml < NPPC; rml = rml + 1) begin : g_ramp_chain
             if (NPPC > 1) begin : g_q
                 // Lane rml+1 = ramp_acc + (rml+1)*step (see g_hgrad).
-                reg [19:0] smul;
-                always @(posedge aclk) smul <= mul_small(cfg_hg_step, rml + 1);
-                assign rmp_l[rml+1] = ramp_acc + smul;
+                reg [30:0] smul;
+                always @(posedge aclk) smul <= mul_step(cfg_hg_step, rml + 1);
+                assign rmp_l[rml+1] = ramp_acc + {1'b0, smul};
             end else begin : g_c
                 assign rmp_l[rml+1] = rmp_l[rml] + {4'h0, cfg_hg_step};
             end
             assign ramp_bus[12*rml +: 12] =
-                (|rmp_l[rml][19:12]) ? 12'hFFF : rmp_l[rml][11:0];
+                (|rmp_l[rml][31:28]) ? 12'hFFF : rmp_l[rml][27:16];
         end
         always @(posedge aclk) begin
-            if (!aresetn || frame_init) ramp_acc <= 20'h0;
+            if (!aresetn || frame_init) ramp_acc <= 32'h0;
             else if (source_advance) begin
-                if (last_x)     ramp_acc <= 20'h0;
+                if (last_x)     ramp_acc <= 32'h0;
                 else            ramp_acc <= rmp_l[NPPC];
             end
         end

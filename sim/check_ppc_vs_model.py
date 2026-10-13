@@ -37,7 +37,7 @@ from vtpgz_model import (  # noqa: E402
     RGB_ORDER_XILINX, RGB_ORDER_LEGACY,
     PAT_SOLID, PAT_GRID, PAT_CHECKER,
     PAT_COLORBAR, PAT_HGRAD, PAT_VGRAD, PAT_RAMP, PAT_NOISE, PAT_IMAGE,
-    PAT_SMPTE, smpte_host_geometry,
+    PAT_SMPTE, smpte_host_geometry, grad_step,
     YUV_FULL, YUV_LIMITED, YUV_BT601, YUV_BT709,
 )
 from image_to_hex import pixel_word  # noqa: E402
@@ -86,7 +86,9 @@ HARNESS_CFG = dict(
     box_border_color=0xFF0000, box_border_width=2,
     grid_spacing=7, grid_color=0xFFFFFF,
     checker_size=5,
-    hg_step=64, vg_step=128, bar_width=8,
+    # Q12.16 steps with fraction bits set, so the per-lane carries at PPC>1
+    # are exercised (64.6 and 128.2 codes).
+    hg_step=0x409A5B, vg_step=0x803C71, bar_width=8,
     # The tb's default SMPTE geometry. At 32x12 most widths are below 8, so
     # PPC>1 exercises the RTL's clamp of every width to >= PPC.
     smpte_side_d=3, smpte_bar_c=3, smpte_pluge_p=1, smpte_row_h=1,
@@ -103,7 +105,8 @@ def need(tool: str) -> str:
 
 
 def build(ppc: int, mode: int, sub: int, bayer: int, order: int, bpc: int,
-          out_vvp: Path, colorimetry: dict | None = None) -> None:
+          out_vvp: Path, colorimetry: dict | None = None,
+          extra: dict | None = None) -> None:
     iverilog = need("iverilog")
     top = "tb_ppc_capture"
     col = colorimetry or {}
@@ -116,6 +119,7 @@ def build(ppc: int, mode: int, sub: int, bayer: int, order: int, bpc: int,
         # M2/M3 patterns are legal at PPC>1 now; enable them for the sweep.
         "EN_COLORBAR": 1, "EN_HGRAD": 1, "EN_VGRAD": 1, "EN_RAMP": 1,
         "EN_NOISE": 1, "EN_SMPTE": 1,
+        **(extra or {}),
     }
     cmd = [iverilog, "-g2001", "-Wall", "-I", str(RTL), "-s", top,
            "-o", str(out_vvp)]
@@ -139,7 +143,8 @@ def run_capture(vvp_bin: Path, pat: int, width: int, height: int,
            f"+height={height}", f"+out={out_hex}"]
     names = {"smpte_side_d": "sm_d", "smpte_bar_c": "sm_c",
              "smpte_pluge_p": "sm_p", "smpte_row_h": "sm_h",
-             "smpte_ramp_step": "sm_step"}
+             "smpte_ramp_step": "sm_step",
+             "hg_step": "hg_step", "vg_step": "vg_step"}
     cmd += [f"+{names[k]}={v}" for k, v in (smpte or {}).items()]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0 or "OK:" not in r.stdout:
@@ -373,6 +378,91 @@ def check_smpte(tmp: Path) -> list[str]:
     return fails
 
 
+# ---- Gradients at 8K and at the 16-bit maximum width, with the host's
+# grad_step() values. A full 7680x4320 frame is 33M pixels, so the
+# horizontal patterns run on a few 8K-wide lines and VGRAD on a narrow,
+# 4320-line frame. Besides matching the model beat for beat, every line
+# (column, for VGRAD) is checked against the ideal ramp directly, so a bug
+# shared by RTL and model cannot pass: 0 at the start, exactly 0xFFF at the
+# end, never decreasing, and within one code of x * 0xFFF / (n - 1).
+GRAD_BIG_CONFIGS = [
+    # (name, pattern, width, height, ppc)
+    ("hgrad", PAT_HGRAD, 7680, 4, 1),
+    ("hgrad", PAT_HGRAD, 7680, 4, 2),
+    ("hgrad", PAT_HGRAD, 7680, 4, 4),
+    ("hgrad", PAT_HGRAD, 7680, 4, 8),
+    ("ramp",  PAT_RAMP,  7680, 4, 1),
+    ("ramp",  PAT_RAMP,  7680, 4, 8),
+    ("vgrad", PAT_VGRAD, 8, 4320, 1),
+    # Two beats per line: at width == PPC (one beat per line) the RTL and
+    # the model disagree for every pattern, a separate, older issue.
+    ("vgrad", PAT_VGRAD, 16, 4320, 8),
+    ("hgrad", PAT_HGRAD, 65535, 2, 1),
+]
+
+
+def _ramp_errors(vals: list[int], what: str) -> list[str]:
+    n = len(vals)
+    errs = []
+    if vals[0] != 0:
+        errs.append(f"{what} starts at {vals[0]}, want 0")
+    if vals[-1] != 0xFFF:
+        errs.append(f"{what} ends at {vals[-1]}, want 0xFFF")
+    drop = next((i for i in range(1, n) if vals[i] < vals[i - 1]), None)
+    if drop is not None:
+        errs.append(f"{what} decreases at {drop}")
+    worst = max(range(n), key=lambda i: abs(vals[i] - i * 0xFFF / (n - 1)))
+    if abs(vals[worst] - worst * 0xFFF / (n - 1)) >= 1:
+        errs.append(f"{what}[{worst}] = {vals[worst]}, ideal "
+                    f"{worst * 0xFFF / (n - 1):.2f}")
+    return errs
+
+
+def check_grad_big(tmp: Path) -> list[str]:
+    fails: list[str] = []
+    bpc = 12                      # 12-bit RGB: the codes come out unscaled
+    built: dict[int, Path] = {}
+    for name, pat, w, h, ppc in GRAD_BIG_CONFIGS:
+        if ppc not in built:
+            built[ppc] = tmp / f"grad_big_ppc{ppc}.vvp"
+            # No box overlay: the lines must be the bare gradient.
+            build(ppc, MODE_RGB, YUV_444, RAW_RGGB, RGB_ORDER_XILINX, bpc,
+                  built[ppc], extra={"EN_BOX": 0})
+        steps = dict(hg_step=grad_step(w), vg_step=grad_step(h))
+        hexf = tmp / f"grad_big_{name}_{w}x{h}_ppc{ppc}.hex"
+        run_capture(built[ppc], pat, w, h, hexf, steps)
+        sim = load_beats(hexf)
+        cfg = VtpgzConfig(width=w, height=h, pattern=pat,
+                          output_mode=MODE_RGB, bpc=bpc, pixels_per_clock=ppc,
+                          **{**HARNESS_CFG, **steps,
+                             "box_width": 0, "box_height": 0})
+        mod = render_frame_beats(cfg)
+        label = f"{name} {w}x{h} ppc={ppc}"
+        errs = []
+        if sim != mod:
+            first = next((i for i, (a, b) in enumerate(zip(sim, mod)) if a != b),
+                         min(len(sim), len(mod)))
+            errs.append(f"len sim={len(sim)} mod={len(mod)} "
+                        f"first_diff@{first}")
+        # Gray: every component equals the code, so take the low 12 bits of
+        # each lane (lane 0 is the leftmost pixel; a lane is 40 bits, 36
+        # rounded up to bytes).
+        bits = cfg.tdata_width
+        px = [(b >> (bits * ln)) & 0xFFF for b in sim for ln in range(ppc)]
+        if len(px) != w * h:
+            errs.append(f"captured {len(px)} pixels, want {w * h}")
+        elif pat == PAT_VGRAD:
+            errs += _ramp_errors(px[0::w], "column 0")
+        else:
+            for y in range(h):
+                errs += _ramp_errors(px[y * w:(y + 1) * w], f"line {y}")
+        if errs:
+            fails += [f"{label}: {e}" for e in errs[:4]]
+        else:
+            print(f"  OK  {label} ({len(sim)} beats, full 0..0xFFF sweep)")
+    return fails
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ppc", type=int, default=None, choices=[1, 2, 4, 8])
@@ -436,6 +526,11 @@ def main() -> int:
                 all_fails += check_smpte(tmp)
             except RuntimeError as e:
                 all_fails.append(f"smpte: {e}")
+            try:
+                n += len(GRAD_BIG_CONFIGS)
+                all_fails += check_grad_big(tmp)
+            except RuntimeError as e:
+                all_fails.append(f"gradients at 8K: {e}")
 
     print()
     if all_fails:

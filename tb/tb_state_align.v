@@ -12,7 +12,7 @@ module tb_state_align;
     localparam integer W = 256;
     localparam integer H = 128;
     localparam integer BAR_W = 32;
-    localparam integer HG_STEP = 16;
+    localparam integer HG_STEP = 16 << 16;   // Q12.16: 16 codes per pixel
     localparam integer LINE_GAP_CYCLES = 1;
     localparam integer FRAMES_PER_PATTERN = 2;
 
@@ -68,8 +68,8 @@ module tb_state_align;
         .cfg_checker_size(16'h0001),
         .cfg_frame_rate_div(32'd24),
         .cfg_bar_width(BAR_W[15:0]),
-        .cfg_hg_step(HG_STEP[15:0]),
-        .cfg_vg_step(16'h0000),
+        .cfg_hg_step(HG_STEP[27:0]),
+        .cfg_vg_step(28'h0),
         .cfg_box_border_color(24'h000000),
         .cfg_box_border_width(8'h00),
         .cfg_box_img_x_step(32'h00000000),
@@ -139,7 +139,7 @@ module tb_state_align;
         integer v12;
         integer v8;
         begin
-            v12 = x_pos * HG_STEP;
+            v12 = x_pos * (HG_STEP >> 16);
             if (v12 > 4095)
                 v12 = 4095;
             v8 = (v12 >> 4) & 8'hff;

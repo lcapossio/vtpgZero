@@ -159,14 +159,15 @@ def check_ramp(w: int = 1920, h: int = 1080) -> None:
 
 def main() -> int:
     check_palette()
-    for w, h in ((1920, 1080), (1280, 720), (3840, 2160)):
+    for w, h in ((1920, 1080), (1280, 720), (3840, 2160), (7680, 4320)):
         check_layout(w, h)
         check_ramp(w, h)
     if failures:
         print(f"\n{len(failures)} failure(s)")
         return 1
     print("PASS: SMPTE RP 219 palette matches the published 10/12-bit codes; "
-          "layout and ramp correct at 1920x1080, 1280x720, 3840x2160")
+          "layout and ramp correct at 1920x1080, 1280x720, 3840x2160, "
+          "7680x4320")
     return 0
 
 

@@ -183,8 +183,10 @@ static int vtpg_init_moving_box(unsigned w, unsigned h) {
     /* Host-precomputed step values (only used by colorbar / hgrad / vgrad,
      * but harmless to set always). */
     WR(VTPG_BASE + VTPG_REG_BAR_WIDTH, w / 8u);
-    if (w > 1) WR(VTPG_BASE + VTPG_REG_HG_STEP, 0xFFFu / (w - 1));
-    if (h > 1) WR(VTPG_BASE + VTPG_REG_VG_STEP, 0xFFFu / (h - 1));
+    /* Gradient steps are Q12.16 codes per pixel / line, rounded up so the
+     * last one lands on 0xFFF: ceil((0xFFF << 16) / (n - 1)). */
+    if (w > 1) WR(VTPG_BASE + VTPG_REG_HG_STEP, ((0xFFFu << 16) + w - 2u) / (w - 1u));
+    if (h > 1) WR(VTPG_BASE + VTPG_REG_VG_STEP, ((0xFFFu << 16) + h - 2u) / (h - 1u));
     vtpg_set_smpte_geometry(w, h);
 
     /* Moving-box overlay on colorbar background.

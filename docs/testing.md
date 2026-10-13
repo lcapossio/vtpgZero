@@ -71,8 +71,8 @@ python hw/arty_a7_100t/python/check_yuv_range_mutations.py
 The SMPTE RP 219 chart (`EN_SMPTE`) has its own spec check. It compares the
 model with literal values from RP 219 rather than with the generator. It
 checks the published 10-bit codes of every chart color, the 12-bit -I/+Q
-anchors, the color of every segment at 1920x1080, 1280x720 and 3840x2160
-with the host geometry, and that the Y ramp runs from black exactly to
+anchors, the color of every segment at 1920x1080, 1280x720, 3840x2160 and
+7680x4320 with the host geometry, and that the Y ramp runs from black exactly to
 white:
 
 ```sh
@@ -206,7 +206,15 @@ Verilator-backed data-path regression.
 A standalone iverilog beat-exact PPC gate (RTL ↔ Python model, all patterns
 and modes, PPC 1/2/4/8) is also available. It includes a SMPTE sweep at
 232x48, where the host geometry puts segment boundaries mid-beat at every
-PPC, in RGB and in YUV BT.709 limited 10-bit:
+PPC, in RGB and in YUV BT.709 limited 10-bit. Its default gradient steps
+have fraction bits set, so the per-lane Q12.16 carries are exercised.
+
+It also runs HGRAD and RAMP on 7680-wide lines (PPC 1/2/4/8) and at the
+16-bit maximum width of 65535, and VGRAD over 4320 lines, all with the
+host's `HG_STEP`/`VG_STEP` formula. Besides matching the model, every line
+(column, for VGRAD) is checked against the ideal ramp directly, so a bug
+the RTL and model share cannot pass: 0 at the first pixel, exactly 0xFFF at
+the last, never decreasing, and within one code of `x * 0xFFF / (n - 1)`.
 
 ```sh
 python sim/check_ppc_vs_model.py

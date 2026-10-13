@@ -57,7 +57,7 @@ CFG = dict(
     box_width=12, box_height=8, box_dx=1, box_dy=1,
     box_border_color=0xFF0000, box_border_width=2,
     grid_spacing=7, grid_color=0xFFFFFF, checker_size=5,
-    hg_step=64, vg_step=128, bar_width=8,
+    hg_step=0x409A5B, vg_step=0x803C71, bar_width=8,   # Q12.16, fractional
 )
 
 PATTERNS = [

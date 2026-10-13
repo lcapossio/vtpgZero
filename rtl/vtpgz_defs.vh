@@ -56,6 +56,9 @@
 `define VTPGZ_REG_CHECKER_SIZE  8'h3C
 `define VTPGZ_REG_FRAME_RATE    8'h40
 `define VTPGZ_REG_BAR_WIDTH     8'h44
+// Gradient steps, Q12.16 12-bit codes per pixel / per line in [27:0].
+// Host writes HG_STEP = ceil((0xFFF << 16) / (IMG_WIDTH - 1)) and
+// VG_STEP = ceil((0xFFF << 16) / (IMG_HEIGHT - 1)); HG_STEP also drives RAMP.
 `define VTPGZ_REG_HG_STEP       8'h48
 `define VTPGZ_REG_VG_STEP       8'h4C
 `define VTPGZ_REG_BOX_BORDER   8'h50  // {border_width[8], border_color[24]}

@@ -268,8 +268,9 @@ int main(int argc, char** argv) {
     axi_write(VTPGZ_REG_IMG_WIDTH,    256);
     axi_write(VTPGZ_REG_IMG_HEIGHT,   128);
     axi_write(VTPGZ_REG_BAR_WIDTH,    32);    // 256/8
-    axi_write(VTPGZ_REG_HG_STEP,      16);    // ~0xFFF/255
-    axi_write(VTPGZ_REG_VG_STEP,      32);    // ~0xFFF/127
+    // Q12.16, ceil((0xFFF << 16) / (n - 1)) for n = 256 / 128
+    axi_write(VTPGZ_REG_HG_STEP,      ((0xFFFu << 16) + 254u) / 255u);
+    axi_write(VTPGZ_REG_VG_STEP,      ((0xFFFu << 16) + 126u) / 127u);
     // Exercise the box-image step regs. We hit both ends (0xFFFFFFFF and
     // 0x00000000) before landing on the real Q16 scaler value to drive full
     // toggle coverage across the 32-bit input ports. The 0-write also covers

@@ -134,8 +134,8 @@ module vtpgz_axilite_top #(
     wire [15:0] cfg_checker_size;
     wire [31:0] cfg_frame_rate_div;
     wire [15:0] cfg_bar_width;
-    wire [15:0] cfg_hg_step;
-    wire [15:0] cfg_vg_step;
+    wire [27:0] cfg_hg_step;
+    wire [27:0] cfg_vg_step;
     wire [23:0] cfg_box_border_color;
     wire [7:0]  cfg_box_border_width;
     wire [31:0] cfg_box_img_x_step;

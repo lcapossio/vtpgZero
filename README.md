@@ -136,8 +136,8 @@ A third, optional module sits *after* either of them:
 | 0x3C   | CHECKER_SIZE   | checkerboard square size in pixels                   |
 | 0x40   | FRAME_RATE_DIV | clocks per frame for internal sync mode              |
 | 0x44   | BAR_WIDTH      | colorbar width in pixels (host writes `img_width/8`) |
-| 0x48   | HG_STEP        | horizontal-gradient step per pixel (`0xFFF/(width-1)`) |
-| 0x4C   | VG_STEP        | vertical-gradient step per line (`0xFFF/(height-1)`)   |
+| 0x48   | HG_STEP        | `[27:0]` horizontal-gradient (and RAMP) step per pixel, Q12.16 12-bit codes. Host writes `ceil((0xFFF << 16) / (IMG_WIDTH - 1))`. |
+| 0x4C   | VG_STEP        | `[27:0]` vertical-gradient step per line, Q12.16. Host writes `ceil((0xFFF << 16) / (IMG_HEIGHT - 1))`. |
 | 0x50   | BOX_BORDER     | `{border_width[8], border_color[24]}`. Border is drawn inside the box; `border_width=0` means no border. |
 | 0x54   | BOX_IMG_X_STEP | Q16 nearest-neighbour step for the box-image overlay. Host writes `(BOX_IMAGE_W << 16) / BOX_SIZE.width` whenever `BOX_SIZE` changes. Only meaningful when `EN_BOX_IMAGE=1`. |
 | 0x58   | BOX_IMG_Y_STEP | Q16 step for the box-image overlay y-axis. Host writes `(BOX_IMAGE_H << 16) / BOX_SIZE.height`. |
@@ -244,8 +244,8 @@ vtpgz_core #(
     .cfg_checker_size  (16'd0),
     .cfg_frame_rate_div(32'd2_166_666),         // 130 MHz / 60 fps
     .cfg_bar_width     (16'd240),               // 1920 / 8
-    .cfg_hg_step       (16'd0),
-    .cfg_vg_step       (16'd0),
+    .cfg_hg_step       (28'd0),
+    .cfg_vg_step       (28'd0),
 
     // Status -- leave dangling if you don't need them
     .sts_busy          (),
@@ -361,8 +361,17 @@ put an asynchronous AXI4-Stream FIFO on the output. `m_axis_tuser` is 1 bit
 3. Write the host-precomputed step values (these replace per-pixel dividers
    with cheap accumulators in hardware):
    - `BAR_WIDTH = IMG_WIDTH / 8`              (colorbar bar width)
-   - `HG_STEP   = 0xFFF / (IMG_WIDTH  - 1)`   (horizontal gradient step)
-   - `VG_STEP   = 0xFFF / (IMG_HEIGHT - 1)`   (vertical gradient step)
+   - `HG_STEP   = ceil((0xFFF << 16) / (IMG_WIDTH  - 1))`   (horizontal gradient / ramp step)
+   - `VG_STEP   = ceil((0xFFF << 16) / (IMG_HEIGHT - 1))`   (vertical gradient step)
+
+   The gradient steps are Q12.16 (12-bit codes per pixel or line, 16
+   fraction bits), so a gradient spans the full 0..0xFFF range at any width
+   up to 65535, 8K included, with every pixel within one code of the ideal
+   ramp. Rounding up makes the last pixel land on 0xFFF; the core saturates
+   the overshoot. In C: `((0xFFFu << 16) + n - 2) / (n - 1)` for `n > 1`.
+   Before this format, these registers held a whole number of codes per
+   step (`0xFFF / (n - 1)`); that value now reads as 1/65536 of what it
+   meant, so older host code must be updated.
    - with `EN_SMPTE=1`, the three `SMPTE_*` geometry registers (formulas
      in the [register map](#register-map-axi4-lite-32-bit)). Their reset
      values are the 1920x1080 geometry.
@@ -435,7 +444,7 @@ interlaced"). So program `BOX_SIZE` height for **half** what you want on the
 woven frame: an N-tall box on screen means programming N/2.
 
 `VG_STEP` is a step, not a height, so it follows the usual formula against
-the programmed (field) height — `VG_STEP = 0xFFF / (field_height - 1)`,
+the programmed (field) height — `VG_STEP = ceil((0xFFF << 16) / (field_height - 1))`,
 i.e. roughly twice the progressive step for the same frame. Each field then
 sweeps the full gradient on its own, as v_tpg's field-coordinate rendering
 does.

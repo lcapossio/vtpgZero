@@ -74,6 +74,20 @@ def derived_tdata_width(output_mode: int, bpc: int,
     return round8(2 * bpc)
 
 
+def grad_step(n: int) -> int:
+    """HG_STEP / VG_STEP for a gradient over n pixels or lines: Q12.16
+    12-bit codes per step, ceil((0xFFF << 16) / (n - 1)). Rounded up so the
+    last pixel lands on 0xFFF (the RTL saturates the overshoot); the 16
+    fraction bits keep every pixel within one code of the ideal ramp at
+    any 16-bit n."""
+    return -(-(0xFFF << 16) // max(n - 1, 1))
+
+
+def _grad_val(acc: int) -> int:
+    """A Q16.16 gradient accumulator as a 12-bit code, saturated."""
+    return 0xFFF if (acc >> 28) else (acc >> 16) & 0xFFF
+
+
 @dataclass
 class VtpgzConfig:
     width: int = 64
@@ -89,8 +103,8 @@ class VtpgzConfig:
     rgb_order: int = RGB_ORDER_XILINX
     bpc: int = 8
     bar_width: int = 8
-    hg_step: int = 0xFFF // 63
-    vg_step: int = 0xFFF // 31
+    hg_step: int = grad_step(64)
+    vg_step: int = grad_step(32)
     solid_color: int = 0x00FFFFFF
     box_color: int = 0x00FF0000
     box_width: int = 0
@@ -376,12 +390,10 @@ def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int,
         return pal[regs.bar_idx & 0x7]
 
     if pat == PAT_HGRAD:
-        v = 0xFFF if (regs.hg_acc >> 12) else (regs.hg_acc & 0xFFF)
-        return gray(v)
+        return gray(_grad_val(regs.hg_acc))
 
     if pat == PAT_VGRAD:
-        v = 0xFFF if (regs.vg_acc >> 12) else (regs.vg_acc & 0xFFF)
-        return gray(v)
+        return gray(_grad_val(regs.vg_acc))
 
     if pat == PAT_CHECKER:
         v = 0xFFF if (regs.chk_sel_x ^ regs.chk_sel_y) else 0x000
@@ -406,7 +418,7 @@ def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int,
         return gray(0)
 
     if pat == PAT_RAMP:
-        v = 0xFFF if (regs.ramp_acc >> 12) else (regs.ramp_acc & 0xFFF)
+        v = _grad_val(regs.ramp_acc)
         return gray(v)
 
     if pat == PAT_NOISE:
@@ -474,13 +486,13 @@ def _tick(cfg: VtpgzConfig, regs: VtpgzRegs, x_reg: int, y_reg: int,
     if last_x:
         regs.hg_acc = 0
     else:
-        regs.hg_acc = (regs.hg_acc + cfg.hg_step) & 0xFFFFF
+        regs.hg_acc = (regs.hg_acc + (cfg.hg_step & 0xFFFFFFF)) & 0xFFFFFFFF
 
     # ---- vgrad ----
     if pix_sof:
         regs.vg_acc = 0
     elif last_x:
-        regs.vg_acc = (regs.vg_acc + cfg.vg_step) & 0xFFFFF
+        regs.vg_acc = (regs.vg_acc + (cfg.vg_step & 0xFFFFFFF)) & 0xFFFFFFFF
 
     # ---- checker ----
     chk_size_eff = max(1, cfg.checker_size)
@@ -524,7 +536,7 @@ def _tick(cfg: VtpgzConfig, regs: VtpgzRegs, x_reg: int, y_reg: int,
     if last_x:
         regs.ramp_acc = 0
     else:
-        regs.ramp_acc = (regs.ramp_acc + cfg.hg_step) & 0xFFFFF
+        regs.ramp_acc = (regs.ramp_acc + (cfg.hg_step & 0xFFFFFFF)) & 0xFFFFFFFF
 
     # ---- LFSR (always advances when advance=1) ----
     fb = ((regs.lfsr >> 15) ^ (regs.lfsr >> 13)
@@ -850,8 +862,8 @@ if __name__ == "__main__":
                                     yuv_subsample=sub,
                                     bpc=bpc,
                                     bar_width=2,
-                                    hg_step=0xFFF // 15,
-                                    vg_step=0xFFF // 7,
+                                    hg_step=grad_step(16),
+                                    vg_step=grad_step(8),
                                     checker_size=4, grid_spacing=4,
                                     box_width=4, box_height=4)
                     render_frame(c)
