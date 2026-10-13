@@ -761,8 +761,8 @@ JTAG-AXI bridge + BRAM frame buffer + MMCM), and now also the
 `vtpgz_axis_to_flvdval` adapter and the `flv_monitor` raster instrument that
 the on-silicon parallel-video test reads — neither of which you pay for
 unless you instantiate them. Standalone, the all-patterns
-`vtpgz_axilite_top` is ~**1380 LUT / 1244 FF** (RGB-8b, OOC synth, no BRAM,
-no DSP), and ~2400 LUT at 4 pixels per clock. Pixels-per-clock scales
+`vtpgz_axilite_top` is ~**1400 LUT / 1268 FF** (RGB-8b, OOC synth, no BRAM,
+no DSP), and ~2450 LUT at 4 pixels per clock. Pixels-per-clock scales
 sub-linearly: 8× throughput costs about 2.8× the LUTs. The smallest build
 (1 pattern, RAW-8b) is ~546 LUT.
 
