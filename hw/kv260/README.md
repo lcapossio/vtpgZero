@@ -166,8 +166,10 @@ python hw\kv260\scripts\bench8k.py run       # cold boot + ~2 min
 `run` borrows the DisplayPort demo's PMUFW and FSBL from
 `build/bsp_vtpgzero_kv260` (build them with `build_bsp.py` first). The PS
 configuration is the same, so they bring this design up too. The board is
-selected by JTAG cable serial (`$KV260_JTAG_SERIAL`), so other boards on
-the same `hw_server` are left alone.
+selected by JTAG cable serial, so other boards on the same `hw_server` are
+left alone. The default is the author's board: set `$KV260_JTAG_SERIAL` to
+yours (xsdb's `targets -target-properties` lists each target's
+`jtag_cable_serial`).
 
 Measured on a KV260 (Vivado 2025.2, `Performance_ExplorePostRoutePhysOpt`;
 WNS +0.290 ns at 250 MHz; vtpgZero 3782 LUT / 2519 FF, monitor

@@ -24,8 +24,9 @@ Usage:
 
 `run` cold-boots the KV260 (PMUFW + FSBL of the DisplayPort demo's BSP,
 see README), programs the bench bitstream and runs the patterns. The board
-is picked by JTAG cable serial ($KV260_JTAG_SERIAL), so other boards on the
-same hw_server are left alone.
+is picked by JTAG cable serial, so other boards on the same hw_server are
+left alone. The default serial is the author's board; set
+$KV260_JTAG_SERIAL to yours.
 """
 
 from __future__ import annotations

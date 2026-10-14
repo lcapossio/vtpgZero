@@ -830,7 +830,8 @@ sub-linearly: 8× throughput costs about 2.8× the LUTs. The smallest build
 (1 pattern, RAW-8b) is ~546 LUT.
 
 **8Kp60 on silicon.** On a KV260 (Zynq UltraScale+, -2LV), the core runs
-at 8 pixels per clock and 250 MHz and streams 7680x4320 at 60 fps. Every
+at 8 pixels per clock and 250 MHz and streams 7680x4320 at 60 fps (active
+video; with CTA-861 blanking the 8Kp60 raster needs 297 MHz). Every
 frame has the full 4,147,200 beats with no mid-line bubble and an exact
 1/60 s period, and its CRC-32 matches the bit-exact model's for all nine
 patterns. Free-running, it reaches 60.2 fps. Out of context, a ZU7EV -2
