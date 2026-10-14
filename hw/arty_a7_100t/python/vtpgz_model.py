@@ -20,7 +20,7 @@ This produces byte-exact agreement with Verilator simulation for all
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Iterable, Iterator
 
 # ----- enums (must match vtpgz_defs.vh) -----
 PAT_COLORBAR   = 0
@@ -726,8 +726,9 @@ def _box_overlay(c0: int, c1: int, c2: int, x: int, y: int,
 # Frame renderer
 # ============================================================================
 
-def render_frame(cfg: VtpgzConfig, regs: VtpgzRegs | None = None) -> list[int]:
-    """Render one full frame and return list of 48-bit tdata words.
+def iter_frame(cfg: VtpgzConfig,
+               regs: VtpgzRegs | None = None) -> Iterator[int]:
+    """Yield one frame's packed per-pixel tdata words, in stream order.
 
     The simulation models the AXI output register: each beat reflects the
     pattern registers at the cycle when tdata_next was loaded into tdata_r.
@@ -735,13 +736,14 @@ def render_frame(cfg: VtpgzConfig, regs: VtpgzRegs | None = None) -> list[int]:
     Sequence per pixel K (K = 0..W*H-1):
       1. x_reg = K % W, y_reg = K // W
       2. Compute pixel from current registers (combinational)
-      3. Pack tdata, append to output
+      3. Pack tdata, yield it
       4. Tick registers using current x_reg/y_reg (mirrors rising edge)
+
+    A generator, so a full 8K frame (33 Mpixel) need not sit in memory.
     """
     if regs is None:
         regs = VtpgzRegs()
 
-    out: list[int] = []
     W, H = cfg.width, cfg.height
     total = W * H
 
@@ -758,11 +760,17 @@ def render_frame(cfg: VtpgzConfig, regs: VtpgzRegs | None = None) -> list[int]:
         if cfg.box_width > 0 and cfg.box_height > 0:
             c0_12, c1_12, c2_12 = _box_overlay(
                 c0_12, c1_12, c2_12, x_reg, y_reg, cfg, regs)
-        out.append(_pack_tdata(c0_12, c1_12, c2_12, x_reg, y_reg, cfg))
+        yield _pack_tdata(c0_12, c1_12, c2_12, x_reg, y_reg, cfg)
 
         _tick(cfg, regs, x_reg, y_reg, last_x, pix_sof, end_of_frame)
 
-    return out
+
+def render_frame(cfg: VtpgzConfig, regs: VtpgzRegs | None = None) -> list[int]:
+    """Render one full frame and return list of 48-bit tdata words.
+
+    See iter_frame for the stepping.
+    """
+    return list(iter_frame(cfg, regs))
 
 
 def render_frame_native(cfg: VtpgzConfig,
@@ -827,6 +835,24 @@ def render_frame_beats(cfg: VtpgzConfig,
             acc |= (per_pixel[base + lane] & ((1 << w) - 1)) << (lane * w)
         beats.append(acc)
     return beats
+
+
+def iter_frame_beats(cfg: VtpgzConfig,
+                     regs: VtpgzRegs | None = None) -> Iterator[int]:
+    """render_frame_beats as a generator (same packing, lane 0 in the LSBs)."""
+    n = cfg.pixels_per_clock
+    if cfg.width % n != 0:
+        raise ValueError(
+            f"width={cfg.width} must be a multiple of pixels_per_clock={n}")
+    mask = (1 << cfg.tdata_width) - 1
+    w = cfg.tdata_width
+    acc, lane = 0, 0
+    for pix in iter_frame(cfg, regs):
+        acc |= (pix & mask) << (lane * w)
+        lane += 1
+        if lane == n:
+            yield acc
+            acc, lane = 0, 0
 
 
 def tdata_to_bram_words(tdata_list: Iterable[int],
