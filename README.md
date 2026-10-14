@@ -717,8 +717,8 @@ are in **[docs/images.md](docs/images.md)**.
 ## Upgrading from 0.7
 
 0.8.0 breaks register compatibility in one place: the gradient step
-registers. Everything else (addresses, other fields, ports, stream
-format) is unchanged.
+registers. Everything else (addresses, other fields, the ports other
+than the two step inputs, stream format) is unchanged.
 
 **`HG_STEP` (0x48) and `VG_STEP` (0x4C) are now Q12.16.** Up to 0.7 they
 held a whole number of 12-bit codes per pixel (or line) in bits `[15:0]`.
@@ -812,9 +812,9 @@ Measured on the full Arty A7-100T demo (Vivado 2025.2, default strategies):
 |---|---|
 | Target | Digilent Arty A7-100T (XC7A100TCSG324-1, speed grade -1) |
 | Clock | 100 MHz at 4 pixels/clock = 400 Mpixel/s (on-board 100 MHz osc via MMCM) |
-| WNS | +1.370 ns at 100 MHz (timing met, 0 failing endpoints) |
-| LUTs | 3430 / 63400 = 5.41% |
-| FFs | 3463 / 126800 = 2.73% |
+| WNS | +1.477 ns at 100 MHz (timing met, 0 failing endpoints) |
+| LUTs | 3518 / 63400 = 5.55% |
+| FFs | 3510 / 126800 = 2.77% |
 | BRAM36 | 8 / 135 = 5.93% |
 | Hardware test | **9/9 patterns byte-exact** vs Python model |
 
