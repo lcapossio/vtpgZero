@@ -13,6 +13,10 @@ Instead, vtpgZero continuously rewrites a 1280x720 ABGR8888 framebuffer at
 `0x4C000000`, and the PS DPDMA graphics channel scans that buffer to the
 monitor.
 
+A second design on the same board, the
+[8K throughput bench](#8k-throughput-bench), runs vtpgZero at 7680x4320,
+60 fps and checks every frame against the model.
+
 ## Build
 
 From the repository root:
@@ -113,3 +117,95 @@ free-run behavior, tearing reappears).
   the 1280x720 geometry at init (bar 137, side panel 160, PLUGE step 46, row
   unit 60, ramp step 1533). The bouncing box draws over it like any other
   pattern.
+
+## 8K throughput bench
+
+A second KV260 design checks that vtpgZero sustains 7680x4320 at 60 fps.
+There is no picture: the KV260 DisplayPort cannot carry 8K, and the DDR
+could not take 8 pixels x 4 bytes per clock at this rate. Instead,
+vtpgZero streams into `rtl/axis_frame_monitor.v`, which holds `TREADY`
+high and measures every frame in the fabric.
+
+```text
+pl_clk0 (99.999 MHz) -> MMCM -> 249.9975 MHz
+    vtpgZero (PIXELS_PER_CLOCK=8, RGB 8 bpc) -> axis_frame_monitor
+PS M_AXI_HPM0_FPD -> AXI interconnect (clock crossing) -> both AXI-Lite slaves
+```
+
+At 8 pixels per clock a 7680x4320 frame is 960 x 4320 beats plus one idle
+clock between lines: 4,151,519 clocks. 60 fps therefore needs 249.1 MHz.
+The bench runs at 249.9975 MHz (the MMCM's 250 MHz from a PS clock that
+is really 99.999 MHz) with `FRAME_RATE_DIV` = 4,166,625, so one frame
+starts every 1/60 s.
+
+For each pattern, the monitor records:
+- the beat and `TLAST` counts;
+- the active time (SOF beat to last `TLAST`);
+- the SOF-to-SOF period, with its minimum and maximum since the last clear;
+- mid-line bubbles;
+- a CRC-32 of every frame.
+
+The host drives everything over JTAG through the PS (xsdb memory access)
+and checks:
+
+- 4,147,200 beats in 4320 lines per frame, and no bubble;
+- every frame period equal to `FRAME_RATE_DIV`, so minimum == maximum and
+  the rate is 60.0000 fps. Host-timed, the clock agrees with 249.9975 MHz to
+  within the JTAG latency jitter;
+- the CRC of the first frame after enable equal to the CRC of the same
+  frame from the bit-exact Python model (`vtpgz_model.py`, all 33 Mpixels).
+
+It also finds the core's free-running ceiling: the smallest
+`FRAME_RATE_DIV` at which no frame start is dropped.
+
+```powershell
+python hw\kv260\scripts\bench8k.py build     # ~25 min
+python hw\kv260\scripts\bench8k.py run       # cold boot + ~2 min
+```
+
+`run` borrows the DisplayPort demo's PMUFW and FSBL from
+`build/bsp_vtpgzero_kv260` (build them with `build_bsp.py` first). The PS
+configuration is the same, so they bring this design up too. The board is
+selected by JTAG cable serial (`$KV260_JTAG_SERIAL`), so other boards on
+the same `hw_server` are left alone.
+
+Measured on a KV260 (Vivado 2025.2, `Performance_ExplorePostRoutePhysOpt`;
+WNS +0.290 ns at 250 MHz; vtpgZero 3782 LUT / 2519 FF, monitor
+834 LUT / 911 FF):
+
+```text
+7680x4320, 8 px/clk, clock 249.9975 MHz, FRAME_RATE_DIV=4166625, active frame = 4151519 clocks
+pattern          fps  host fps  host MHz frames    beats lines    period min/max bubbles first CRC     model  result
+colorbar     60.0000    59.977   249.985    271  4147200  4320  4166625/4166625        0  dff0d416  dff0d416  OK
+hgrad        60.0000    60.014   249.987    271  4147200  4320  4166625/4166625        0  66d4c2a4  66d4c2a4  OK
+vgrad        60.0000    59.899   250.044    272  4147200  4320  4166625/4166625        0  0cb20e3b  0cb20e3b  OK
+checker      60.0000    60.226   249.983    272  4147200  4320  4166625/4166625        0  e8cd7539  e8cd7539  OK
+solid        60.0000    59.974   249.995    273  4147200  4320  4166625/4166625        0  ada2b0d1  ada2b0d1  OK
+smpte*       60.0000    60.004   249.959    272  4147200  4320  4166625/4166625        0  0e52299b  0e52299b  OK
+grid         60.0000    60.114   250.005    271  4147200  4320  4166625/4166625        0  8c52c702  8c52c702  OK
+ramp         60.0000    60.183   250.036    272  4147200  4320  4166625/4166625        0  66d4c2a4  66d4c2a4  OK
+noise        60.0000    59.937   250.069    272  4147200  4320  4166625/4166625        0  c51529a1  c51529a1  OK
+Free-running: FRAME_RATE_DIV=4151521 (active + 2) holds every frame, 60.218 fps at 249.998 MHz
+* SMPTE RP 219 is not in this build (EN_SMPTE=0): pattern 5 renders black, as the model does.
+
+PASS: 9/9 patterns at 8Kp60
+```
+
+The bouncing box (480x270, moving 8 by 4 pixels per frame) is on in every
+pattern. HGRAD and RAMP share a CRC because in RGB both are the same gray
+sweep driven by `HG_STEP`.
+
+Notes:
+
+- The KV260's -2LV part (0.72 V) is the slow end of this family. Out of
+  context, at default strategies, the core alone sits right at 250 MHz
+  (see [docs/resources.md](../../docs/resources.md#frequency-on-ultrascale-8k-throughput)).
+  The in-system build closes with margin only because of the
+  `Performance_*` strategies set in `vivado/build_pl_8k.tcl`. The limit
+  is the colour-bar wrap counter's feedback loop.
+- Connection automation gives the fast clock its own `proc_sys_reset` but
+  leaves its `ext_reset_in` open, which Vivado ties to 0: an active-low
+  reset held forever, and the first AXI-Lite read hangs. The PS `DAP`
+  then reports an AXI-AP transaction error. `build_bd_8k.tcl` wires
+  `pl_resetn0` in, and `bench8k.py run` clears a stuck DAP with `rst -dap`
+  before booting.

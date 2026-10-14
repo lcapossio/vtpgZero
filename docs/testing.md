@@ -451,3 +451,17 @@ the configured PPC and checks byte-exact. PPC>1 builds run the demo at
 per-lane datapath does not close 130 MHz on this -1 part. `build.tcl` prints
 the clock the build was actually constrained at. PPC 2, 4 and 8 are verified
 byte-exact across all patterns on the board.
+
+## 8Kp60 on the KV260
+
+`hw/kv260/scripts/bench8k.py` runs vtpgZero at 8 pixels per clock and
+249.9975 MHz on a KV260, streaming 7680x4320 at 60 fps into a monitor that
+holds `TREADY` high. For every pattern it checks:
+
+- 4,147,200 beats in 4320 lines per frame, with no mid-line bubble;
+- every frame period exactly `FRAME_RATE_DIV` (1/60 s);
+- the CRC-32 of the first frame equal to the bit-exact model's, rendered
+  at full 8K (~3.5 min for all patterns, in parallel while the board runs).
+
+Details and the measured table are in
+[hw/kv260/README.md](../hw/kv260/README.md#8k-throughput-bench).

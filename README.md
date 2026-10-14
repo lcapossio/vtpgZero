@@ -89,7 +89,8 @@ A third, optional module sits *after* either of them:
 - **Pixels-per-clock (1/2/4/8)**: pack 1, 2, 4, or 8 horizontally-adjacent
   pixels into each AXI4-Stream beat for higher line bandwidth. All patterns
   and output modes are supported; `PIXELS_PER_CLOCK=1` (default) is
-  byte-identical to prior releases.
+  byte-identical to prior releases. At 8 pixels per clock it runs
+  7680x4320 at 60 fps on a KV260, verified frame by frame on silicon.
 - Auto-derived `tdata` width — the smallest multiple-of-8 that fits the
   active components for the chosen mode/bpc. No manual sizing needed.
 - **AXI4-Lite** slave for runtime configuration (19 writable registers, 22
@@ -827,6 +828,16 @@ unless you instantiate them. Standalone, the all-patterns
 no DSP), and ~2450 LUT at 4 pixels per clock. Pixels-per-clock scales
 sub-linearly: 8× throughput costs about 2.8× the LUTs. The smallest build
 (1 pattern, RAW-8b) is ~546 LUT.
+
+**8Kp60 on silicon.** On a KV260 (Zynq UltraScale+, -2LV), the core runs
+at 8 pixels per clock and 250 MHz and streams 7680x4320 at 60 fps. Every
+frame has the full 4,147,200 beats with no mid-line bubble and an exact
+1/60 s period, and its CRC-32 matches the bit-exact model's for all nine
+patterns. Free-running, it reaches 60.2 fps. Out of context, a ZU7EV -2
+closes the core at ~284 MHz. The bench and its results are in
+[hw/kv260/README.md](hw/kv260/README.md#8k-throughput-bench), and the
+fmax numbers in
+[docs/resources.md](docs/resources.md#frequency-on-ultrascale-8k-throughput).
 
 The full per-configuration matrix — every mode/BPC, per-feature deltas, the
 PPC sweep, interlace, the YUV colorimetry options, the SMPTE RP 219 chart,

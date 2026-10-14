@@ -118,6 +118,37 @@ registers and Vivado silently kept only one driver, pruning the other lanes'
 logic. With that fixed, and with the later per-lane colour-bar pipeline that
 lets PPC>1 builds close timing, the table above is the real cost.
 
+### Frequency on UltraScale+ (8K throughput)
+
+The core emits active video only, `IMG_WIDTH/PPC` beats per line plus
+`LINE_GAP_CYCLES` (default 1) between lines. A 7680x4320 frame at 8 pixels
+per clock is therefore 960 × 4320 + 4319 = 4,151,519 clocks, and 60 fps
+needs at least **249.1 MHz**. (The CTA-861 8Kp60 raster, blanking
+included, is 297 MHz at 8 pixels per clock.)
+
+Out-of-context place and route of `vtpgz_axilite_top`, all patterns, RGB
+8 bpc, `PIXELS_PER_CLOCK=8`, constrained at 4.0 ns (250 MHz), Vivado
+2025.2 defaults:
+
+| Part | WNS at 4.0 ns | fmax |
+|---|---:|---:|
+| `xczu7ev-ffvc1156-2-e` (ZU7EV, -2) | +0.478 ns | ~284 MHz |
+| `xck26-sfvc784-2LV-c` (KV260 SOM, -2LV at 0.72 V) | −0.006 ns | ~249.6 MHz |
+
+The ZU7EV meets 8Kp60 with margin. The KV260's low-voltage part sits right
+on the 249.1 MHz line at default strategies. In the full KV260 bench design,
+`Performance_ExplorePostRoutePhysOpt` closes 250 MHz at +0.290 ns, and the
+board runs 8Kp60 on every pattern. The limiting path on both is the colour-bar
+wrap counter's feedback loop (`bar_left`: clamp, threshold compare, wrap
+count, step select, add), with the checker's `chk_left` 20 ps behind it.
+See [hw/kv260/README.md](../hw/kv260/README.md#8k-throughput-bench) for
+the in-system build and the hardware measurement. Reproduce with:
+
+```
+vivado -mode batch -nojournal -source synth/ooc_timing.tcl \
+    -tclargs xck26-sfvc784-2LV-c 4.0 kv260_ppc8 PIXELS_PER_CLOCK:8
+```
+
 ## Interlace
 
 | Config | LUT | FF |
