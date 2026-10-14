@@ -37,7 +37,7 @@ from vtpgz_model import (  # noqa: E402
     RGB_ORDER_XILINX, RGB_ORDER_LEGACY,
     PAT_SOLID, PAT_GRID, PAT_CHECKER,
     PAT_COLORBAR, PAT_HGRAD, PAT_VGRAD, PAT_RAMP, PAT_NOISE, PAT_IMAGE,
-    PAT_SMPTE, smpte_host_geometry, grad_step,
+    PAT_SMPTE, smpte_host_geometry, grad_step, VtpgzRegs,
     YUV_FULL, YUV_LIMITED, YUV_BT601, YUV_BT709,
 )
 from image_to_hex import pixel_word  # noqa: E402
@@ -144,7 +144,7 @@ def run_capture(vvp_bin: Path, pat: int, width: int, height: int,
     names = {"smpte_side_d": "sm_d", "smpte_bar_c": "sm_c",
              "smpte_pluge_p": "sm_p", "smpte_row_h": "sm_h",
              "smpte_ramp_step": "sm_step",
-             "hg_step": "hg_step", "vg_step": "vg_step"}
+             "hg_step": "hg_step", "vg_step": "vg_step", "skip": "skip"}
     cmd += [f"+{names[k]}={v}" for k, v in (smpte or {}).items()]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0 or "OK:" not in r.stdout:
@@ -394,9 +394,7 @@ GRAD_BIG_CONFIGS = [
     ("ramp",  PAT_RAMP,  7680, 4, 1),
     ("ramp",  PAT_RAMP,  7680, 4, 8),
     ("vgrad", PAT_VGRAD, 8, 4320, 1),
-    # Two beats per line: at width == PPC (one beat per line) the RTL and
-    # the model disagree for every pattern, a separate, older issue.
-    ("vgrad", PAT_VGRAD, 16, 4320, 8),
+    ("vgrad", PAT_VGRAD, 8, 4320, 8),          # one beat per line
     ("hgrad", PAT_HGRAD, 65535, 2, 1),
 ]
 
@@ -460,6 +458,94 @@ def check_grad_big(tmp: Path) -> list[str]:
             fails += [f"{label}: {e}" for e in errs[:4]]
         else:
             print(f"  OK  {label} ({len(sim)} beats, full 0..0xFFF sweep)")
+    return fails
+
+
+def _model_cfg(pat: int, ppc: int, width: int, height: int,
+               **over) -> VtpgzConfig:
+    return VtpgzConfig(width=width, height=height, pattern=pat,
+                       output_mode=MODE_RGB, bpc=8, pixels_per_clock=ppc,
+                       image_w=IMG_W_T, image_h=IMG_H_T,
+                       image_out_w=IMG_OUT_T, image_out_h=IMG_OUT_T,
+                       image_rgb888=IMAGE_DATA, **{**HARNESS_CFG, **over})
+
+
+def _first_diff(a: list[int], b: list[int]) -> int | None:
+    if a == b:
+        return None
+    return next((i for i, (x, y) in enumerate(zip(a, b)) if x != y),
+                min(len(a), len(b)))
+
+
+# ---- One beat per line: width == PPC, so every beat is both the first and
+# the last of its line, and the first beat of a frame is also its pix_sof.
+# The per-line state (VGRAD, the checker's and grid's y counters) once reset
+# on pix_sof and so skipped line 0's advance. The harness box (12x8) is
+# wider than these frames, which also checks that the box is clamped to the
+# frame.
+def check_one_beat_lines(tmp: Path) -> list[str]:
+    fails: list[str] = []
+    for ppc in (1, 2, 4, 8):
+        vvp_bin = tmp / f"onebeat_ppc{ppc}.vvp"
+        build(ppc, MODE_RGB, YUV_444, RAW_RGGB, RGB_ORDER_XILINX, 8, vvp_bin)
+        for pname, pat in PPC_PATTERNS:
+            if pname == "image" and ppc == 1:
+                continue                        # 1-px shift at PPC=1
+            hexf = tmp / f"onebeat_{ppc}_{pname}.hex"
+            run_capture(vvp_bin, pat, ppc, 12, hexf)
+            sim = load_beats(hexf)
+            mod = render_frame_beats(_model_cfg(pat, ppc, ppc, 12))
+            d = _first_diff(sim, mod)
+            label = f"one beat per line {ppc}x12 ppc={ppc} pat={pname}"
+            if d is not None:
+                fails.append(f"{label}: first_diff@{d}")
+            else:
+                print(f"  OK  {label} ({len(sim)} beats)")
+    return fails
+
+
+# ---- A later frame of a free-running stream. Every other check captures
+# the first frame after enable, which frame_init starts from reset, so the
+# state a frame leaves for the next one went unchecked: the per-line state
+# once reset on pix_sof, after pixel (0, 0) had already shown the previous
+# frame's last line. The third frame is compared with the model run for
+# three frames, and -- independently of the model, which had the same bug
+# -- every pattern but NOISE (whose LFSR runs on across frames) must repeat
+# the first frame exactly when the box is off.
+SEAM_SKIP = 2
+
+
+def check_frame_seams(tmp: Path) -> list[str]:
+    fails: list[str] = []
+    for ppc in (1, 4):
+        for box in (1, 0):
+            vvp_bin = tmp / f"seam_ppc{ppc}_box{box}.vvp"
+            build(ppc, MODE_RGB, YUV_444, RAW_RGGB, RGB_ORDER_XILINX, 8,
+                  vvp_bin, extra={"EN_BOX": box})
+            over = {} if box else {"box_width": 0, "box_height": 0}
+            for pname, pat in PPC_PATTERNS:
+                if pname == "image" and ppc == 1:
+                    continue
+                hexf = tmp / f"seam_{ppc}_{box}_{pname}.hex"
+                run_capture(vvp_bin, pat, 32, 12, hexf, {"skip": SEAM_SKIP})
+                sim = load_beats(hexf)
+                cfg = _model_cfg(pat, ppc, 32, 12, **over)
+                regs = VtpgzRegs()
+                frames = [render_frame_beats(cfg, regs)
+                          for _ in range(SEAM_SKIP + 1)]
+                label = (f"frame {SEAM_SKIP + 1} ppc={ppc} "
+                         f"box={'on' if box else 'off'} pat={pname}")
+                d = _first_diff(sim, frames[-1])
+                if d is not None:
+                    fails.append(f"{label}: vs model, first_diff@{d}")
+                    continue
+                if not box and pat != PAT_NOISE:
+                    d = _first_diff(sim, frames[0])
+                    if d is not None:
+                        fails.append(f"{label}: differs from frame 1 at "
+                                     f"beat {d}")
+                        continue
+                print(f"  OK  {label} ({len(sim)} beats)")
     return fails
 
 
@@ -531,6 +617,16 @@ def main() -> int:
                 all_fails += check_grad_big(tmp)
             except RuntimeError as e:
                 all_fails.append(f"gradients at 8K: {e}")
+            try:
+                n += 4
+                all_fails += check_one_beat_lines(tmp)
+            except RuntimeError as e:
+                all_fails.append(f"one beat per line: {e}")
+            try:
+                n += 4
+                all_fails += check_frame_seams(tmp)
+            except RuntimeError as e:
+                all_fails.append(f"frame seams: {e}")
 
     print()
     if all_fails:

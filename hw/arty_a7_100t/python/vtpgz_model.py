@@ -489,7 +489,11 @@ def _tick(cfg: VtpgzConfig, regs: VtpgzRegs, x_reg: int, y_reg: int,
         regs.hg_acc = (regs.hg_acc + (cfg.hg_step & 0xFFFFFFF)) & 0xFFFFFFFF
 
     # ---- vgrad ----
-    if pix_sof:
+    # The per-line state (vgrad, checker y, grid y) is reset on the frame's
+    # LAST pixel, not on pix_sof, mirroring the RTL: pixel (0, 0) of the next
+    # frame then reads line 0's state, and a line that is a single beat
+    # (width == PPC) still advances on its last pixel.
+    if end_of_frame:
         regs.vg_acc = 0
     elif last_x:
         regs.vg_acc = (regs.vg_acc + (cfg.vg_step & 0xFFFFFFF)) & 0xFFFFFFFF
@@ -505,7 +509,7 @@ def _tick(cfg: VtpgzConfig, regs: VtpgzRegs, x_reg: int, y_reg: int,
     else:
         regs.chk_x_cnt += 1
 
-    if pix_sof:
+    if end_of_frame:
         regs.chk_y_cnt = 0
         regs.chk_sel_y = 0
     elif last_x:
@@ -524,7 +528,7 @@ def _tick(cfg: VtpgzConfig, regs: VtpgzRegs, x_reg: int, y_reg: int,
     else:
         regs.gx_cnt += 1
 
-    if pix_sof:
+    if end_of_frame:
         regs.gy_cnt = 0
     elif last_x:
         if regs.gy_cnt + 1 >= grid_eff:
@@ -545,12 +549,14 @@ def _tick(cfg: VtpgzConfig, regs: VtpgzRegs, x_reg: int, y_reg: int,
 
     # ---- moving box (only at end_of_frame) ----
     if end_of_frame:
-        # Compute next box_x / box_y combinationally (matches RTL).
+        # Compute next box_x / box_y combinationally (matches RTL), with the
+        # box size clamped to the frame as the RTL does.
+        box_w, box_h = _box_size(cfg)
         new_x, new_dx = regs.box_x, regs.box_dir_x
         if regs.box_dir_x == 0:
-            if regs.box_x + cfg.box_width + cfg.box_dx >= cfg.width:
+            if regs.box_x + box_w + cfg.box_dx >= cfg.width:
                 new_dx = 1
-                new_x = cfg.width - cfg.box_width - 1
+                new_x = max(cfg.width - box_w - 1, 0)
             else:
                 new_x = regs.box_x + cfg.box_dx
         else:
@@ -561,9 +567,9 @@ def _tick(cfg: VtpgzConfig, regs: VtpgzRegs, x_reg: int, y_reg: int,
                 new_x = regs.box_x - cfg.box_dx
         new_y, new_dy = regs.box_y, regs.box_dir_y
         if regs.box_dir_y == 0:
-            if regs.box_y + cfg.box_height + cfg.box_dy >= cfg.height:
+            if regs.box_y + box_h + cfg.box_dy >= cfg.height:
                 new_dy = 1
-                new_y = cfg.height - cfg.box_height - 1
+                new_y = max(cfg.height - box_h - 1, 0)
             else:
                 new_y = regs.box_y + cfg.box_dy
         else:
@@ -663,6 +669,13 @@ def _pack_tdata(c0_12: int, c1_12: int, c2_12: int, x: int, y: int,
 # Box overlay (post-pattern-mux, mirrors the RTL box overlay in vtpgz_core.v)
 # ============================================================================
 
+def _box_size(cfg: VtpgzConfig) -> tuple[int, int]:
+    """BOX_SIZE as the RTL uses it (box_width_eff / box_height_eff): each
+    side clamped to the frame. A zero side means no box here (the model's
+    stand-in for EN_MOVING_BOX=0), so callers check that first."""
+    return min(cfg.box_width, cfg.width), min(cfg.box_height, cfg.height)
+
+
 def _box_overlay(c0: int, c1: int, c2: int, x: int, y: int,
                  cfg: VtpgzConfig, regs: VtpgzRegs) -> tuple[int, int, int]:
     """If (x,y) is inside the box region, replace the triple with
@@ -670,16 +683,16 @@ def _box_overlay(c0: int, c1: int, c2: int, x: int, y: int,
     Border is drawn inside the box: pixels within border_width of any
     box edge are border, the rest is fill. border_width=0 → no border."""
     bx, by = regs.box_x, regs.box_y
-    inside = (bx <= x < bx + cfg.box_width) and \
-             (by <= y < by + cfg.box_height)
+    box_w, box_h = _box_size(cfg)
+    inside = (bx <= x < bx + box_w) and (by <= y < by + box_h)
     if not inside:
         return (c0, c1, c2)
     bw = cfg.box_border_width
     on_border = bw > 0 and (
         x < bx + bw or
-        x >= bx + cfg.box_width - bw or
+        x >= bx + box_w - bw or
         y < by + bw or
-        y >= by + cfg.box_height - bw
+        y >= by + box_h - bw
     )
     if on_border:
         col = cfg.box_border_color

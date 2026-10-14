@@ -1272,7 +1272,10 @@ module vtpgz_core #(
         always @(posedge aclk) begin
             if (!aresetn || frame_init) vg_acc <= 32'h0;
             else if (source_advance) begin
-                if (pix_sof)              vg_acc <= 32'h0;
+                // Reset on the frame's last beat, not on pix_sof (see the
+                // image pattern's acc_y): the next frame's first beat then
+                // reads line 0's value, and a one-beat line still advances.
+                if (end_of_frame)         vg_acc <= 32'h0;
                 else if (last_x)          vg_acc <= vg_acc + {4'h0, cfg_vg_step};
             end
         end
@@ -1402,8 +1405,9 @@ module vtpgz_core #(
                                             : chk_left + cwrap_add[15:0] - NPPC[15:0];
                     chk_sel_x <= chk_sel_x ^ (^cwr_hit);
                 end
-                // Y axis (per-line) -- unchanged by NPPC.
-                if (pix_sof) begin
+                // Y axis (per-line) -- unchanged by NPPC. Reset on the
+                // frame's last beat, as vgrad.
+                if (end_of_frame) begin
                     chk_y_cnt <= 16'h0;
                     chk_sel_y <= 1'b0;
                 end else if (last_x) begin
@@ -1629,7 +1633,7 @@ module vtpgz_core #(
                 else        g_nc <= (NPPC > 1) ? g_nc + grid_step
                                                : g_nc + gwrap_add[15:0] - NPPC[15:0];
 
-                if (pix_sof)                                  gy_cnt <= 16'h0;
+                if (end_of_frame)                             gy_cnt <= 16'h0;
                 else if (last_x) begin
                     if (gy_cnt + 16'h1 >= grid_eff)          gy_cnt <= 16'h0;
                     else                                      gy_cnt <= gy_cnt + 16'h1;

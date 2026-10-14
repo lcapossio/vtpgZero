@@ -170,6 +170,7 @@ module tb_ppc_capture;
     integer total_beats;
     integer max_cycles;
     integer started;
+    integer skip, n_sof;   // frames to let pass before the captured one
     integer width, height, pat;
     integer sm_d, sm_c, sm_p, sm_h, sm_step, hg_step, vg_step;
     integer n_tuser, n_tlast, bad_flag;
@@ -196,7 +197,11 @@ module tb_ppc_capture;
         cfg_vg_step = vg_step[27:0];
 
         total_beats = (width / PIXELS_PER_CLOCK) * height;
-        max_cycles  = total_beats * 40 + 10000;
+        // +skip=N captures frame N+1 of a free-running stream instead of the
+        // first frame after enable (which frame_init starts from reset), so
+        // the state a frame leaves behind for the next one is checked too.
+        if (!$value$plusargs("skip=%d", skip)) skip = 0;
+        max_cycles  = (total_beats * 40 + 10000) * (skip + 1);
 
         cfg_img_width  = width[15:0];
         cfg_img_height = height[15:0];
@@ -219,6 +224,7 @@ module tb_ppc_capture;
 
         count   = 0;
         started = 0;
+        n_sof   = 0;
         i       = 0;
         n_tuser = 0;
         n_tlast = 0;
@@ -227,8 +233,9 @@ module tb_ppc_capture;
             @(posedge aclk);
             #1;
             if (m_tvalid && m_tready) begin
-                if (!started) begin
-                    if (m_tuser) started = 1;
+                if (!started && m_tuser) begin
+                    if (n_sof == skip) started = 1;
+                    n_sof = n_sof + 1;
                 end
                 if (started) begin
                     $fdisplay(out_fd, "%0h", m_tdata);

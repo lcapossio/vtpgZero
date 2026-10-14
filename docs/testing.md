@@ -216,6 +216,19 @@ host's `HG_STEP`/`VG_STEP` formula. Besides matching the model, every line
 the RTL and model share cannot pass: 0 at the first pixel, exactly 0xFFF at
 the last, never decreasing, and within one code of `x * 0xFFF / (n - 1)`.
 
+Two more groups cover edges the sweep's 32x12 first frame does not reach:
+
+- **One beat per line** (width = PPC, PPC 1/2/4/8): every beat is both the
+  first and the last of its line. The harness box is wider than these
+  frames, so the box clamp is checked too.
+- **A later frame** (`+skip=2`, the third frame of a free-running stream,
+  PPC 1 and 4, box on and off): every other capture is the first frame after
+  enable, which `frame_init` starts from reset, so the state one frame
+  leaves for the next is only checked here. Besides matching the model run
+  for three frames, every pattern except NOISE (whose LFSR runs on across
+  frames) must repeat frame 1 exactly with the box off, which holds even if
+  the RTL and the model share a bug.
+
 ```sh
 python sim/check_ppc_vs_model.py
 ```
