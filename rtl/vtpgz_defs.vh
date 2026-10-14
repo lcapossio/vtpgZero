@@ -8,7 +8,12 @@
 `define VTPGZ_DEFS_VH
 
 // IP version
-//   0.7.0 = current: parallel video out -- vtpgz_axis_to_flvdval adapter
+//   0.8.0 = current: BREAKING -- HG_STEP/VG_STEP are Q12.16 (were Q8.8),
+//           so gradients and RAMP sweep the full 12-bit range at 8K. The
+//           per-line pattern state (VGRAD, checker/grid rows) now resets
+//           on the frame's last beat instead of pix_sof. See the README
+//           "Upgrading from 0.7" section.
+//   0.7.0: parallel video out -- vtpgz_axis_to_flvdval adapter
 //           (FVAL/LVAL/DVAL + FIELD_ID, configurable FVAL front/back porch)
 //           and a new `eof` end-of-frame sideband on the core, asserted on
 //           the same beat as the frame's final TLAST.
@@ -31,7 +36,7 @@
 //   0.1.0: box overlay + configurable border, no CSC, BPC 8-16,
 //           4 Bayer tiles, CORE_ID at 0x00, vtpgz_core split
 `define VTPGZ_VERSION_MAJOR  8'd0
-`define VTPGZ_VERSION_MINOR  8'd7
+`define VTPGZ_VERSION_MINOR  8'd8
 `define VTPGZ_VERSION_PATCH 16'd0
 
 // Register byte offsets (AXI4-Lite, 32-bit data)

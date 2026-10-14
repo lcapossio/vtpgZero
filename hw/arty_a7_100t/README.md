@@ -168,7 +168,7 @@ Expected output:
 ```
 Bridge: id=0x454A4158 v0.1 addr_w=32 data_w=32
 VTPGZ CORE_ID = 0x47505456 ("VTPG")
-VTPGZ VERSION = 0x00070000
+VTPGZ VERSION = 0x00080000
 Build cfg: mode=0 sub=0 bayer=1 order=0 bpc=8 tdata_width=96 ppc=4
   OK    pat=0
   ...

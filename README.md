@@ -27,6 +27,7 @@ grabbers and camera-link style sinks.
   - [Output modes](#output-modes)
   - [SMPTE RP 219 color bars](#smpte-rp-219-color-bars)
   - [Image patterns](#image-patterns)
+- [Upgrading from 0.7](#upgrading-from-07)
 - [How to test it](#how-to-test-it)
 - [FPGA resource usage and frequency](#fpga-resource-usage-and-frequency)
 - [File layout](#file-layout)
@@ -369,9 +370,8 @@ put an asynchronous AXI4-Stream FIFO on the output. `m_axis_tuser` is 1 bit
    up to 65535, 8K included, with every pixel within one code of the ideal
    ramp. Rounding up makes the last pixel land on 0xFFF; the core saturates
    the overshoot. In C: `((0xFFFu << 16) + n - 2) / (n - 1)` for `n > 1`.
-   Before this format, these registers held a whole number of codes per
-   step (`0xFFF / (n - 1)`); that value now reads as 1/65536 of what it
-   meant, so older host code must be updated.
+   This encoding changed in 0.8.0; host code written for 0.7 or earlier
+   must be updated, see [Upgrading from 0.7](#upgrading-from-07).
    - with `EN_SMPTE=1`, the three `SMPTE_*` geometry registers (formulas
      in the [register map](#register-map-axi4-lite-32-bit)). Their reset
      values are the 1920x1080 geometry.
@@ -710,6 +710,68 @@ scaling. `EN_BOX_IMAGE` paints a second embedded image inside the moving box.
 Both are stripped (no BRAM cost) when disabled. Full details — parameters,
 scaler internals, BRAM sizing, and the PNG/JPG → `.mem` conversion script —
 are in **[docs/images.md](docs/images.md)**.
+
+
+[↑ back to top](#index)
+
+## Upgrading from 0.7
+
+0.8.0 breaks register compatibility in one place: the gradient step
+registers. Everything else (addresses, other fields, ports, stream
+format) is unchanged.
+
+**`HG_STEP` (0x48) and `VG_STEP` (0x4C) are now Q12.16.** Up to 0.7 they
+held a whole number of 12-bit codes per pixel (or line) in bits `[15:0]`.
+Any width above 4096 gave a step of 0, so gradients and `RAMP` could not
+sweep at 8K. They now hold codes per step with 16 fraction bits in
+`[27:0]`:
+
+|                    | 0.7 and earlier            | 0.8.0                                   |
+|--------------------|----------------------------|-----------------------------------------|
+| Format             | integer codes, `[15:0]`    | Q12.16 codes, `[27:0]`                  |
+| `HG_STEP`          | `0xFFF / (IMG_WIDTH - 1)`  | `ceil((0xFFF << 16) / (IMG_WIDTH - 1))` |
+| `VG_STEP`          | `0xFFF / (IMG_HEIGHT - 1)` | `ceil((0xFFF << 16) / (IMG_HEIGHT - 1))`|
+| 1920x1080 values   | `2`, `3`                   | `139849`, `248721`                      |
+| Reset value        | `546`, `970` (saturated after a few pixels) | `139849`, `248721` (1920x1080) |
+| Widest full sweep  | 4096                       | 65535                                   |
+
+`RAMP` (`PATTERN_SEL=7`) reuses `HG_STEP`, so it changes too.
+`SMPTE_RAMP_STEP` keeps its old format.
+
+**Symptom of an un-updated host.** No error is raised. The old value is
+read as 1/65536 of a code per step, so `HGRAD`, `VGRAD` and `RAMP` come
+out black (or almost black) across the whole frame. The other patterns
+are unaffected.
+
+**Detecting the version.** `VERSION` (0x04) reads
+`{major[8], minor[8], patch[16]}`: 0.8.0 is `0x00080000`. Host code that
+has to drive both generations can choose the formula from it:
+
+```c
+uint32_t ver   = rd32(VTPGZ_BASE + 0x04);
+int      q1216 = ver >= 0x00080000u;          /* 0.8.0 and later */
+uint32_t hg    = q1216 ? ((0xFFFu << 16) + w - 2u) / (w - 1u)
+                       : 0xFFFu / (w - 1u);
+uint32_t vg    = q1216 ? ((0xFFFu << 16) + h - 2u) / (h - 1u)
+                       : 0xFFFu / (h - 1u);
+wr32(VTPGZ_BASE + 0x48, hg);
+wr32(VTPGZ_BASE + 0x4C, vg);
+```
+
+**Direct `vtpgz_core` users.** The `cfg_hg_step` and `cfg_vg_step` ports
+widened from `[15:0]` to `[27:0]`. A parent that still drives them from a
+16-bit signal compiles without error, because Verilog zero-extends the
+value. It then shows the black-gradient symptom above. Widen the driving
+signal and switch to the new formula.
+
+**Behaviour fix: no stale first beat.** The per-line pattern state
+(`VGRAD`'s accumulator and the checker and grid row counters) now resets
+on the last beat of a frame instead of at `pix_sof`. Before 0.8.0, the
+first beat of every frame after the first one carried the previous
+frame's last-row value, and a frame one beat wide (`IMG_WIDTH ==
+PIXELS_PER_CLOCK`) was wrong on every line. Output that matched 0.7 on
+frame 1 still matches. Frames 2 onward now match frame 1, where before
+they differed in that first beat.
 
 
 [↑ back to top](#index)
