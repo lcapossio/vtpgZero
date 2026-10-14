@@ -230,7 +230,7 @@ each build was constrained at.
 |---|---|---:|---|
 | RGB-8b, 4 pixels/clock (default) | 100 MHz | +1.370 ns | 9/9 |
 | RGB-8b, 2 pixels/clock | 100 MHz | +1.364 ns | 9/9 |
-| RGB-8b, 8 pixels/clock | 100 MHz | +0.007 ns | 9/9 before the Q12.16 gradient steps; not re-run since |
+| RGB-8b, 8 pixels/clock | 100 MHz | +0.135 ns | 9/9 before the Q12.16 gradient steps; not re-run since |
 | YUV-10b BT.709 limited, 4 pixels/clock | 100 MHz | +1.136 ns | 9/9 |
 | RGB-8b, 4 pixels/clock, `VTPGZ_EN_SMPTE=1` | 100 MHz | +0.967 ns | 9/9, SMPTE chart included |
 | YUV-10b BT.709 limited, 4 pixels/clock, `VTPGZ_EN_SMPTE=1` | 100 MHz | +0.654 ns | 9/9, SMPTE chart included |
@@ -243,11 +243,12 @@ bar-index logic. The chart's per-lane colour logic is registered, so it is on
 neither.
 
 The 8 pixels/clock row was rebuilt after `HG_STEP`/`VG_STEP` became Q12.16
-(32-bit gradient accumulators); the other rows predate that change. It was
-+0.216 ns before. The worst path is still the checker's wrap counter, not a
-gradient lane, and 72% of its delay is routing, so the slack went to
-placement rather than to the wider adders. The whole demo is 5079 LUT /
-4298 FF.
+(32-bit gradient accumulators) and the per-line pattern state moved its
+reset to the end of the frame; the other rows predate those changes. It
+was +0.216 ns before. The worst path is a wrap counter (the colorbar's
+here, the checker's in an earlier run of the same change), not a gradient
+lane, with about 72% of its delay in routing. The whole demo is 5094 LUT /
+4293 FF.
 
 ## File layout
 
