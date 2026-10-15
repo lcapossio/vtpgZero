@@ -11,7 +11,9 @@ records, per frame, the beat and line counts, the active time and the
 frame period, mid-line bubbles and a CRC-32 of the frame. The host drives
 both cores over JTAG (xsdb memory access through the PS), and checks:
 
-  - every frame carries 960 x 4320 beats in 4320 lines, with no bubble;
+  - every frame carries 960 x 4320 beats in 4320 lines, with no bubble
+    (the monitor keeps min/max since the clear, so this covers every frame);
+  - frames keep arriving: the frame count advances with the fabric clock;
   - the frame period is FRAME_RATE_DIV clocks on every frame (min == max),
     which at the build's exact clock is >= 60 fps, and the clock timed
     against the host's own clock agrees with that frequency;
@@ -275,7 +277,9 @@ proc run_pattern {{tag pat div secs}} {{
     append out " t1=[lindex $b 0] f1=[lindex $b 1] c1=[lindex $b 2]"
     foreach {{k o}} {{frames 0x08 beats 0x0C lines 0x10 active 0x14 period 0x18
                     last_crc 0x1C first_crc 0x20 crc_changes 0x24
-                    min_period 0x28 max_period 0x2C bubbles 0x30}} {{
+                    min_period 0x28 max_period 0x2C bubbles 0x30
+                    min_beats 0x40 max_beats 0x44 min_lines 0x48
+                    max_lines 0x4C min_active 0x50 max_active 0x54}} {{
         append out " $k=[r [expr {{$M+$o}}]]"
     }}
     w [expr {{$T+0x08}}] 0
@@ -379,9 +383,20 @@ def run(args) -> int:
         dt = (d["t1"] - d["t0"]) * 1e-6
         f_meas = (d["c1"] - d["c0"]) / dt / 1e6
         fps = (d["f1"] - d["f0"]) / dt
+        # Every frame since the clear, not only the last one: the monitor
+        # keeps min/max of each count. And the stream must still be
+        # running: between the two snapshots, frames advance at one per
+        # FRAME_RATE_DIV fabric clocks (a stalled source keeps its last
+        # good counts but stops adding frames).
+        dcyc, dfr = d["c1"] - d["c0"], d["f1"] - d["f0"]
+        every = (d["min_beats"] == d["max_beats"] == BEATS
+                 and d["min_lines"] == d["max_lines"] == HEIGHT
+                 and d["min_active"] == d["max_active"] == ACTIVE
+                 and d["min_period"] == d["max_period"] == d["div"]
+                 and d["frames"] > 0 and dfr > 0
+                 and abs(dfr - dcyc / d["div"]) <= 1)
         if d["tag"].startswith("max"):
-            if d["min_period"] == d["max_period"] == d["div"] and \
-                    d["beats"] == BEATS and max_ok is None:
+            if every and max_ok is None:
                 max_ok = d
             continue
         p = d["pat"]
@@ -391,9 +406,7 @@ def run(args) -> int:
         # host-timed rate and clock carry JTAG latency jitter, so they are
         # only a cross-check that the clock really runs at its nominal rate.
         fps_fab = clk / d["max_period"] if d["max_period"] else 0.0
-        ok = (d["beats"] == BEATS and d["lines"] == HEIGHT
-              and d["bubbles"] == 0 and d["active"] == ACTIVE
-              and d["min_period"] == d["max_period"] == d["div"]
+        ok = (every and d["bubbles"] == 0
               and d["first_crc"] == want and fps_fab >= 60.0
               and abs(f_meas / mhz - 1) < 0.005)
         fails += not ok

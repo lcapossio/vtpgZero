@@ -36,6 +36,14 @@
 //   0x34 SNAP_FRAMES  RO FRAMES at the last snapshot
 //   0x38 SNAP_CYC_LO  RO cycles since clear at the last snapshot, [31:0]
 //   0x3C SNAP_CYC_HI  RO ... [47:32]
+//   0x40 MIN_BEATS    RO smallest LAST_BEATS since clear
+//   0x44 MAX_BEATS    RO largest LAST_BEATS since clear
+//   0x48 MIN_LINES    RO smallest LAST_LINES since clear
+//   0x4C MAX_LINES    RO largest LAST_LINES since clear
+//   0x50 MIN_ACTIVE   RO smallest LAST_ACTIVE since clear
+//   0x54 MAX_ACTIVE   RO largest LAST_ACTIVE since clear
+// The extrema make "every frame" checkable: one short frame between reads
+// would otherwise be overwritten by the next good one.
 //
 // Verilog-2001, synchronous reset active low, no vendor primitives.
 
@@ -129,12 +137,15 @@ module axis_frame_monitor #(
     reg [31:0] beats, lines, sof_cyc, tlast_cyc;
     reg [31:0] frames, last_beats, last_lines, last_active, last_period;
     reg [31:0] min_period, max_period, bubbles;
+    reg [31:0] min_beats, max_beats, min_lines, max_lines;
+    reg [31:0] min_active, max_active;
     reg [31:0] snap_frames;
     reg [47:0] snap_cyc;
     reg        s1_v, s1_sof;
     reg [31:0] s1_d;
 
     wire [31:0] period = cyc[31:0] - sof_cyc;
+    wire [31:0] active = tlast_cyc - sof_cyc + 32'h1;
 
     always @(posedge aclk) begin
         s1_v   <= s0_v;
@@ -156,6 +167,12 @@ module axis_frame_monitor #(
             min_period  <= 32'hFFFFFFFF;
             max_period  <= 32'h0;
             bubbles     <= 32'h0;
+            min_beats   <= 32'hFFFFFFFF;
+            max_beats   <= 32'h0;
+            min_lines   <= 32'hFFFFFFFF;
+            max_lines   <= 32'h0;
+            min_active  <= 32'hFFFFFFFF;
+            max_active  <= 32'h0;
         end else begin
             cyc <= cyc + 48'h1;
             if (s0_v) begin
@@ -164,10 +181,16 @@ module axis_frame_monitor #(
                         frames      <= frames + 32'h1;
                         last_beats  <= beats;
                         last_lines  <= lines;
-                        last_active <= tlast_cyc - sof_cyc + 32'h1;
+                        last_active <= active;
                         last_period <= period;
                         if (period < min_period) min_period <= period;
                         if (period > max_period) max_period <= period;
+                        if (beats  < min_beats)  min_beats  <= beats;
+                        if (beats  > max_beats)  max_beats  <= beats;
+                        if (lines  < min_lines)  min_lines  <= lines;
+                        if (lines  > max_lines)  max_lines  <= lines;
+                        if (active < min_active) min_active <= active;
+                        if (active > max_active) max_active <= active;
                     end
                     open    <= 1'b1;
                     sof_cyc <= cyc[31:0];
@@ -273,6 +296,12 @@ module axis_frame_monitor #(
                     6'h0D: s_axi_rdata <= snap_frames;
                     6'h0E: s_axi_rdata <= snap_cyc[31:0];
                     6'h0F: s_axi_rdata <= {16'h0, snap_cyc[47:32]};
+                    6'h10: s_axi_rdata <= min_beats;
+                    6'h11: s_axi_rdata <= max_beats;
+                    6'h12: s_axi_rdata <= min_lines;
+                    6'h13: s_axi_rdata <= max_lines;
+                    6'h14: s_axi_rdata <= min_active;
+                    6'h15: s_axi_rdata <= max_active;
                     default: s_axi_rdata <= 32'h0;
                 endcase
             end else if (s_axi_rvalid && s_axi_rready) begin

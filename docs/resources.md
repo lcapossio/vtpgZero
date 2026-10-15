@@ -137,7 +137,7 @@ Out-of-context place and route of `vtpgz_axilite_top`, all patterns, RGB
 
 The ZU7EV meets 8Kp60 with margin. The KV260's low-voltage part sits right
 on the 249.1 MHz line at default strategies. In the full KV260 bench design,
-`Performance_ExplorePostRoutePhysOpt` closes 250 MHz at +0.290 ns, and the
+`Performance_ExplorePostRoutePhysOpt` closes 250 MHz at +0.109 ns, and the
 board runs 8Kp60 on every pattern. The limiting path on both is the colour-bar
 wrap counter's feedback loop (`bar_left`: clamp, threshold compare, wrap
 count, step select, add), with the checker's `chk_left` 20 ps behind it.

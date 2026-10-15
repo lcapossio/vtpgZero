@@ -141,14 +141,20 @@ starts every 1/60 s.
 For each pattern, the monitor records:
 - the beat and `TLAST` counts;
 - the active time (SOF beat to last `TLAST`);
-- the SOF-to-SOF period, with its minimum and maximum since the last clear;
+- the SOF-to-SOF period;
 - mid-line bubbles;
 - a CRC-32 of every frame.
+
+It keeps the minimum and maximum of each count and time since the last
+clear, so one bad frame cannot hide behind the good ones after it.
 
 The host drives everything over JTAG through the PS (xsdb memory access)
 and checks:
 
-- 4,147,200 beats in 4320 lines per frame, and no bubble;
+- 4,147,200 beats in 4320 lines in every frame (minimum == maximum), and
+  no bubble;
+- frames still arriving: between two snapshots taken seconds apart, the
+  frame count advances by the elapsed fabric clocks / `FRAME_RATE_DIV`;
 - every frame period equal to `FRAME_RATE_DIV`, so minimum == maximum and
   the rate is 60.0000 fps. Host-timed, the clock agrees with 249.9975 MHz to
   within the JTAG latency jitter;
@@ -172,21 +178,22 @@ yours (xsdb's `targets -target-properties` lists each target's
 `jtag_cable_serial`).
 
 Measured on a KV260 (Vivado 2025.2, `Performance_ExplorePostRoutePhysOpt`;
-WNS +0.290 ns at 250 MHz; vtpgZero 3782 LUT / 2519 FF, monitor
-834 LUT / 911 FF):
+WNS +0.109 ns at 250 MHz; vtpgZero 3875 LUT / 2551 FF, monitor
+1021 LUT / 1103 FF):
 
 ```text
 7680x4320, 8 px/clk, clock 249.9975 MHz, FRAME_RATE_DIV=4166625, active frame = 4151519 clocks
 pattern          fps  host fps  host MHz frames    beats lines    period min/max bubbles first CRC     model  result
-colorbar     60.0000    59.977   249.985    271  4147200  4320  4166625/4166625        0  dff0d416  dff0d416  OK
-hgrad        60.0000    60.014   249.987    271  4147200  4320  4166625/4166625        0  66d4c2a4  66d4c2a4  OK
-vgrad        60.0000    59.899   250.044    272  4147200  4320  4166625/4166625        0  0cb20e3b  0cb20e3b  OK
-checker      60.0000    60.226   249.983    272  4147200  4320  4166625/4166625        0  e8cd7539  e8cd7539  OK
-solid        60.0000    59.974   249.995    273  4147200  4320  4166625/4166625        0  ada2b0d1  ada2b0d1  OK
-smpte*       60.0000    60.004   249.959    272  4147200  4320  4166625/4166625        0  0e52299b  0e52299b  OK
-grid         60.0000    60.114   250.005    271  4147200  4320  4166625/4166625        0  8c52c702  8c52c702  OK
-ramp         60.0000    60.183   250.036    272  4147200  4320  4166625/4166625        0  66d4c2a4  66d4c2a4  OK
-noise        60.0000    59.937   250.069    272  4147200  4320  4166625/4166625        0  c51529a1  c51529a1  OK
+colorbar     60.0000    60.063   249.980    272  4147200  4320  4166625/4166625        0  dff0d416  dff0d416  OK
+hgrad        60.0000    60.087   249.967    271  4147200  4320  4166625/4166625        0  66d4c2a4  66d4c2a4  OK
+vgrad        60.0000    59.963   249.981    272  4147200  4320  4166625/4166625        0  0cb20e3b  0cb20e3b  OK
+checker      60.0000    59.903   249.994    272  4147200  4320  4166625/4166625        0  e8cd7539  e8cd7539  OK
+solid        60.0000    60.066   249.950    271  4147200  4320  4166625/4166625        0  ada2b0d1  ada2b0d1  OK
+smpte*       60.0000    59.923   249.975    272  4147200  4320  4166625/4166625        0  0e52299b  0e52299b  OK
+grid         60.0000    59.983   249.953    271  4147200  4320  4166625/4166625        0  8c52c702  8c52c702  OK
+ramp         60.0000    60.022   250.065    272  4147200  4320  4166625/4166625        0  66d4c2a4  66d4c2a4  OK
+noise        60.0000    60.057   250.032    272  4147200  4320  4166625/4166625        0  c51529a1  c51529a1  OK
+
 Free-running: FRAME_RATE_DIV=4151521 (active + 2) holds every frame, 60.218 fps at 249.998 MHz
 * SMPTE RP 219 is not in this build (EN_SMPTE=0): pattern 5 renders black, as the model does.
 
