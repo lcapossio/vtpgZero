@@ -228,6 +228,11 @@ Two more groups cover edges the sweep's 32x12 first frame does not reach:
   for three frames, every pattern except NOISE (whose LFSR runs on across
   frames) must repeat frame 1 exactly with the box off, which holds even if
   the RTL and the model share a bug.
+- **Oversized steps** (HGRAD, RAMP and VGRAD with steps of 2048 codes and
+  just under 4096, PPC 1/4/8): the accumulator passes 0xFFF early in the
+  line or frame and must hold there. Every pixel is checked against
+  `min(i * step >> 16, 0xFFF)` as well as the model, so an accumulator that
+  wraps back to dark fails even if the model wraps the same way.
 
 ```sh
 python sim/check_ppc_vs_model.py

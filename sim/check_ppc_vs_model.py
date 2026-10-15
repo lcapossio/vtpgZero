@@ -461,6 +461,67 @@ def check_grad_big(tmp: Path) -> list[str]:
     return fails
 
 
+# ---- Oversized gradient steps. A step far larger than the line needs must
+# saturate the rest of the line (column, for VGRAD) to 0xFFF, as the 0.7
+# integer steps did, rather than wrap the 32-bit accumulator back to black:
+# 0x08000000 (2048 codes) wraps it at pixel 32, 0x0FFFFFFF (the largest
+# 28-bit step) at pixel 16. The expected value is computed here, not by the
+# model, so a wrap shared by RTL and model cannot pass.
+GRAD_SAT_CONFIGS = [
+    # (name, pattern, width, height, ppc, step)
+    ("hgrad", PAT_HGRAD, 64, 2, 1, 0x08000000),
+    ("hgrad", PAT_HGRAD, 64, 2, 8, 0x08000000),
+    ("hgrad", PAT_HGRAD, 64, 2, 4, 0x0FFFFFFF),
+    ("ramp",  PAT_RAMP,  64, 2, 1, 0x0FFFFFFF),
+    ("ramp",  PAT_RAMP,  64, 2, 8, 0x08000000),
+    ("vgrad", PAT_VGRAD, 8, 64, 1, 0x08000000),
+    ("vgrad", PAT_VGRAD, 8, 64, 8, 0x0FFFFFFF),
+]
+
+
+def check_grad_saturation(tmp: Path) -> list[str]:
+    fails: list[str] = []
+    bpc = 12
+    for name, pat, w, h, ppc, step in GRAD_SAT_CONFIGS:
+        vvp = tmp / f"grad_big_ppc{ppc}.vvp"
+        if not vvp.is_file():
+            build(ppc, MODE_RGB, YUV_444, RAW_RGGB, RGB_ORDER_XILINX, bpc,
+                  vvp, extra={"EN_BOX": 0})
+        steps = dict(hg_step=step, vg_step=step)
+        hexf = tmp / f"grad_sat_{name}_{step:x}_ppc{ppc}.hex"
+        run_capture(vvp, pat, w, h, hexf, steps)
+        sim = load_beats(hexf)
+        cfg = VtpgzConfig(width=w, height=h, pattern=pat,
+                          output_mode=MODE_RGB, bpc=bpc, pixels_per_clock=ppc,
+                          **{**HARNESS_CFG, **steps,
+                             "box_width": 0, "box_height": 0})
+        mod = render_frame_beats(cfg)
+        label = f"{name} step=0x{step:07X} {w}x{h} ppc={ppc}"
+        errs = []
+        if sim != mod:
+            errs.append("RTL and model differ")
+        bits = cfg.tdata_width
+        px = [(b >> (bits * ln)) & 0xFFF for b in sim for ln in range(ppc)]
+
+        def want(i: int) -> int:
+            return 0xFFF if i * step >= 1 << 28 else (i * step) >> 16
+
+        if len(px) != w * h:
+            errs.append(f"captured {len(px)} pixels, want {w * h}")
+        else:
+            for i in range(w * h):
+                c = i // w if pat == PAT_VGRAD else i % w
+                if px[i] != want(c):
+                    errs.append(f"pixel ({i % w},{i // w}) = 0x{px[i]:03X}, "
+                                f"want 0x{want(c):03X}")
+                    break
+        if errs:
+            fails += [f"{label}: {e}" for e in errs]
+        else:
+            print(f"  OK  {label} (saturates, no wrap)")
+    return fails
+
+
 def _model_cfg(pat: int, ppc: int, width: int, height: int,
                **over) -> VtpgzConfig:
     return VtpgzConfig(width=width, height=height, pattern=pat,
@@ -617,6 +678,11 @@ def main() -> int:
                 all_fails += check_grad_big(tmp)
             except RuntimeError as e:
                 all_fails.append(f"gradients at 8K: {e}")
+            try:
+                n += len(GRAD_SAT_CONFIGS)
+                all_fails += check_grad_saturation(tmp)
+            except RuntimeError as e:
+                all_fails.append(f"gradient saturation: {e}")
             try:
                 n += 4
                 all_fails += check_one_beat_lines(tmp)

@@ -88,6 +88,13 @@ def _grad_val(acc: int) -> int:
     return 0xFFF if (acc >> 28) else (acc >> 16) & 0xFFF
 
 
+def _grad_add(acc: int, step: int) -> int:
+    """Advance a gradient accumulator by one Q12.16 step. Like the RTL, it
+    holds once past 0xFFF, so an oversized step saturates the rest of the
+    line (or frame) instead of wrapping back to black."""
+    return acc if (acc >> 28) else acc + (step & 0xFFFFFFF)
+
+
 @dataclass
 class VtpgzConfig:
     width: int = 64
@@ -486,7 +493,7 @@ def _tick(cfg: VtpgzConfig, regs: VtpgzRegs, x_reg: int, y_reg: int,
     if last_x:
         regs.hg_acc = 0
     else:
-        regs.hg_acc = (regs.hg_acc + (cfg.hg_step & 0xFFFFFFF)) & 0xFFFFFFFF
+        regs.hg_acc = _grad_add(regs.hg_acc, cfg.hg_step)
 
     # ---- vgrad ----
     # The per-line state (vgrad, checker y, grid y) is reset on the frame's
@@ -496,7 +503,7 @@ def _tick(cfg: VtpgzConfig, regs: VtpgzRegs, x_reg: int, y_reg: int,
     if end_of_frame:
         regs.vg_acc = 0
     elif last_x:
-        regs.vg_acc = (regs.vg_acc + (cfg.vg_step & 0xFFFFFFF)) & 0xFFFFFFFF
+        regs.vg_acc = _grad_add(regs.vg_acc, cfg.vg_step)
 
     # ---- checker ----
     chk_size_eff = max(1, cfg.checker_size)
@@ -540,7 +547,7 @@ def _tick(cfg: VtpgzConfig, regs: VtpgzRegs, x_reg: int, y_reg: int,
     if last_x:
         regs.ramp_acc = 0
     else:
-        regs.ramp_acc = (regs.ramp_acc + (cfg.hg_step & 0xFFFFFFF)) & 0xFFFFFFFF
+        regs.ramp_acc = _grad_add(regs.ramp_acc, cfg.hg_step)
 
     # ---- LFSR (always advances when advance=1) ----
     fb = ((regs.lfsr >> 15) ^ (regs.lfsr >> 13)

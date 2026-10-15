@@ -1226,6 +1226,11 @@ module vtpgz_core #(
     // 16-bit width, and rounding up makes the last pixel land on 0xFFF.
     generate if (EN_HGRAD) begin : g_hgrad
         reg [31:0] hg_acc;  // 16 int (12 out + 4 guard) + 16 frac
+        // Once the base passes 0xFFF it holds, so a large step saturates
+        // the rest of the line instead of wrapping the accumulator back to
+        // black. Below 2^28, base + NPPC*step (step < 2^28, NPPC <= 8)
+        // cannot overflow 32 bits.
+        wire hg_sat = |hg_acc[31:28];
         // Per-lane accumulator chain: lane gl sees hg_acc + gl*step. The base
         // advances by NPPC*step per beat; at NPPC==1 this is one +step and is
         // identical to the original.
@@ -1241,9 +1246,11 @@ module vtpgz_core #(
             end else begin : g_c
                 assign hga_l[hgl+1] = hga_l[hgl] + {4'h0, cfg_hg_step};
             end
-            // Saturate each lane to 12 bits.
+            // Saturate each lane to 12 bits. A lane past a saturated base
+            // reads white too: the base stops there (below), so its own
+            // sum could exceed 32 bits.
             assign hg_bus[12*hgl +: 12] =
-                (|hga_l[hgl][31:28]) ? 12'hFFF : hga_l[hgl][27:16];
+                (hg_sat | (|hga_l[hgl][31:28])) ? 12'hFFF : hga_l[hgl][27:16];
         end
         always @(posedge aclk) begin
             if (!aresetn || frame_init) hg_acc <= 32'h0;
@@ -1254,8 +1261,8 @@ module vtpgz_core #(
                 // takes effect at x=1, leaving hg_acc carrying ~1279*step
                 // from the previous line and producing a bright artifact
                 // at col 0 of every row.
-                if (last_x)     hg_acc <= 32'h0;
-                else            hg_acc <= hga_l[NPPC];
+                if (last_x)       hg_acc <= 32'h0;
+                else if (!hg_sat) hg_acc <= hga_l[NPPC];
             end
         end
         // Saturate to 12 bits (lane 0)
@@ -1276,7 +1283,9 @@ module vtpgz_core #(
                 // image pattern's acc_y): the next frame's first beat then
                 // reads line 0's value, and a one-beat line still advances.
                 if (end_of_frame)         vg_acc <= 32'h0;
-                else if (last_x)          vg_acc <= vg_acc + {4'h0, cfg_vg_step};
+                // Holds once past 0xFFF (see g_hgrad), so it never wraps.
+                else if (last_x && !(|vg_acc[31:28]))
+                                          vg_acc <= vg_acc + {4'h0, cfg_vg_step};
             end
         end
         // vg_acc only changes per LINE, so every lane in a beat shares the
@@ -1672,6 +1681,7 @@ module vtpgz_core #(
     // Same accumulator approach as hgrad. Reuses cfg_hg_step.
     generate if (EN_RAMP) begin : g_ramp
         reg [31:0] ramp_acc;
+        wire ramp_sat = |ramp_acc[31:28];   // holds once saturated (g_hgrad)
         // Per-lane accumulator chain (same structure as hgrad).
         wire [31:0] rmp_l [0:NPPC] /* verilator split_var */;
         assign rmp_l[0] = ramp_acc;
@@ -1686,13 +1696,13 @@ module vtpgz_core #(
                 assign rmp_l[rml+1] = rmp_l[rml] + {4'h0, cfg_hg_step};
             end
             assign ramp_bus[12*rml +: 12] =
-                (|rmp_l[rml][31:28]) ? 12'hFFF : rmp_l[rml][27:16];
+                (ramp_sat | (|rmp_l[rml][31:28])) ? 12'hFFF : rmp_l[rml][27:16];
         end
         always @(posedge aclk) begin
             if (!aresetn || frame_init) ramp_acc <= 32'h0;
             else if (source_advance) begin
-                if (last_x)     ramp_acc <= 32'h0;
-                else            ramp_acc <= rmp_l[NPPC];
+                if (last_x)         ramp_acc <= 32'h0;
+                else if (!ramp_sat) ramp_acc <= rmp_l[NPPC];
             end
         end
         assign ramp_v = ramp_bus[11:0];

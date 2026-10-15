@@ -370,7 +370,9 @@ put an asynchronous AXI4-Stream FIFO on the output. `m_axis_tuser` is 1 bit
    fraction bits), so a gradient spans the full 0..0xFFF range at any width
    up to 65535, 8K included, with every pixel within one code of the ideal
    ramp. Rounding up makes the last pixel land on 0xFFF; the core saturates
-   the overshoot. In C: `((0xFFFu << 16) + n - 2) / (n - 1)` for `n > 1`.
+   the overshoot. Any larger step, up to the full 28 bits, also saturates:
+   once a line (or frame) reaches 0xFFF it stays there and never wraps.
+   In C: `((0xFFFu << 16) + n - 2) / (n - 1)` for `n > 1`.
    This encoding changed in 0.8.0; host code written for 0.7 or earlier
    must be updated, see [Upgrading from 0.7](#upgrading-from-07).
    - with `EN_SMPTE=1`, the three `SMPTE_*` geometry registers (formulas
@@ -813,9 +815,9 @@ Measured on the full Arty A7-100T demo (Vivado 2025.2, default strategies):
 |---|---|
 | Target | Digilent Arty A7-100T (XC7A100TCSG324-1, speed grade -1) |
 | Clock | 100 MHz at 4 pixels/clock = 400 Mpixel/s (on-board 100 MHz osc via MMCM) |
-| WNS | +1.477 ns at 100 MHz (timing met, 0 failing endpoints) |
-| LUTs | 3518 / 63400 = 5.55% |
-| FFs | 3510 / 126800 = 2.77% |
+| WNS | +0.890 ns at 100 MHz (timing met, 0 failing endpoints) |
+| LUTs | 3589 / 63400 = 5.66% |
+| FFs | 3541 / 126800 = 2.79% |
 | BRAM36 | 8 / 135 = 5.93% |
 | Hardware test | **9/9 patterns byte-exact** vs Python model |
 
