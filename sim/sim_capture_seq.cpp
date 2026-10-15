@@ -127,6 +127,13 @@ static uint32_t fc_read(uint32_t addr) {
 }
 
 // ---------- helpers ----------
+// HG_STEP / VG_STEP for a gradient over n pixels or lines: Q12.16 codes
+// per step, rounded up so the last one lands on 0xFFF.
+static uint32_t grad_step(int n) {
+    uint32_t d = (n > 1) ? (uint32_t)(n - 1) : 1u;
+    return ((0xFFFu << 16) + d - 1u) / d;
+}
+
 static int parse_int(const char* name, int def) {
     const char* s = Verilated::commandArgsPlusMatch(name);
     if (!s || !s[0]) return def;
@@ -142,8 +149,9 @@ static const char* parse_str(const char* name, const char* def) {
 
 static void configure_tpg(int width, int height, int pat) {
     int bar_w   = (width / 8) > 0 ? (width / 8) : 1;
-    int hg_step = 0xFFF / ((width  > 1) ? (width  - 1) : 1);
-    int vg_step = 0xFFF / ((height > 1) ? (height - 1) : 1);
+    // Q12.16 gradient steps, ceil((0xFFF << 16) / (n - 1)) (vtpgz_defs.vh)
+    uint32_t hg_step = grad_step(width);
+    uint32_t vg_step = grad_step(height);
     vtpgz_write(VTPGZ_REG_CONTROL,      0);
     vtpgz_write(VTPGZ_REG_IMG_WIDTH,    width);
     vtpgz_write(VTPGZ_REG_IMG_HEIGHT,   height);

@@ -29,6 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from vtpgz_model import (
     VtpgzConfig, render_frame, tdata_to_bram_words, smpte_host_geometry,
+    grad_step,
     MODE_RGB, MODE_RAW, MODE_YUV,
     YUV_444, YUV_422,
     RAW_PLAIN, RAW_RGGB, RAW_BGGR, RAW_GRBG, RAW_GBRG,
@@ -76,8 +77,8 @@ def model_words(pat: int, mode: int, bpc: int, sub: int,
         rgb_order=order, bpc=bpc,
         yuv_range=yuv_range, yuv_matrix=yuv_matrix, bar_level=bar_level,
         bar_width=WIDTH // 8,
-        hg_step=0xFFF // (WIDTH - 1),
-        vg_step=0xFFF // (HEIGHT - 1),
+        hg_step=grad_step(WIDTH),
+        vg_step=grad_step(HEIGHT),
         checker_size=16,
         grid_spacing=16,
         box_width=16, box_height=16,

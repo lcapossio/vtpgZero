@@ -20,7 +20,7 @@ This produces byte-exact agreement with Verilator simulation for all
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Iterable, Iterator
 
 # ----- enums (must match vtpgz_defs.vh) -----
 PAT_COLORBAR   = 0
@@ -74,6 +74,27 @@ def derived_tdata_width(output_mode: int, bpc: int,
     return round8(2 * bpc)
 
 
+def grad_step(n: int) -> int:
+    """HG_STEP / VG_STEP for a gradient over n pixels or lines: Q12.16
+    12-bit codes per step, ceil((0xFFF << 16) / (n - 1)). Rounded up so the
+    last pixel lands on 0xFFF (the RTL saturates the overshoot); the 16
+    fraction bits keep every pixel within one code of the ideal ramp at
+    any 16-bit n."""
+    return -(-(0xFFF << 16) // max(n - 1, 1))
+
+
+def _grad_val(acc: int) -> int:
+    """A Q16.16 gradient accumulator as a 12-bit code, saturated."""
+    return 0xFFF if (acc >> 28) else (acc >> 16) & 0xFFF
+
+
+def _grad_add(acc: int, step: int) -> int:
+    """Advance a gradient accumulator by one Q12.16 step. Like the RTL, it
+    holds once past 0xFFF, so an oversized step saturates the rest of the
+    line (or frame) instead of wrapping back to black."""
+    return acc if (acc >> 28) else acc + (step & 0xFFFFFFF)
+
+
 @dataclass
 class VtpgzConfig:
     width: int = 64
@@ -89,8 +110,8 @@ class VtpgzConfig:
     rgb_order: int = RGB_ORDER_XILINX
     bpc: int = 8
     bar_width: int = 8
-    hg_step: int = 0xFFF // 63
-    vg_step: int = 0xFFF // 31
+    hg_step: int = grad_step(64)
+    vg_step: int = grad_step(32)
     solid_color: int = 0x00FFFFFF
     box_color: int = 0x00FF0000
     box_width: int = 0
@@ -376,12 +397,10 @@ def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int,
         return pal[regs.bar_idx & 0x7]
 
     if pat == PAT_HGRAD:
-        v = 0xFFF if (regs.hg_acc >> 12) else (regs.hg_acc & 0xFFF)
-        return gray(v)
+        return gray(_grad_val(regs.hg_acc))
 
     if pat == PAT_VGRAD:
-        v = 0xFFF if (regs.vg_acc >> 12) else (regs.vg_acc & 0xFFF)
-        return gray(v)
+        return gray(_grad_val(regs.vg_acc))
 
     if pat == PAT_CHECKER:
         v = 0xFFF if (regs.chk_sel_x ^ regs.chk_sel_y) else 0x000
@@ -406,7 +425,7 @@ def _comb_pixel(cfg: VtpgzConfig, regs: VtpgzRegs, x: int, y: int) -> tuple[int,
         return gray(0)
 
     if pat == PAT_RAMP:
-        v = 0xFFF if (regs.ramp_acc >> 12) else (regs.ramp_acc & 0xFFF)
+        v = _grad_val(regs.ramp_acc)
         return gray(v)
 
     if pat == PAT_NOISE:
@@ -474,13 +493,17 @@ def _tick(cfg: VtpgzConfig, regs: VtpgzRegs, x_reg: int, y_reg: int,
     if last_x:
         regs.hg_acc = 0
     else:
-        regs.hg_acc = (regs.hg_acc + cfg.hg_step) & 0xFFFFF
+        regs.hg_acc = _grad_add(regs.hg_acc, cfg.hg_step)
 
     # ---- vgrad ----
-    if pix_sof:
+    # The per-line state (vgrad, checker y, grid y) is reset on the frame's
+    # LAST pixel, not on pix_sof, mirroring the RTL: pixel (0, 0) of the next
+    # frame then reads line 0's state, and a line that is a single beat
+    # (width == PPC) still advances on its last pixel.
+    if end_of_frame:
         regs.vg_acc = 0
     elif last_x:
-        regs.vg_acc = (regs.vg_acc + cfg.vg_step) & 0xFFFFF
+        regs.vg_acc = _grad_add(regs.vg_acc, cfg.vg_step)
 
     # ---- checker ----
     chk_size_eff = max(1, cfg.checker_size)
@@ -493,7 +516,7 @@ def _tick(cfg: VtpgzConfig, regs: VtpgzRegs, x_reg: int, y_reg: int,
     else:
         regs.chk_x_cnt += 1
 
-    if pix_sof:
+    if end_of_frame:
         regs.chk_y_cnt = 0
         regs.chk_sel_y = 0
     elif last_x:
@@ -512,7 +535,7 @@ def _tick(cfg: VtpgzConfig, regs: VtpgzRegs, x_reg: int, y_reg: int,
     else:
         regs.gx_cnt += 1
 
-    if pix_sof:
+    if end_of_frame:
         regs.gy_cnt = 0
     elif last_x:
         if regs.gy_cnt + 1 >= grid_eff:
@@ -524,7 +547,7 @@ def _tick(cfg: VtpgzConfig, regs: VtpgzRegs, x_reg: int, y_reg: int,
     if last_x:
         regs.ramp_acc = 0
     else:
-        regs.ramp_acc = (regs.ramp_acc + cfg.hg_step) & 0xFFFFF
+        regs.ramp_acc = _grad_add(regs.ramp_acc, cfg.hg_step)
 
     # ---- LFSR (always advances when advance=1) ----
     fb = ((regs.lfsr >> 15) ^ (regs.lfsr >> 13)
@@ -533,12 +556,14 @@ def _tick(cfg: VtpgzConfig, regs: VtpgzRegs, x_reg: int, y_reg: int,
 
     # ---- moving box (only at end_of_frame) ----
     if end_of_frame:
-        # Compute next box_x / box_y combinationally (matches RTL).
+        # Compute next box_x / box_y combinationally (matches RTL), with the
+        # box size clamped to the frame as the RTL does.
+        box_w, box_h = _box_size(cfg)
         new_x, new_dx = regs.box_x, regs.box_dir_x
         if regs.box_dir_x == 0:
-            if regs.box_x + cfg.box_width + cfg.box_dx >= cfg.width:
+            if regs.box_x + box_w + cfg.box_dx >= cfg.width:
                 new_dx = 1
-                new_x = cfg.width - cfg.box_width - 1
+                new_x = max(cfg.width - box_w - 1, 0)
             else:
                 new_x = regs.box_x + cfg.box_dx
         else:
@@ -549,9 +574,9 @@ def _tick(cfg: VtpgzConfig, regs: VtpgzRegs, x_reg: int, y_reg: int,
                 new_x = regs.box_x - cfg.box_dx
         new_y, new_dy = regs.box_y, regs.box_dir_y
         if regs.box_dir_y == 0:
-            if regs.box_y + cfg.box_height + cfg.box_dy >= cfg.height:
+            if regs.box_y + box_h + cfg.box_dy >= cfg.height:
                 new_dy = 1
-                new_y = cfg.height - cfg.box_height - 1
+                new_y = max(cfg.height - box_h - 1, 0)
             else:
                 new_y = regs.box_y + cfg.box_dy
         else:
@@ -651,6 +676,13 @@ def _pack_tdata(c0_12: int, c1_12: int, c2_12: int, x: int, y: int,
 # Box overlay (post-pattern-mux, mirrors the RTL box overlay in vtpgz_core.v)
 # ============================================================================
 
+def _box_size(cfg: VtpgzConfig) -> tuple[int, int]:
+    """BOX_SIZE as the RTL uses it (box_width_eff / box_height_eff): each
+    side clamped to the frame. A zero side means no box here (the model's
+    stand-in for EN_MOVING_BOX=0), so callers check that first."""
+    return min(cfg.box_width, cfg.width), min(cfg.box_height, cfg.height)
+
+
 def _box_overlay(c0: int, c1: int, c2: int, x: int, y: int,
                  cfg: VtpgzConfig, regs: VtpgzRegs) -> tuple[int, int, int]:
     """If (x,y) is inside the box region, replace the triple with
@@ -658,16 +690,16 @@ def _box_overlay(c0: int, c1: int, c2: int, x: int, y: int,
     Border is drawn inside the box: pixels within border_width of any
     box edge are border, the rest is fill. border_width=0 → no border."""
     bx, by = regs.box_x, regs.box_y
-    inside = (bx <= x < bx + cfg.box_width) and \
-             (by <= y < by + cfg.box_height)
+    box_w, box_h = _box_size(cfg)
+    inside = (bx <= x < bx + box_w) and (by <= y < by + box_h)
     if not inside:
         return (c0, c1, c2)
     bw = cfg.box_border_width
     on_border = bw > 0 and (
         x < bx + bw or
-        x >= bx + cfg.box_width - bw or
+        x >= bx + box_w - bw or
         y < by + bw or
-        y >= by + cfg.box_height - bw
+        y >= by + box_h - bw
     )
     if on_border:
         col = cfg.box_border_color
@@ -701,8 +733,9 @@ def _box_overlay(c0: int, c1: int, c2: int, x: int, y: int,
 # Frame renderer
 # ============================================================================
 
-def render_frame(cfg: VtpgzConfig, regs: VtpgzRegs | None = None) -> list[int]:
-    """Render one full frame and return list of 48-bit tdata words.
+def iter_frame(cfg: VtpgzConfig,
+               regs: VtpgzRegs | None = None) -> Iterator[int]:
+    """Yield one frame's packed per-pixel tdata words, in stream order.
 
     The simulation models the AXI output register: each beat reflects the
     pattern registers at the cycle when tdata_next was loaded into tdata_r.
@@ -710,13 +743,14 @@ def render_frame(cfg: VtpgzConfig, regs: VtpgzRegs | None = None) -> list[int]:
     Sequence per pixel K (K = 0..W*H-1):
       1. x_reg = K % W, y_reg = K // W
       2. Compute pixel from current registers (combinational)
-      3. Pack tdata, append to output
+      3. Pack tdata, yield it
       4. Tick registers using current x_reg/y_reg (mirrors rising edge)
+
+    A generator, so a full 8K frame (33 Mpixel) need not sit in memory.
     """
     if regs is None:
         regs = VtpgzRegs()
 
-    out: list[int] = []
     W, H = cfg.width, cfg.height
     total = W * H
 
@@ -733,11 +767,17 @@ def render_frame(cfg: VtpgzConfig, regs: VtpgzRegs | None = None) -> list[int]:
         if cfg.box_width > 0 and cfg.box_height > 0:
             c0_12, c1_12, c2_12 = _box_overlay(
                 c0_12, c1_12, c2_12, x_reg, y_reg, cfg, regs)
-        out.append(_pack_tdata(c0_12, c1_12, c2_12, x_reg, y_reg, cfg))
+        yield _pack_tdata(c0_12, c1_12, c2_12, x_reg, y_reg, cfg)
 
         _tick(cfg, regs, x_reg, y_reg, last_x, pix_sof, end_of_frame)
 
-    return out
+
+def render_frame(cfg: VtpgzConfig, regs: VtpgzRegs | None = None) -> list[int]:
+    """Render one full frame and return list of 48-bit tdata words.
+
+    See iter_frame for the stepping.
+    """
+    return list(iter_frame(cfg, regs))
 
 
 def render_frame_native(cfg: VtpgzConfig,
@@ -804,6 +844,24 @@ def render_frame_beats(cfg: VtpgzConfig,
     return beats
 
 
+def iter_frame_beats(cfg: VtpgzConfig,
+                     regs: VtpgzRegs | None = None) -> Iterator[int]:
+    """render_frame_beats as a generator (same packing, lane 0 in the LSBs)."""
+    n = cfg.pixels_per_clock
+    if cfg.width % n != 0:
+        raise ValueError(
+            f"width={cfg.width} must be a multiple of pixels_per_clock={n}")
+    mask = (1 << cfg.tdata_width) - 1
+    w = cfg.tdata_width
+    acc, lane = 0, 0
+    for pix in iter_frame(cfg, regs):
+        acc |= (pix & mask) << (lane * w)
+        lane += 1
+        if lane == n:
+            yield acc
+            acc, lane = 0, 0
+
+
 def tdata_to_bram_words(tdata_list: Iterable[int],
                         tdata_width: int = 32) -> list[int]:
     """Flatten a list of tdata beats to little-endian 32-bit words.
@@ -850,8 +908,8 @@ if __name__ == "__main__":
                                     yuv_subsample=sub,
                                     bpc=bpc,
                                     bar_width=2,
-                                    hg_step=0xFFF // 15,
-                                    vg_step=0xFFF // 7,
+                                    hg_step=grad_step(16),
+                                    vg_step=grad_step(8),
                                     checker_size=4, grid_spacing=4,
                                     box_width=4, box_height=4)
                     render_frame(c)

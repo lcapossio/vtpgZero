@@ -80,8 +80,8 @@ def _check_gray_pattern(pat: int, name: str) -> int:
         output_mode=MODE_YUV,
         bpc=8,
         bar_width=8,
-        hg_step=64,
-        vg_step=128,
+        hg_step=64 << 16,
+        vg_step=128 << 16,
         checker_size=4,
     )
     frame = _render_native(cfg)

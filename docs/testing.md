@@ -71,8 +71,8 @@ python hw/arty_a7_100t/python/check_yuv_range_mutations.py
 The SMPTE RP 219 chart (`EN_SMPTE`) has its own spec check. It compares the
 model with literal values from RP 219 rather than with the generator. It
 checks the published 10-bit codes of every chart color, the 12-bit -I/+Q
-anchors, the color of every segment at 1920x1080, 1280x720 and 3840x2160
-with the host geometry, and that the Y ramp runs from black exactly to
+anchors, the color of every segment at 1920x1080, 1280x720, 3840x2160 and
+7680x4320 with the host geometry, and that the Y ramp runs from black exactly to
 white:
 
 ```sh
@@ -206,7 +206,33 @@ Verilator-backed data-path regression.
 A standalone iverilog beat-exact PPC gate (RTL ↔ Python model, all patterns
 and modes, PPC 1/2/4/8) is also available. It includes a SMPTE sweep at
 232x48, where the host geometry puts segment boundaries mid-beat at every
-PPC, in RGB and in YUV BT.709 limited 10-bit:
+PPC, in RGB and in YUV BT.709 limited 10-bit. Its default gradient steps
+have fraction bits set, so the per-lane Q12.16 carries are exercised.
+
+It also runs HGRAD and RAMP on 7680-wide lines (PPC 1/2/4/8) and at the
+16-bit maximum width of 65535, and VGRAD over 4320 lines, all with the
+host's `HG_STEP`/`VG_STEP` formula. Besides matching the model, every line
+(column, for VGRAD) is checked against the ideal ramp directly, so a bug
+the RTL and model share cannot pass: 0 at the first pixel, exactly 0xFFF at
+the last, never decreasing, and within one code of `x * 0xFFF / (n - 1)`.
+
+Two more groups cover edges the sweep's 32x12 first frame does not reach:
+
+- **One beat per line** (width = PPC, PPC 1/2/4/8): every beat is both the
+  first and the last of its line. The harness box is wider than these
+  frames, so the box clamp is checked too.
+- **A later frame** (`+skip=2`, the third frame of a free-running stream,
+  PPC 1 and 4, box on and off): every other capture is the first frame after
+  enable, which `frame_init` starts from reset, so the state one frame
+  leaves for the next is only checked here. Besides matching the model run
+  for three frames, every pattern except NOISE (whose LFSR runs on across
+  frames) must repeat frame 1 exactly with the box off, which holds even if
+  the RTL and the model share a bug.
+- **Oversized steps** (HGRAD, RAMP and VGRAD with steps of 2048 codes and
+  just under 4096, PPC 1/4/8): the accumulator passes 0xFFF early in the
+  line or frame and must hold there. Every pixel is checked against
+  `min(i * step >> 16, 0xFFF)` as well as the model, so an accumulator that
+  wraps back to dark fails even if the model wraps the same way.
 
 ```sh
 python sim/check_ppc_vs_model.py
@@ -430,3 +456,17 @@ the configured PPC and checks byte-exact. PPC>1 builds run the demo at
 per-lane datapath does not close 130 MHz on this -1 part. `build.tcl` prints
 the clock the build was actually constrained at. PPC 2, 4 and 8 are verified
 byte-exact across all patterns on the board.
+
+## 8Kp60 on the KV260
+
+`hw/kv260/scripts/bench8k.py` runs vtpgZero at 8 pixels per clock and
+249.9975 MHz on a KV260, streaming 7680x4320 at 60 fps into a monitor that
+holds `TREADY` high. For every pattern it checks:
+
+- 4,147,200 beats in 4320 lines per frame, with no mid-line bubble;
+- every frame period exactly `FRAME_RATE_DIV` (1/60 s);
+- the CRC-32 of the first frame equal to the bit-exact model's, rendered
+  at full 8K (~3.5 min for all patterns, in parallel while the board runs).
+
+Details and the measured table are in
+[hw/kv260/README.md](../hw/kv260/README.md#8k-throughput-bench).

@@ -8,7 +8,12 @@
 `define VTPGZ_DEFS_VH
 
 // IP version
-//   0.7.0 = current: parallel video out -- vtpgz_axis_to_flvdval adapter
+//   0.8.0 = current: BREAKING -- HG_STEP/VG_STEP are Q12.16 (were Q8.8),
+//           so gradients and RAMP sweep the full 12-bit range at 8K. The
+//           per-line pattern state (VGRAD, checker/grid rows) now resets
+//           on the frame's last beat instead of pix_sof. See the README
+//           "Upgrading from 0.7" section.
+//   0.7.0: parallel video out -- vtpgz_axis_to_flvdval adapter
 //           (FVAL/LVAL/DVAL + FIELD_ID, configurable FVAL front/back porch)
 //           and a new `eof` end-of-frame sideband on the core, asserted on
 //           the same beat as the frame's final TLAST.
@@ -31,7 +36,7 @@
 //   0.1.0: box overlay + configurable border, no CSC, BPC 8-16,
 //           4 Bayer tiles, CORE_ID at 0x00, vtpgz_core split
 `define VTPGZ_VERSION_MAJOR  8'd0
-`define VTPGZ_VERSION_MINOR  8'd7
+`define VTPGZ_VERSION_MINOR  8'd8
 `define VTPGZ_VERSION_PATCH 16'd0
 
 // Register byte offsets (AXI4-Lite, 32-bit data)
@@ -56,6 +61,9 @@
 `define VTPGZ_REG_CHECKER_SIZE  8'h3C
 `define VTPGZ_REG_FRAME_RATE    8'h40
 `define VTPGZ_REG_BAR_WIDTH     8'h44
+// Gradient steps, Q12.16 12-bit codes per pixel / per line in [27:0].
+// Host writes HG_STEP = ceil((0xFFF << 16) / (IMG_WIDTH - 1)) and
+// VG_STEP = ceil((0xFFF << 16) / (IMG_HEIGHT - 1)); HG_STEP also drives RAMP.
 `define VTPGZ_REG_HG_STEP       8'h48
 `define VTPGZ_REG_VG_STEP       8'h4C
 `define VTPGZ_REG_BOX_BORDER   8'h50  // {border_width[8], border_color[24]}

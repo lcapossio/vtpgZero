@@ -27,6 +27,7 @@ grabbers and camera-link style sinks.
   - [Output modes](#output-modes)
   - [SMPTE RP 219 color bars](#smpte-rp-219-color-bars)
   - [Image patterns](#image-patterns)
+- [Upgrading from 0.7](#upgrading-from-07)
 - [How to test it](#how-to-test-it)
 - [FPGA resource usage and frequency](#fpga-resource-usage-and-frequency)
 - [File layout](#file-layout)
@@ -88,7 +89,8 @@ A third, optional module sits *after* either of them:
 - **Pixels-per-clock (1/2/4/8)**: pack 1, 2, 4, or 8 horizontally-adjacent
   pixels into each AXI4-Stream beat for higher line bandwidth. All patterns
   and output modes are supported; `PIXELS_PER_CLOCK=1` (default) is
-  byte-identical to prior releases.
+  byte-identical to prior releases. At 8 pixels per clock it runs
+  7680x4320 at 60 fps on a KV260, verified frame by frame on silicon.
 - Auto-derived `tdata` width — the smallest multiple-of-8 that fits the
   active components for the chosen mode/bpc. No manual sizing needed.
 - **AXI4-Lite** slave for runtime configuration (19 writable registers, 22
@@ -136,8 +138,8 @@ A third, optional module sits *after* either of them:
 | 0x3C   | CHECKER_SIZE   | checkerboard square size in pixels                   |
 | 0x40   | FRAME_RATE_DIV | clocks per frame for internal sync mode              |
 | 0x44   | BAR_WIDTH      | colorbar width in pixels (host writes `img_width/8`) |
-| 0x48   | HG_STEP        | horizontal-gradient step per pixel (`0xFFF/(width-1)`) |
-| 0x4C   | VG_STEP        | vertical-gradient step per line (`0xFFF/(height-1)`)   |
+| 0x48   | HG_STEP        | `[27:0]` horizontal-gradient (and RAMP) step per pixel, Q12.16 12-bit codes. Host writes `ceil((0xFFF << 16) / (IMG_WIDTH - 1))`. |
+| 0x4C   | VG_STEP        | `[27:0]` vertical-gradient step per line, Q12.16. Host writes `ceil((0xFFF << 16) / (IMG_HEIGHT - 1))`. |
 | 0x50   | BOX_BORDER     | `{border_width[8], border_color[24]}`. Border is drawn inside the box; `border_width=0` means no border. |
 | 0x54   | BOX_IMG_X_STEP | Q16 nearest-neighbour step for the box-image overlay. Host writes `(BOX_IMAGE_W << 16) / BOX_SIZE.width` whenever `BOX_SIZE` changes. Only meaningful when `EN_BOX_IMAGE=1`. |
 | 0x58   | BOX_IMG_Y_STEP | Q16 step for the box-image overlay y-axis. Host writes `(BOX_IMAGE_H << 16) / BOX_SIZE.height`. |
@@ -244,8 +246,8 @@ vtpgz_core #(
     .cfg_checker_size  (16'd0),
     .cfg_frame_rate_div(32'd2_166_666),         // 130 MHz / 60 fps
     .cfg_bar_width     (16'd240),               // 1920 / 8
-    .cfg_hg_step       (16'd0),
-    .cfg_vg_step       (16'd0),
+    .cfg_hg_step       (28'd0),
+    .cfg_vg_step       (28'd0),
 
     // Status -- leave dangling if you don't need them
     .sts_busy          (),
@@ -361,8 +363,18 @@ put an asynchronous AXI4-Stream FIFO on the output. `m_axis_tuser` is 1 bit
 3. Write the host-precomputed step values (these replace per-pixel dividers
    with cheap accumulators in hardware):
    - `BAR_WIDTH = IMG_WIDTH / 8`              (colorbar bar width)
-   - `HG_STEP   = 0xFFF / (IMG_WIDTH  - 1)`   (horizontal gradient step)
-   - `VG_STEP   = 0xFFF / (IMG_HEIGHT - 1)`   (vertical gradient step)
+   - `HG_STEP   = ceil((0xFFF << 16) / (IMG_WIDTH  - 1))`   (horizontal gradient / ramp step)
+   - `VG_STEP   = ceil((0xFFF << 16) / (IMG_HEIGHT - 1))`   (vertical gradient step)
+
+   The gradient steps are Q12.16 (12-bit codes per pixel or line, 16
+   fraction bits), so a gradient spans the full 0..0xFFF range at any width
+   up to 65535, 8K included, with every pixel within one code of the ideal
+   ramp. Rounding up makes the last pixel land on 0xFFF; the core saturates
+   the overshoot. Any larger step, up to the full 28 bits, also saturates:
+   once a line (or frame) reaches 0xFFF it stays there and never wraps.
+   In C: `((0xFFFu << 16) + n - 2) / (n - 1)` for `n > 1`.
+   This encoding changed in 0.8.0; host code written for 0.7 or earlier
+   must be updated, see [Upgrading from 0.7](#upgrading-from-07).
    - with `EN_SMPTE=1`, the three `SMPTE_*` geometry registers (formulas
      in the [register map](#register-map-axi4-lite-32-bit)). Their reset
      values are the 1920x1080 geometry.
@@ -435,7 +447,7 @@ interlaced"). So program `BOX_SIZE` height for **half** what you want on the
 woven frame: an N-tall box on screen means programming N/2.
 
 `VG_STEP` is a step, not a height, so it follows the usual formula against
-the programmed (field) height — `VG_STEP = 0xFFF / (field_height - 1)`,
+the programmed (field) height — `VG_STEP = ceil((0xFFF << 16) / (field_height - 1))`,
 i.e. roughly twice the progressive step for the same frame. Each field then
 sweeps the full gradient on its own, as v_tpg's field-coordinate rendering
 does.
@@ -705,6 +717,68 @@ are in **[docs/images.md](docs/images.md)**.
 
 [↑ back to top](#index)
 
+## Upgrading from 0.7
+
+0.8.0 breaks register compatibility in one place: the gradient step
+registers. Everything else (addresses, other fields, the ports other
+than the two step inputs, stream format) is unchanged.
+
+**`HG_STEP` (0x48) and `VG_STEP` (0x4C) are now Q12.16.** Up to 0.7 they
+held a whole number of 12-bit codes per pixel (or line) in bits `[15:0]`.
+Any width above 4096 gave a step of 0, so gradients and `RAMP` could not
+sweep at 8K. They now hold codes per step with 16 fraction bits in
+`[27:0]`:
+
+|                    | 0.7 and earlier            | 0.8.0                                   |
+|--------------------|----------------------------|-----------------------------------------|
+| Format             | integer codes, `[15:0]`    | Q12.16 codes, `[27:0]`                  |
+| `HG_STEP`          | `0xFFF / (IMG_WIDTH - 1)`  | `ceil((0xFFF << 16) / (IMG_WIDTH - 1))` |
+| `VG_STEP`          | `0xFFF / (IMG_HEIGHT - 1)` | `ceil((0xFFF << 16) / (IMG_HEIGHT - 1))`|
+| 1920x1080 values   | `2`, `3`                   | `139849`, `248721`                      |
+| Reset value        | `546`, `970` (saturated after a few pixels) | `139849`, `248721` (1920x1080) |
+| Widest full sweep  | 4096                       | 65535                                   |
+
+`RAMP` (`PATTERN_SEL=7`) reuses `HG_STEP`, so it changes too.
+`SMPTE_RAMP_STEP` keeps its old format.
+
+**Symptom of an un-updated host.** No error is raised. The old value is
+read as 1/65536 of a code per step, so `HGRAD`, `VGRAD` and `RAMP` come
+out black (or almost black) across the whole frame. The other patterns
+are unaffected.
+
+**Detecting the version.** `VERSION` (0x04) reads
+`{major[8], minor[8], patch[16]}`: 0.8.0 is `0x00080000`. Host code that
+has to drive both generations can choose the formula from it:
+
+```c
+uint32_t ver   = rd32(VTPGZ_BASE + 0x04);
+int      q1216 = ver >= 0x00080000u;          /* 0.8.0 and later */
+uint32_t hg    = q1216 ? ((0xFFFu << 16) + w - 2u) / (w - 1u)
+                       : 0xFFFu / (w - 1u);
+uint32_t vg    = q1216 ? ((0xFFFu << 16) + h - 2u) / (h - 1u)
+                       : 0xFFFu / (h - 1u);
+wr32(VTPGZ_BASE + 0x48, hg);
+wr32(VTPGZ_BASE + 0x4C, vg);
+```
+
+**Direct `vtpgz_core` users.** The `cfg_hg_step` and `cfg_vg_step` ports
+widened from `[15:0]` to `[27:0]`. A parent that still drives them from a
+16-bit signal compiles without error, because Verilog zero-extends the
+value. It then shows the black-gradient symptom above. Widen the driving
+signal and switch to the new formula.
+
+**Behaviour fix: no stale first beat.** The per-line pattern state
+(`VGRAD`'s accumulator and the checker and grid row counters) now resets
+on the last beat of a frame instead of at `pix_sof`. Before 0.8.0, the
+first beat of every frame after the first one carried the previous
+frame's last-row value, and a frame one beat wide (`IMG_WIDTH ==
+PIXELS_PER_CLOCK`) was wrong on every line. Output that matched 0.7 on
+frame 1 still matches. Frames 2 onward now match frame 1, where before
+they differed in that first beat.
+
+
+[↑ back to top](#index)
+
 ## How to test it
 
 All simulation is driven by one Python script (no Makefile):
@@ -741,9 +815,9 @@ Measured on the full Arty A7-100T demo (Vivado 2025.2, default strategies):
 |---|---|
 | Target | Digilent Arty A7-100T (XC7A100TCSG324-1, speed grade -1) |
 | Clock | 100 MHz at 4 pixels/clock = 400 Mpixel/s (on-board 100 MHz osc via MMCM) |
-| WNS | +1.370 ns at 100 MHz (timing met, 0 failing endpoints) |
-| LUTs | 3430 / 63400 = 5.41% |
-| FFs | 3463 / 126800 = 2.73% |
+| WNS | +0.890 ns at 100 MHz (timing met, 0 failing endpoints) |
+| LUTs | 3589 / 63400 = 5.66% |
+| FFs | 3541 / 126800 = 2.79% |
 | BRAM36 | 8 / 135 = 5.93% |
 | Hardware test | **9/9 patterns byte-exact** vs Python model |
 
@@ -752,10 +826,21 @@ JTAG-AXI bridge + BRAM frame buffer + MMCM), and now also the
 `vtpgz_axis_to_flvdval` adapter and the `flv_monitor` raster instrument that
 the on-silicon parallel-video test reads — neither of which you pay for
 unless you instantiate them. Standalone, the all-patterns
-`vtpgz_axilite_top` is ~**1380 LUT / 1244 FF** (RGB-8b, OOC synth, no BRAM,
-no DSP), and ~2400 LUT at 4 pixels per clock. Pixels-per-clock scales
+`vtpgz_axilite_top` is ~**1400 LUT / 1268 FF** (RGB-8b, OOC synth, no BRAM,
+no DSP), and ~2450 LUT at 4 pixels per clock. Pixels-per-clock scales
 sub-linearly: 8× throughput costs about 2.8× the LUTs. The smallest build
 (1 pattern, RAW-8b) is ~546 LUT.
+
+**8Kp60 on silicon.** On a KV260 (Zynq UltraScale+, -2LV), the core runs
+at 8 pixels per clock and 250 MHz and streams 7680x4320 at 60 fps (active
+video; with CTA-861 blanking the 8Kp60 raster needs 297 MHz). Every
+frame has the full 4,147,200 beats with no mid-line bubble and an exact
+1/60 s period, and its CRC-32 matches the bit-exact model's for all nine
+patterns. Free-running, it reaches 60.2 fps. Out of context, a ZU7EV -2
+closes the core at ~284 MHz. The bench and its results are in
+[hw/kv260/README.md](hw/kv260/README.md#8k-throughput-bench), and the
+fmax numbers in
+[docs/resources.md](docs/resources.md#frequency-on-ultrascale-8k-throughput).
 
 The full per-configuration matrix — every mode/BPC, per-feature deltas, the
 PPC sweep, interlace, the YUV colorimetry options, the SMPTE RP 219 chart,

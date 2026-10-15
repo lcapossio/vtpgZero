@@ -74,6 +74,10 @@ module tb_ppc_capture;
     // SMPTE RP 219 geometry, from plusargs (defaults: the check script's
     // HARNESS_CFG).
     reg  [15:0] cfg_sm_d, cfg_sm_c, cfg_sm_p, cfg_sm_h, cfg_sm_step;
+    // Q12.16 gradient steps, from plusargs. The defaults have fraction bits
+    // set (64.6 and 128.2 codes), so the per-lane carries at PPC>1 are
+    // exercised.
+    reg  [27:0] cfg_hg_step, cfg_vg_step;
 
     wire [TDATA_WIDTH-1:0] m_tdata;
     wire                   m_tvalid;
@@ -132,8 +136,8 @@ module tb_ppc_capture;
         .cfg_checker_size(16'd5),
         .cfg_frame_rate_div(32'd50),
         .cfg_bar_width(16'd8),
-        .cfg_hg_step(16'd64),
-        .cfg_vg_step(16'd128),
+        .cfg_hg_step(cfg_hg_step),
+        .cfg_vg_step(cfg_vg_step),
         .cfg_box_border_color(24'hFF_00_00),
         .cfg_box_border_width(8'd2),
         .cfg_box_img_x_step(BOX_IMG_X_STEP),
@@ -166,8 +170,9 @@ module tb_ppc_capture;
     integer total_beats;
     integer max_cycles;
     integer started;
+    integer skip, n_sof;   // frames to let pass before the captured one
     integer width, height, pat;
-    integer sm_d, sm_c, sm_p, sm_h, sm_step;
+    integer sm_d, sm_c, sm_p, sm_h, sm_step, hg_step, vg_step;
     integer n_tuser, n_tlast, bad_flag;
     reg [1023:0] out_path;
 
@@ -186,9 +191,17 @@ module tb_ppc_capture;
         cfg_sm_p    = sm_p[15:0];
         cfg_sm_h    = sm_h[15:0];
         cfg_sm_step = sm_step[15:0];
+        if (!$value$plusargs("hg_step=%d", hg_step)) hg_step = 32'h0409A5B;
+        if (!$value$plusargs("vg_step=%d", vg_step)) vg_step = 32'h0803C71;
+        cfg_hg_step = hg_step[27:0];
+        cfg_vg_step = vg_step[27:0];
 
         total_beats = (width / PIXELS_PER_CLOCK) * height;
-        max_cycles  = total_beats * 40 + 10000;
+        // +skip=N captures frame N+1 of a free-running stream instead of the
+        // first frame after enable (which frame_init starts from reset), so
+        // the state a frame leaves behind for the next one is checked too.
+        if (!$value$plusargs("skip=%d", skip)) skip = 0;
+        max_cycles  = (total_beats * 40 + 10000) * (skip + 1);
 
         cfg_img_width  = width[15:0];
         cfg_img_height = height[15:0];
@@ -211,6 +224,7 @@ module tb_ppc_capture;
 
         count   = 0;
         started = 0;
+        n_sof   = 0;
         i       = 0;
         n_tuser = 0;
         n_tlast = 0;
@@ -219,8 +233,9 @@ module tb_ppc_capture;
             @(posedge aclk);
             #1;
             if (m_tvalid && m_tready) begin
-                if (!started) begin
-                    if (m_tuser) started = 1;
+                if (!started && m_tuser) begin
+                    if (n_sof == skip) started = 1;
+                    n_sof = n_sof + 1;
                 end
                 if (started) begin
                     $fdisplay(out_fd, "%0h", m_tdata);

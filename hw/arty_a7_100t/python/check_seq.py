@@ -28,7 +28,7 @@ from vtpgz_model import (
     MODE_RGB, MODE_RAW, MODE_YUV,
     YUV_444, YUV_422,
     RAW_PLAIN, RAW_RGGB, RAW_BGGR, RAW_GRBG, RAW_GBRG,
-    RGB_ORDER_XILINX, RGB_ORDER_LEGACY, smpte_host_geometry,
+    RGB_ORDER_XILINX, RGB_ORDER_LEGACY, smpte_host_geometry, grad_step,
 )
 
 WIDTH, HEIGHT = 64, 32
@@ -48,8 +48,8 @@ def cfg_for(pat: int, mode: int, bpc: int, sub: int,
         output_mode=mode, yuv_subsample=sub, raw_bayer=bayer,
         rgb_order=order, bpc=bpc,
         bar_width=WIDTH // 8,
-        hg_step=0xFFF // (WIDTH - 1),
-        vg_step=0xFFF // (HEIGHT - 1),
+        hg_step=grad_step(WIDTH),
+        vg_step=grad_step(HEIGHT),
         checker_size=16,
         grid_spacing=16,
         box_width=16, box_height=16,

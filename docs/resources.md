@@ -20,22 +20,22 @@ No configuration below uses a BRAM or a DSP.
 
 | Config | LUT | FF |
 |---|---:|---:|
-| `full_rgb_8b`     | 1380 | 1244 |
-| `full_rgb_10b`    | 1380 | 1250 |
-| `full_rgb_12b`    | 1380 | 1256 |
-| `full_rgb_14b`    | 1380 | 1256 |
-| `full_rgb_16b`    | 1380 | 1256 |
-| `full_raw_8b`     | 1388 | 1232 |
-| `full_raw_10b`    | 1390 | 1234 |
-| `full_raw_12b`    | 1392 | 1236 |
-| `full_raw_14b`    | 1392 | 1236 |
-| `full_raw_16b`    | 1392 | 1236 |
-| `full_yuv_8b`     | 1320 | 1242 |
-| `full_yuv_10b`    | 1318 | 1248 |
-| `full_yuv_12b`    | 1318 | 1254 |
-| `full_yuv_14b`    | 1318 | 1254 |
-| `full_yuv_16b`    | 1320 | 1254 |
-| `full_yuv422_16b` | 1330 | 1244 |
+| `full_rgb_8b`     | 1401 | 1268 |
+| `full_rgb_10b`    | 1401 | 1274 |
+| `full_rgb_12b`    | 1401 | 1280 |
+| `full_rgb_14b`    | 1401 | 1280 |
+| `full_rgb_16b`    | 1401 | 1280 |
+| `full_raw_8b`     | 1409 | 1256 |
+| `full_raw_10b`    | 1411 | 1258 |
+| `full_raw_12b`    | 1413 | 1260 |
+| `full_raw_14b`    | 1413 | 1260 |
+| `full_raw_16b`    | 1413 | 1260 |
+| `full_yuv_8b`     | 1338 | 1266 |
+| `full_yuv_10b`    | 1339 | 1272 |
+| `full_yuv_12b`    | 1339 | 1278 |
+| `full_yuv_14b`    | 1339 | 1278 |
+| `full_yuv_16b`    | 1338 | 1278 |
+| `full_yuv422_16b` | 1354 | 1268 |
 
 The YUV path produces `{Y,Cb,Cr}` directly from the pattern generators (a
 per-build colour-bar palette, neutral chroma for the grayscale-style
@@ -49,12 +49,12 @@ barely moves the numbers.
 |---|---:|---:|
 | `baseline_solid_yuv`  |  538 |  958 |
 | `only_colorbar_yuv`   |  636 |  987 |
-| `only_hgrad_yuv`      |  560 |  983 |
-| `only_vgrad_yuv`      |  570 |  983 |
+| `only_hgrad_yuv`      |  571 |  995 |
+| `only_vgrad_yuv`      |  581 |  995 |
 | `only_checker_yuv`    |  601 |  994 |
 | `only_moving_box_yuv` | 1066 | 1091 |
 | `only_grid_yuv`       |  582 |  991 |
-| `only_ramp_yuv`       |  560 |  983 |
+| `only_ramp_yuv`       |  571 |  995 |
 | `only_noise_yuv`      |  543 |  979 |
 
 Per-feature deltas relative to `baseline_solid_yuv` (538 LUT / 958 FF):
@@ -62,17 +62,22 @@ Per-feature deltas relative to `baseline_solid_yuv` (538 LUT / 958 FF):
 | Feature | ΔLUT | ΔFF |
 |---|---:|---:|
 | `EN_COLORBAR`   |  +98 | +29 |
-| `EN_HGRAD`      |  +22 | +25 |
-| `EN_VGRAD`      |  +32 | +25 |
+| `EN_HGRAD`      |  +33 | +37 |
+| `EN_VGRAD`      |  +43 | +37 |
 | `EN_CHECKER`    |  +63 | +36 |
 | `EN_MOVING_BOX` | **+528** | +133 |
 | `EN_GRID`       |  +44 | +33 |
-| `EN_RAMP`       |  +22 | +25 |
+| `EN_RAMP`       |  +33 | +37 |
 | `EN_NOISE`      |   +5 | +21 |
 
 `EN_MOVING_BOX` is by far the most expensive feature (the bouncing
 position arithmetic and per-pixel range comparators for the overlay).
 `EN_NOISE` is the cheapest. There are no multiplies anywhere in the design.
+
+`EN_HGRAD`, `EN_VGRAD` and `EN_RAMP` each cost 12 FF and about 11 LUT more
+than before October 2026, when their steps became Q12.16 and their
+accumulators 32 bits wide so that a gradient sweeps the full range at any
+width up to 65535. At PPC=8 the all-patterns build grew by 67 LUT / 77 FF.
 
 ## Tiniest possible build
 
@@ -93,10 +98,10 @@ pixels per beat. Reproducible on its own with `python synth/run_matrix.py ppc`.
 
 | Config | LUT | FF | beat width | vs `ppc1` |
 |---|---:|---:|---:|---|
-| `ppc1_full_rgb_8b` | 1380 | 1244 |  24b | — |
-| `ppc2_full_rgb_8b` | 1627 | 1463 |  48b | +18% LUT / +18% FF |
-| `ppc4_full_rgb_8b` | 2398 | 1786 |  96b | +74% LUT / +44% FF |
-| `ppc8_full_rgb_8b` | 3835 | 2444 | 192b | +178% LUT / +96% FF |
+| `ppc1_full_rgb_8b` | 1401 | 1268 |  24b | — |
+| `ppc2_full_rgb_8b` | 1665 | 1499 |  48b | +19% LUT / +18% FF |
+| `ppc4_full_rgb_8b` | 2450 | 1833 |  96b | +75% LUT / +45% FF |
+| `ppc8_full_rgb_8b` | 3902 | 2521 | 192b | +179% LUT / +99% FF |
 
 8× the per-clock pixel throughput costs about 2.8× the LUTs. The pattern
 generators, colour-bar compares and packers replicate per lane; the shared
@@ -113,16 +118,47 @@ registers and Vivado silently kept only one driver, pruning the other lanes'
 logic. With that fixed, and with the later per-lane colour-bar pipeline that
 lets PPC>1 builds close timing, the table above is the real cost.
 
+### Frequency on UltraScale+ (8K throughput)
+
+The core emits active video only, `IMG_WIDTH/PPC` beats per line plus
+`LINE_GAP_CYCLES` (default 1) between lines. A 7680x4320 frame at 8 pixels
+per clock is therefore 960 × 4320 + 4319 = 4,151,519 clocks, and 60 fps
+needs at least **249.1 MHz**. (The CTA-861 8Kp60 raster, blanking
+included, is 297 MHz at 8 pixels per clock.)
+
+Out-of-context place and route of `vtpgz_axilite_top`, all patterns, RGB
+8 bpc, `PIXELS_PER_CLOCK=8`, constrained at 4.0 ns (250 MHz), Vivado
+2025.2 defaults:
+
+| Part | WNS at 4.0 ns | fmax |
+|---|---:|---:|
+| `xczu7ev-ffvc1156-2-e` (ZU7EV, -2) | +0.478 ns | ~284 MHz |
+| `xck26-sfvc784-2LV-c` (KV260 SOM, -2LV at 0.72 V) | −0.006 ns | ~249.6 MHz |
+
+The ZU7EV meets 8Kp60 with margin. The KV260's low-voltage part sits right
+on the 249.1 MHz line at default strategies. In the full KV260 bench design,
+`Performance_ExplorePostRoutePhysOpt` closes 250 MHz at +0.109 ns, and the
+board runs 8Kp60 on every pattern. The limiting path on both is the colour-bar
+wrap counter's feedback loop (`bar_left`: clamp, threshold compare, wrap
+count, step select, add), with the checker's `chk_left` 20 ps behind it.
+See [hw/kv260/README.md](../hw/kv260/README.md#8k-throughput-bench) for
+the in-system build and the hardware measurement. Reproduce with:
+
+```
+vivado -mode batch -nojournal -source synth/ooc_timing.tcl \
+    -tclargs xck26-sfvc784-2LV-c 4.0 kv260_ppc8 PIXELS_PER_CLOCK:8
+```
+
 ## Interlace
 
 | Config | LUT | FF |
 |---|---:|---:|
-| `ppc1_full_rgb_8b_interlace` | 1369 | 1248 |
-| `ppc4_full_rgb_8b_interlace` | 2316 | 1790 |
+| `ppc1_full_rgb_8b_interlace` | 1392 | 1272 |
+| `ppc4_full_rgb_8b_interlace` | 2285 | 1837 |
 
-`EN_INTERLACE=1` costs 4 FF. The LUT counts land a little below the
-progressive builds (−11 at PPC=1, −82 at PPC=4), which is synthesis
-variation rather than a saving. `ppc4_full_rgb_8b_interlace` is the core
+`EN_INTERLACE=1` costs 4 FF. The LUT counts land below the progressive
+builds (−9 at PPC=1, −165 at PPC=4), which is synthesis variation rather
+than a saving. `ppc4_full_rgb_8b_interlace` is the core
 build of the Arty A7 demo.
 
 ## YUV colorimetry
@@ -131,23 +167,23 @@ All patterns, YUV 4:4:4.
 
 | Config | PPC | LUT | FF |
 |---|---:|---:|---:|
-| `yuv_10b_601full`   | 1 | 1318 | 1248 |
-| `yuv_10b_709full`   | 1 | 1310 | 1246 |
-| `yuv_10b_709lim`    | 1 | 1395 | 1247 |
-| `yuv_10b_709lim_75` | 1 | 1393 | 1247 |
-| `yuv_8b_709lim`     | 1 | 1381 | 1237 |
-| `yuv_10b_601full`   | 4 | 2317 | 1802 |
-| `yuv_10b_709full`   | 4 | 2285 | 1794 |
-| `yuv_10b_709lim`    | 4 | 2513 | 1796 |
-| `yuv_10b_709lim_75` | 4 | 2518 | 1796 |
-| `yuv_8b_709lim`     | 4 | 2580 | 1756 |
+| `yuv_10b_601full`   | 1 | 1339 | 1272 |
+| `yuv_10b_709full`   | 1 | 1330 | 1270 |
+| `yuv_10b_709lim`    | 1 | 1414 | 1271 |
+| `yuv_10b_709lim_75` | 1 | 1415 | 1271 |
+| `yuv_8b_709lim`     | 1 | 1404 | 1261 |
+| `yuv_10b_601full`   | 4 | 2306 | 1849 |
+| `yuv_10b_709full`   | 4 | 2315 | 1841 |
+| `yuv_10b_709lim`    | 4 | 2700 | 1843 |
+| `yuv_10b_709lim_75` | 4 | 2688 | 1843 |
+| `yuv_8b_709lim`     | 4 | 2640 | 1803 |
 
 The matrix (`YUV_MATRIX`) and the bar level (`BAR_LEVEL`) only change the
 colour-bar palette constants, so they cost nothing. Limited range
 (`YUV_RANGE=1`) adds the luma map for the gradients, checker, ramp and noise:
 a shift-and-add constant multiply, no DSP, applied once per lane after the
-stage-1 register to whichever of those patterns is selected. That is +85 LUT
-at PPC=1 and +228 LUT at PPC=4 over the full-range BT.709 build.
+stage-1 register to whichever of those patterns is selected. That is +84 LUT
+at PPC=1 and +385 LUT at PPC=4 over the full-range BT.709 build.
 
 ## SMPTE RP 219 chart
 
@@ -159,12 +195,12 @@ removes its registers and logic entirely. Reproducible on its own with
 | Config | PPC | LUT | FF | ΔLUT | ΔFF |
 |---|---:|---:|---:|---:|---:|
 | `only_smpte_yuv` (vs `baseline_solid_yuv`) | 1 | 1237 | 1631 |  +699 |  +673 |
-| `ppc1_full_rgb_8b_smpte`    | 1 | 2041 | 1897 |  +661 |  +653 |
-| `ppc2_full_rgb_8b_smpte`    | 2 | 2413 | 2185 |  +786 |  +722 |
-| `ppc4_full_rgb_8b_smpte`    | 4 | 3315 | 2612 |  +917 |  +826 |
-| `ppc8_full_rgb_8b_smpte`    | 8 | 5253 | 3518 | +1418 | +1074 |
-| `ppc1_yuv_10b_709lim_smpte` | 1 | 2215 | 1914 |  +820 |  +667 |
-| `ppc4_yuv_10b_709lim_smpte` | 4 | 3936 | 2647 | +1423 |  +851 |
+| `ppc1_full_rgb_8b_smpte`    | 1 | 2020 | 1922 |  +619 |  +654 |
+| `ppc2_full_rgb_8b_smpte`    | 2 | 2426 | 2215 |  +761 |  +716 |
+| `ppc4_full_rgb_8b_smpte`    | 4 | 3659 | 2666 | +1209 |  +833 |
+| `ppc8_full_rgb_8b_smpte`    | 8 | 5737 | 3604 | +1835 | +1083 |
+| `ppc1_yuv_10b_709lim_smpte` | 1 | 2259 | 1938 |  +845 |  +667 |
+| `ppc4_yuv_10b_709lim_smpte` | 4 | 3947 | 2693 | +1247 |  +850 |
 
 No DSP in any of them. About 600 FF are shared, whatever the PPC: the
 three geometry registers, the registered derived widths (each also held

@@ -75,8 +75,8 @@ module vtpgz_axil_regs #(
     output wire [15:0] cfg_checker_size,
     output wire [31:0] cfg_frame_rate_div,
     output wire [15:0] cfg_bar_width,
-    output wire [15:0] cfg_hg_step,
-    output wire [15:0] cfg_vg_step,
+    output wire [27:0] cfg_hg_step,
+    output wire [27:0] cfg_vg_step,
     output wire [23:0] cfg_box_border_color,
     output wire [7:0]  cfg_box_border_width,
     output wire [31:0] cfg_box_img_x_step,
@@ -169,11 +169,11 @@ module vtpgz_axil_regs #(
             reg_checker_size <= 32'd32;
             reg_frame_rate   <= 32'd100000;
             // Defaults for 1920x1080: bar = 1920/8 = 240
-            // hg_step = ((4095<<8)/1919) ~= 546 (Q8.8 fractional step per pixel)
-            // vg_step = ((4095<<8)/1079) ~= 970 (per line)
+            // hg_step = ceil((4095<<16)/1919) = 139849 (Q12.16 codes per pixel)
+            // vg_step = ceil((4095<<16)/1079) = 248721 (per line)
             reg_bar_width    <= 32'd240;
-            reg_hg_step      <= 32'd546;
-            reg_vg_step      <= 32'd970;
+            reg_hg_step      <= 32'd139849;
+            reg_vg_step      <= 32'd248721;
             reg_box_border   <= 32'h0;  // border_width=0, no border
             // Default steps assume a 64x64 box with the 32x32 box image
             // ((32 << 16) / 64 = 32768). Host should rewrite when BOX_SIZE
@@ -334,8 +334,8 @@ module vtpgz_axil_regs #(
     assign cfg_checker_size  = reg_checker_size[15:0];
     assign cfg_frame_rate_div= reg_frame_rate;
     assign cfg_bar_width     = reg_bar_width[15:0];
-    assign cfg_hg_step       = reg_hg_step[15:0];
-    assign cfg_vg_step       = reg_vg_step[15:0];
+    assign cfg_hg_step       = reg_hg_step[27:0];
+    assign cfg_vg_step       = reg_vg_step[27:0];
     assign cfg_box_border_color = reg_box_border[23:0];
     assign cfg_box_border_width = reg_box_border[31:24];
     assign cfg_box_img_x_step   = reg_box_img_x_step;

@@ -54,6 +54,7 @@ from fcapz.transport import XilinxHwServerTransport  # noqa: E402
 from fcapz.ejtagaxi import EjtagAxiController, AXIError  # noqa: E402
 from vtpgz_model import (  # noqa: E402
     VtpgzConfig, VtpgzRegs, render_frame_beats, tdata_to_bram_words,
+    grad_step,
 )
 from run_hw_test import (  # noqa: E402
     VTPGZ_BASE, FC_BASE,
@@ -92,8 +93,8 @@ def field_cfg(pat: int, mode: int, bpc: int, sub: int, bayer: int,
         output_mode=mode, yuv_subsample=sub, raw_bayer=bayer,
         rgb_order=order, bpc=bpc, pixels_per_clock=ppc,
         bar_width=WIDTH // 8,
-        hg_step=0xFFF // (WIDTH - 1),
-        vg_step=0xFFF // (FIELD_HEIGHT - 1),
+        hg_step=grad_step(WIDTH),
+        vg_step=grad_step(FIELD_HEIGHT),
         checker_size=16,
         grid_spacing=16,
         # The moving-box overlay advances once per FIELD and its state is

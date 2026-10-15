@@ -54,7 +54,7 @@ from vtpgz_model import (  # noqa: E402
     YUV_FULL, YUV_LIMITED, YUV_BT601, YUV_BT709,
     PAT_HGRAD, PAT_VGRAD, PAT_CHECKER, PAT_RAMP, PAT_NOISE,
     PAT_GRID, PAT_SOLID,
-    CHROMA_NEUTRAL, bar_palette,
+    CHROMA_NEUTRAL, bar_palette, grad_step,
     VtpgzConfig, VtpgzRegs, render_frame_native,
 )
 
@@ -234,11 +234,11 @@ def frame_native(pattern: int, rng: int, matrix: int, w: int = 64,
 
 
 # Steps that provably sweep the accumulator across the whole 12-bit scale
-# for the frame size used here. The defaults do NOT: vg_step=132 over 32 rows
-# tops out at 4092, so a ceiling assertion against the default would be
-# testing the step arithmetic, not the range map.
-HG_STEP_FULLSWEEP = 0xFFF // 63     # 65 * 63 = 4095 exactly, over w=64
-VG_STEP_FULLSWEEP = 133             # 133 * 31 = 4123, clamps at 0xFFF, over h=32
+# for the frame size used here: grad_step rounds up, so the last pixel / line
+# lands on 0xFFF. Spelled out rather than left to the config defaults, so the
+# ceiling assertion below keeps testing the range map if those ever change.
+HG_STEP_FULLSWEEP = grad_step(64)   # 65.0 codes per pixel, 65 * 63 = 4095
+VG_STEP_FULLSWEEP = grad_step(32)   # ~132.1 per line, saturates at 0xFFF
 
 
 def check_range_bounds() -> None:

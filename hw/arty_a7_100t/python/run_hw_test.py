@@ -57,6 +57,7 @@ from vtpgz_model import (  # noqa: E402
     YUV_444, YUV_422,
     RAW_PLAIN, RAW_RGGB, RAW_BGGR, RAW_GRBG, RAW_GBRG,
     RGB_ORDER_XILINX, RGB_ORDER_LEGACY, PAT_SMPTE, smpte_host_geometry,
+    grad_step,
 )
 
 # Build-time mode of the loaded bitstream. The vtpgZero IP exposes the
@@ -121,8 +122,8 @@ def cfg_for(pat: int, mode: int, bpc: int, sub: int,
         rgb_order=order, bpc=bpc, pixels_per_clock=ppc,
         yuv_range=yuv_range, yuv_matrix=yuv_matrix, bar_level=bar_level,
         bar_width=WIDTH // 8,
-        hg_step=0xFFF // (WIDTH - 1),
-        vg_step=0xFFF // (HEIGHT - 1),
+        hg_step=grad_step(WIDTH),
+        vg_step=grad_step(HEIGHT),
         checker_size=16,
         grid_spacing=16,
         box_width=16, box_height=16,
